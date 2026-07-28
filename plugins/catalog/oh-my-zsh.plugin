@@ -1,0 +1,7 @@
+name=Oh My Zsh
+tool=zsh
+url=https://github.com/ohmyzsh/ohmyzsh.git
+dest=$CURRENT_HOME/.oh-my-zsh
+adapter=framework
+config=$CURRENT_HOME/.zshrc
+init=export ZSH="$HOME/.oh-my-zsh"\nZSH_THEME="robbyrussell"\nplugins=(git)\nsource "$ZSH/oh-my-zsh.sh"

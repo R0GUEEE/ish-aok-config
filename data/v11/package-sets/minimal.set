@@ -1,0 +1,6 @@
+ID=minimal
+LABEL=Minimal
+DESCRIPTION=Essential package management, certificates, shell, and archive tools.
+PACKAGES_COMMON=ca-certificates tar gzip xz-utils bash
+PACKAGES_ALPINE=ca-certificates tar gzip xz bash
+PACKAGES_ARCH=ca-certificates tar gzip xz bash

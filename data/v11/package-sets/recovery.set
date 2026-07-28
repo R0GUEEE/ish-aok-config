@@ -1,0 +1,7 @@
+ID=recovery
+LABEL=Recovery
+DESCRIPTION=Diagnostics, filesystem inspection, networking, and archive recovery tools.
+INCLUDES=minimal
+PACKAGES_COMMON=file less procps util-linux rsync curl wget iproute2 iputils-ping dnsutils strace
+PACKAGES_ALPINE=file less procps util-linux rsync curl wget iproute2 iputils bind-tools strace
+PACKAGES_ARCH=file less procps-ng util-linux rsync curl wget iproute2 iputils bind strace

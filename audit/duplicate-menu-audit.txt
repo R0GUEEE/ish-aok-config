@@ -1,0 +1,12 @@
+iSH-AOK Config 11.3.2 — Canonical Menu Audit
+
+Each executable handler should have one canonical declarative location.
+Favorites and the command palette are intentional dynamic shortcuts.
+
+Duplicate handlers:
+  FAIL v990_navigation_search_menu
+    main/search — Search
+    settings/search — Favorites and Search
+    settings_advanced/search — Navigation Search
+
+Result: FAIL

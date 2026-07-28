@@ -1,0 +1,11 @@
+id: tmux
+name: tmux
+version: 1.0.0
+author: iSH-AOK
+category: Utilities
+entry: plugin.sh
+min_core_version: 11.3.0
+dependencies:
+hooks: post-bootstrap
+capabilities: packages,rootfs,host
+description: tmux terminal multiplexer integration.

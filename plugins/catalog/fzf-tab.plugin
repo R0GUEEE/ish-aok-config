@@ -1,0 +1,6 @@
+name=fzf-tab
+tool=zsh
+url=https://github.com/Aloxaf/fzf-tab.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/fzf-tab
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/fzf-tab/fzf-tab.plugin.zsh"

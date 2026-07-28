@@ -1,0 +1,7 @@
+name=Bash-it
+tool=bash
+url=https://github.com/Bash-it/bash-it.git
+dest=$CURRENT_HOME/.bash_it
+adapter=framework
+config=$CURRENT_HOME/.bashrc
+init=export BASH_IT="$HOME/.bash_it"\nsource "$BASH_IT/bash_it.sh"

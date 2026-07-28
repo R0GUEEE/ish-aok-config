@@ -1,0 +1,10 @@
+developer|Developer Tools|v91_developer_center|Menus, modules, tests and documentation
+menu_audit|Audit all menus|v952_menu_audit_ui|Validate menu routes, handlers and UI primitives
+route_audit|Audit complete menu routing|v962_route_audit_ui|Check reachability, aliases, command routes, Back and Exit
+duplicate_audit|Audit duplicate menu actions|v960_duplicate_menu_audit_ui|Ensure each tool has one canonical menu location
+palette|Command Palette|workspace_command_palette|Search every registered action
+classic|Classic Navigation|classic_main_menu|Complete legacy v8 menu structure
+navigation|Navigation Diagnostics|v970_navigation_diagnostics_menu|Canonical routes, audits and saved-state repair
+history|Navigation History|v980_history_menu|Breadcrumbs and recently visited canonical menus
+search|Navigation Search|v990_navigation_search_menu|Search all tools and open most-used actions
+back|Back|@return|

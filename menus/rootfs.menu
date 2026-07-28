@@ -1,0 +1,7 @@
+select|Select RootFS|@menu:rootfs_select|Registered, recent or any filesystem path
+enter|Enter Active RootFS|rootfs_chroot_studio|Mount and enter the active filesystem
+chroot_any|Chroot any RootFS directory|v951_chroot_any_directory|Choose any directory without activating it first
+manage|Manage active RootFS|@menu:rootfs_manage|Configure packages, repositories, services and boot
+protect|Snapshots & Repair|@menu:rootfs_protect|Snapshot, health and recovery tools
+transfer|Clone, Compare & Package|@menu:rootfs_transfer|Copy, inspect and archive filesystems
+back|Back|@return|

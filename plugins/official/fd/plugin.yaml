@@ -1,0 +1,11 @@
+id: fd
+name: fd
+version: 1.0.0
+author: iSH-AOK
+category: Utilities
+entry: plugin.sh
+min_core_version: 11.3.0
+dependencies:
+hooks: post-bootstrap
+capabilities: packages,rootfs,host
+description: fd filesystem search integration.

@@ -1,0 +1,6 @@
+name=zsh-syntax-highlighting
+tool=zsh
+url=https://github.com/zsh-users/zsh-syntax-highlighting.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-syntax-highlighting
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"

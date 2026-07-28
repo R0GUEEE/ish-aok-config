@@ -1,0 +1,25 @@
+#!/bin/sh
+set -u
+SELF=$0
+case $SELF in /*) :;; *) SELF=$(pwd)/$SELF;; esac
+BASE=$(CDPATH= cd -- "$(dirname -- "$SELF")" 2>/dev/null && pwd)
+export ISH_AOK_CONFIG_ROOT=$BASE
+[ -r "$BASE/lib/core.sh" ] && . "$BASE/lib/core.sh"
+for f in "$BASE"/lib/*.sh; do [ "$f" = "$BASE/lib/core.sh" ] && continue; [ -r "$f" ] && . "$f"; done
+for f in "$BASE"/modules/package/*.sh "$BASE"/modules/services/*.sh "$BASE"/modules/*.sh; do [ -r "$f" ] && . "$f"; done
+command -v sdk_source_modules >/dev/null 2>&1 && sdk_source_modules
+
+if [ "${1:-}" = --automation ]; then
+  task=${2:-}; root=${3:-}
+  [ -n "$root" ] && export AOK_ACTIVE_ROOTFS="$root"
+  case $task in
+    health) rootfs_health_report;;
+    compatibility) compatibility_deep_report_v72;;
+    snapshot) rootfs_manager_export;;
+    cleanup) rootfs_safe_cleanup;;
+    manifest) rootfs_manager_manifest;;
+    *) echo "Unknown automation task: $task" >&2; exit 2;;
+  esac
+  exit $?
+fi
+main "$@"

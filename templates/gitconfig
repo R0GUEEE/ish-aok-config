@@ -1,0 +1,8 @@
+[init]
+    defaultBranch = main
+[core]
+    editor = nano
+[pull]
+    rebase = false
+[color]
+    ui = auto

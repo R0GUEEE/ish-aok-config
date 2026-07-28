@@ -1,0 +1,8 @@
+# id|label|handler|description
+new|Create a New RootFS|v103_build_new|Recommended step-by-step builder
+edit|Edit an Existing RootFS|v104_edit_existing_rootfs|Select and configure a target filesystem
+current|Current Build|v103_build_review|Review, validate, resume or run the current build
+manage|Manage RootFS Filesystems|@menu:rootfs|Select, enter, validate, clone, package or repair RootFS filesystems
+advanced|More Build Options|@menu:build_advanced|Profiles, direct backends and build recovery
+help|Builder Help|v104_builder_help|Explain the streamlined build workflow
+back|Back|@return|

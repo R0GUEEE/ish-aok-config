@@ -1,0 +1,6 @@
+# id|label|handler|description
+profiles|Build Profiles|@menu:build_profile|Save and reuse build configurations
+backends|Direct Build Backends|v87_manual_builders_menu|Use debootstrap, apk, pacstrap, dnf, xbps or archive import directly
+batch|Batch and Multiple Targets|@menu:build_multi|Optional matrices and queued multi-target builds
+recovery|Build Status, Logs and Recovery|@menu:build_run|Resume or inspect a failed build
+back|Back|@return|

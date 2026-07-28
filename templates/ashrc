@@ -1,0 +1,2 @@
+[ -f "$HOME/.aliases" ] && . "$HOME/.aliases"
+PS1='\u@\h:\w\$ '

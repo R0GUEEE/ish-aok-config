@@ -1,0 +1,11 @@
+# id|category|label|description|config_handler|capability
+nano|Editors|Nano|Small terminal text editor|editors_menu|repository_manager
+neovim|Editors|Neovim|Modern Vim-compatible editor|editors_menu|repository_manager
+starship|Shells|Starship|Cross-shell prompt|starship_menu|repository_manager
+zsh|Shells|Zsh|Interactive shell with plugin ecosystem|shells_menu|repository_manager
+tmux|Terminal|tmux|Terminal multiplexer|terminal_tools_menu|repository_manager
+fzf|Terminal|fzf|Fuzzy finder|terminal_tools_menu|repository_manager
+git|Development|Git|Distributed version control|development_menu|repository_manager
+python3|Languages|Python 3|Python runtime and tooling|languages_menu|repository_manager
+openssh-server|Networking|OpenSSH Server|Remote shell server|ssh_menu|repository_manager
+rsync|Storage|rsync|Incremental file synchronization|storage_backup_menu|repository_manager

@@ -1,0 +1,5 @@
+preset|Choose preset|v89_profile_apply_preset|Apply a built-in distribution template
+configure|Configure profile|v87_build_profile_wizard|Guided build configuration
+paths|Source & destination|v93_paths_menu|Source, RootFS path and artifact output
+validate|Validate & preflight|v91_build_validate_ui|Check profile and host capabilities
+back|Back|@return|

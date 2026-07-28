@@ -1,0 +1,7 @@
+ID=container
+LABEL=Container Host
+DESCRIPTION=Container-oriented command-line environment where kernel capabilities permit it.
+INCLUDES=server
+PACKAGES_COMMON=podman buildah skopeo uidmap
+PACKAGES_ALPINE=podman buildah skopeo shadow-subids
+PACKAGES_ARCH=podman buildah skopeo shadow

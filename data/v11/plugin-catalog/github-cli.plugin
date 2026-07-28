@@ -1,0 +1,7 @@
+id: github-cli
+name: GitHub CLI
+version: 1.0.0
+category: Development
+min_core_version: 11.2.0
+dependencies:
+description: Install and configure GitHub CLI inside supported RootFSes.

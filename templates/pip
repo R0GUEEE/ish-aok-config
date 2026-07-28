@@ -1,0 +1,5 @@
+[global]
+timeout = 30
+disable-pip-version-check = true
+[install]
+use-pep517 = true

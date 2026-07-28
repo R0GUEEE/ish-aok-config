@@ -1,0 +1,3 @@
+registered|Select registered RootFS|rootfs_registry_select_ui|Choose from the RootFS registry
+anywhere|Select from any path|rootfs_select_anywhere|Enter or browse to any existing RootFS
+back|Back|@return|

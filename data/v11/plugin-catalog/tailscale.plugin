@@ -1,0 +1,7 @@
+id: tailscale
+name: Tailscale
+version: 1.0.0
+category: Networking
+min_core_version: 11.2.0
+dependencies:
+description: Configure Tailscale where the target environment supports it.

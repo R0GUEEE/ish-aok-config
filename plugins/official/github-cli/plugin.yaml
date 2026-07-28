@@ -1,0 +1,11 @@
+id: github-cli
+name: GitHub CLI
+version: 1.0.0
+author: iSH-AOK
+category: Development
+entry: plugin.sh
+min_core_version: 11.3.0
+dependencies:
+hooks: post-bootstrap
+capabilities: packages,rootfs,host
+description: GitHub command-line workflow integration.

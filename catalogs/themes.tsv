@@ -1,0 +1,9 @@
+#id|label|description|handler|flags
+dark|Dark neutral|Low-glare defaults for terminal tools|apply_theme_profile|dark
+light|Light neutral|Readable light-background defaults|apply_theme_profile|light
+gruvbox|Gruvbox|Warm retro palette across supported tools|apply_theme_profile|gruvbox
+dracula|Dracula|High-contrast purple-oriented palette|apply_theme_profile|dracula
+catppuccin|Catppuccin|Coordinated pastel terminal palette|apply_theme_profile|catppuccin
+nord|Nord|Cool blue low-contrast palette|apply_theme_profile|nord
+tokyonight|Tokyo Night|Dark blue modern palette|apply_theme_profile|tokyonight
+minimal|Minimal ANSI|No external font or truecolor requirement|apply_theme_profile|minimal

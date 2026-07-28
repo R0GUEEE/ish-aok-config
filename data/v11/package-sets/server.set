@@ -1,0 +1,7 @@
+ID=server
+LABEL=Server
+DESCRIPTION=Remote administration, scheduling, logs, time synchronization, and backups.
+INCLUDES=standard
+PACKAGES_COMMON=openssh-server sudo cron logrotate rsync chrony
+PACKAGES_ALPINE=openssh sudo dcron logrotate rsync chrony
+PACKAGES_ARCH=openssh sudo cronie logrotate rsync chrony

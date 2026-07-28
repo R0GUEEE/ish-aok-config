@@ -1,0 +1,8 @@
+#!/bin/sh
+status_word(){ have "$1" && printf installed || printf missing; }
+install_named_tool(){ p=$1; pkg_install "$p"; }
+ensure_tool(){ c=$1; p=${2:-$1}; have "$c" && return 0; ui_yesno "Missing tool" "$c is not installed. Install package $p?" || return 1; pkg_install "$p"; have "$c"; }
+show_command(){ title=$1; shift; run_capture "$title" "$@"; }
+config_entry_menu(){ title=$1; file=$2; template=${3:-}; while :; do c=$(ui_menu "$title" "File: $file" wizard 'Configure options in TUI' edit 'Open raw configuration' view 'View current file' defaults 'Install recommended defaults' backup 'Create backup' remove 'Remove managed blocks' back Back) || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; }; case $c in wizard) ui_msg "$title" 'This format uses its dedicated wizard or key/value editor from the parent module.';; edit) edit_file "$file";; view) ui_text "$title" "$(cat "$file" 2>/dev/null || echo 'File does not exist.')";; defaults) [ -n "$template" ] && [ -f "$ISH_AOK_CONFIG_ROOT/templates/$template" ] && write_file "$file" 644 "$(cat "$ISH_AOK_CONFIG_ROOT/templates/$template")" || ui_msg Defaults 'No template is registered.';; backup) backup_file "$file"; ui_msg Backup 'Backup created.';; remove) backup_file "$file"; sed '/# >>> ish-aok-config:/,/# <<< ish-aok-config:/d' "$file" >"$TMP_DIR/clean" 2>/dev/null && write_file "$file" 644 "$(cat "$TMP_DIR/clean")";; back) return;; esac; done; }
+
+package_list_all(){ case $PKG_MGR in apt) dpkg-query -W -f='${Package}\t${Version}\n';; apk) apk info -vv;; pacman) pacman -Q;; dnf|yum) rpm -qa;; xbps) xbps-query -l;; emerge) qlist -Iv 2>/dev/null || emerge --info;; *) return 1;; esac; }

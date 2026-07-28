@@ -1,0 +1,11 @@
+id: wireguard
+name: WireGuard
+version: 1.0.0
+author: iSH-AOK
+category: Networking
+entry: plugin.sh
+min_core_version: 11.3.0
+dependencies:
+hooks: post-bootstrap
+capabilities: packages,rootfs,host
+description: WireGuard tools integration.

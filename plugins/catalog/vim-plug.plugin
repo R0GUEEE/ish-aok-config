@@ -1,0 +1,5 @@
+name=vim-plug
+tool=vim
+url=https://github.com/junegunn/vim-plug.git
+dest=$PLUGIN_DATA_DIR/vim-plug-source
+adapter=vim_plug_manager

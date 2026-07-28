@@ -1,0 +1,6 @@
+name=Zinit
+tool=zsh
+url=https://github.com/zdharma-continuum/zinit.git
+dest=$CURRENT_HOME/.local/share/zinit/zinit.git
+adapter=zsh_source
+init=source "$HOME/.local/share/zinit/zinit.git/zinit.zsh"

@@ -1,0 +1,9 @@
+#id|label|description|handler|flags
+catalog|Browse curated catalog|Open all application plugin managers|plugin_marketplace_action|catalog
+search|Search local catalogs|Find plugins, themes and frameworks by text|plugin_marketplace_action|search
+custom|Install from Git|Register and install a custom Git plugin|plugin_marketplace_action|custom
+update|Update all managed plugins|Run framework and Git updates|plugin_marketplace_action|update
+health|Plugin health audit|Check paths, repositories and config references|plugin_marketplace_action|health
+export|Export plugin state|Create portable catalog and manifest archive|plugin_marketplace_action|export
+import|Import plugin state|Restore a previously exported state archive|plugin_marketplace_action|import
+report|Plugin report|Show catalogs and installed manifests|plugin_marketplace_action|report

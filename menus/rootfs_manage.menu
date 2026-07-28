@@ -1,0 +1,5 @@
+configure|Configure active RootFS|aok_v7_studios_menu|Identity, locale, shell and system settings
+packages|Packages|rootfs_package_native|Use the native package manager
+services|Services & Boot|v85_service_orchestration_menu|SysVinit, OpenRC and runit
+repositories|Repositories|v86_repository_policy_menu|Repository and package policy
+back|Back|@return|
