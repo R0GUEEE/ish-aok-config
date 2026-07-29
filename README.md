@@ -1,8 +1,4 @@
-# systui — Modular Linux System Administration TUI
-
-**Version:** 1.0.0  
-**Status:** Production Ready  
-**License:** Free and open for modification
+# systui — Modular Linux System Administration TUI 
 
 ## Overview
 
