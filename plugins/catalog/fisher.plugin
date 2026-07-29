@@ -1,5 +1,6 @@
 name=Fisher
 tool=fish
+kind=manager
 url=https://github.com/jorgebucaran/fisher.git
 dest=$CURRENT_HOME/.config/fish/functions/fisher
 adapter=fish_source

@@ -1,5 +1,7 @@
 name=fzf-tab
 tool=zsh
+manager=any
+kind=plugin
 url=https://github.com/Aloxaf/fzf-tab.git
 dest=$CURRENT_HOME/.local/share/zsh/plugins/fzf-tab
 adapter=zsh_source

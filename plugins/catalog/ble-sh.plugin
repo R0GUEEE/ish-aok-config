@@ -1,0 +1,8 @@
+name=ble.sh (line editor; needs make install)
+tool=bash
+kind=plugin
+manager=any
+url=https://github.com/akinomyoga/ble.sh.git
+dest=$CURRENT_HOME/.local/share/bash/ble.sh
+adapter=bash_source
+init=[ -f "$HOME/.local/share/blesh/ble.sh" ] && source "$HOME/.local/share/blesh/ble.sh"

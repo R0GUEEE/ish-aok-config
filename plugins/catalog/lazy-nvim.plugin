@@ -1,5 +1,6 @@
 name=lazy.nvim
 tool=neovim
+kind=app
 url=https://github.com/folke/lazy.nvim.git
 dest=$CURRENT_HOME/.local/share/nvim/lazy/lazy.nvim
 adapter=nvim_lazy_manager

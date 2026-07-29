@@ -1,0 +1,8 @@
+name=zsh-completions
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/zsh-users/zsh-completions.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-completions
+adapter=zsh_source
+init=fpath=("$HOME/.local/share/zsh/plugins/zsh-completions/src" $fpath)\nautoload -Uz compinit && compinit

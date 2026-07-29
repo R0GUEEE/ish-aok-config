@@ -1,5 +1,7 @@
 name=zsh-autosuggestions
 tool=zsh
+manager=any
+kind=plugin
 url=https://github.com/zsh-users/zsh-autosuggestions.git
 dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-autosuggestions
 adapter=zsh_source

@@ -33,7 +33,8 @@ ui_menu(){
         printf '%s\t%s\n' "$1" "$2" >>"$_ui_file"
         i=$((i+1)); shift 2
       done
-      printf '\n== %s ==\n%s\n' "$title" "$text" >&2
+      # %b matches dialog/whiptail, which expand \n in menu descriptions.
+      printf '\n== %s ==\n%b\n' "$title" "$text" >&2
       # Reprint after header for compatibility with previous visual ordering.
       i=1
       while IFS="$(printf '\t')" read -r _tag _label; do
@@ -70,7 +71,7 @@ ui_checklist(){
     *)
       _ui_file="$TMP_DIR/checklist.$$"; : >"$_ui_file" || return 1
       i=1
-      printf '\n== %s ==\n%s\n' "$title" "$text" >&2
+      printf '\n== %s ==\n%b\n' "$title" "$text" >&2
       while [ "$#" -ge 3 ]; do
         printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$_ui_file"
         [ "$3" = on ] && mark=x || mark=' '

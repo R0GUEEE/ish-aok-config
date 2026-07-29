@@ -1,0 +1,8 @@
+name=fzf.fish (key bindings)
+tool=fish
+kind=plugin
+manager=any
+url=https://github.com/PatrickF1/fzf.fish.git
+dest=$CURRENT_HOME/.local/share/fish/plugins/fzf.fish
+adapter=fish_plugin
+init=

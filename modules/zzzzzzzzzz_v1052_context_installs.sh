@@ -95,10 +95,10 @@ v1052_storage_menu(){
 v1052_advanced_system_menu(){
   while :; do
     c=$(ui_menu 'Additional System Tools' 'Install or configure optional tools on the running iSH-AOK system.' \
-      development 'Development tools' terminal 'Terminal applications' monitoring 'Monitoring and diagnostics packages' \
+      development 'Development tools' monitoring 'Monitoring and diagnostics packages' \
       languages 'Scripting languages' legacy 'Other advanced system configuration' back Back) || return 0
     case $c in
-      development) v1052_development_menu;; terminal) v1052_terminal_menu;;
+      development) v1052_development_menu;;
       monitoring) v105_group_install monitoring;; languages) v105_group_install languages;;
       legacy) system_menu;; back) return 0;;
     esac

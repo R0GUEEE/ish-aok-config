@@ -201,30 +201,43 @@ edit_file(){
 
 # Optimized host-only navigation. Frequently used sections remain visible;
 # diagnostics and uncommon tools are grouped without removing functionality.
+# Shell, editor and terminal configuration share one entry point.
+v104_shell_editor_menu(){
+  while :; do
+    choice=$(ui_menu 'Shell, Editor and Terminal' 'Install and configure the interactive environment for the running system.' \
+      shells 'Shells, prompts and frameworks' \
+      editors 'Editors and editor configuration' \
+      terminal 'Terminal applications and multiplexers' \
+      back 'Back') || return 0
+    case $choice in
+      shells) shells_menu;;
+      editors) editors_menu;;
+      terminal) v1052_terminal_menu;;
+      back) return 0;;
+    esac
+  done
+}
+
 v104_system_configuration_menu(){
   while :; do
-    choice=$(ui_menu 'System Configuration' "$(v104_system_status)\nChanges on this screen affect only the running system (/)." \
+    choice=$(ui_menu 'System Configuration' "$(printf '%s\nChanges on this screen affect only the running system (/).' "$(v104_system_status)")" \
       packages 'Packages, package managers, repositories and keyrings' \
-      shells 'Shells, prompts and terminal applications' \
-      editors 'Editors and editor configuration' \
+      environment 'Shells, editors and terminal applications' \
       network 'Networking, DNS, SSH and diagnostics' \
       services 'Services and startup' \
       users 'Users, passwords and sudo' \
       storage 'Storage, mounts, archives and backups' \
-      performance 'Performance and maintenance' \
-      diagnostics 'Diagnostics and bug check' \
+      performance 'Performance, optimization and maintenance' \
       advanced 'Additional and advanced system tools' \
       back 'Back') || return 0
     case $choice in
       packages) v104_system_packages_menu;;
-      shells) v104_main_scope_call shells_menu;;
-      editors) v104_main_scope_call editors_menu;;
+      environment) v104_main_scope_call v104_shell_editor_menu;;
       network) v104_main_scope_call v1052_network_menu;;
       services) v104_main_scope_call service_center_v6;;
       users) v104_main_scope_call users_menu;;
       storage) v104_main_scope_call v1052_storage_menu;;
       performance) v104_main_scope_call performance_menu;;
-      diagnostics) v104_main_scope_call v112_diagnostics_menu;;
       advanced) v104_main_scope_call v1052_advanced_system_menu;;
       back) return 0;;
     esac

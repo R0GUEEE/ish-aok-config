@@ -1,0 +1,8 @@
+name=Tide prompt
+tool=fish
+kind=plugin
+manager=any
+url=https://github.com/IlanCosman/tide.git
+dest=$CURRENT_HOME/.local/share/fish/plugins/tide
+adapter=fish_plugin
+init=

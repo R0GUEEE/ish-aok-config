@@ -1,0 +1,7 @@
+name=antidote
+tool=zsh
+kind=manager
+url=https://github.com/mattmc3/antidote.git
+dest=$CURRENT_HOME/.local/share/zsh/antidote
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/antidote/antidote.zsh"\n[ -f "$HOME/.zsh_plugins.txt" ] && antidote load

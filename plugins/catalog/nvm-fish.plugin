@@ -1,0 +1,8 @@
+name=nvm.fish (Node version manager)
+tool=fish
+kind=plugin
+manager=any
+url=https://github.com/jorgebucaran/nvm.fish.git
+dest=$CURRENT_HOME/.local/share/fish/plugins/nvm.fish
+adapter=fish_plugin
+init=

@@ -1,5 +1,6 @@
 name=Zinit
 tool=zsh
+kind=manager
 url=https://github.com/zdharma-continuum/zinit.git
 dest=$CURRENT_HOME/.local/share/zinit/zinit.git
 adapter=zsh_source

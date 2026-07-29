@@ -1,0 +1,8 @@
+name=autopair.fish
+tool=fish
+kind=plugin
+manager=any
+url=https://github.com/jorgebucaran/autopair.fish.git
+dest=$CURRENT_HOME/.local/share/fish/plugins/autopair.fish
+adapter=fish_plugin
+init=

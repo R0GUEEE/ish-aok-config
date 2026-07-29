@@ -1,0 +1,7 @@
+name=Oh My Fish
+tool=fish
+kind=manager
+url=https://github.com/oh-my-fish/oh-my-fish.git
+dest=$CURRENT_HOME/.local/share/omf
+adapter=fish_source
+init=set -gx OMF_PATH "$HOME/.local/share/omf"\ntest -f "$OMF_PATH/init.fish"; and source "$OMF_PATH/init.fish"

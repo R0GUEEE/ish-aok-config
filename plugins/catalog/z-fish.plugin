@@ -1,0 +1,8 @@
+name=z (directory jumping)
+tool=fish
+kind=plugin
+manager=any
+url=https://github.com/jethrokuan/z.git
+dest=$CURRENT_HOME/.local/share/fish/plugins/z
+adapter=fish_plugin
+init=

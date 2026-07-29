@@ -1,0 +1,7 @@
+name=bash-preexec (hook support)
+tool=bash
+kind=manager
+url=https://github.com/rcaloras/bash-preexec.git
+dest=$CURRENT_HOME/.local/share/bash/bash-preexec
+adapter=bash_source
+init=[ -f "$HOME/.local/share/bash/bash-preexec/bash-preexec.sh" ] && source "$HOME/.local/share/bash/bash-preexec/bash-preexec.sh"

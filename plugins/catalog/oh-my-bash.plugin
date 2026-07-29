@@ -1,5 +1,6 @@
 name=Oh My Bash
 tool=bash
+kind=manager
 url=https://github.com/ohmybash/oh-my-bash.git
 dest=$CURRENT_HOME/.oh-my-bash
 adapter=framework

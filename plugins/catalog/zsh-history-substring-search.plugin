@@ -1,0 +1,8 @@
+name=zsh-history-substring-search
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/zsh-users/zsh-history-substring-search.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-history-substring-search
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/zsh-history-substring-search/zsh-history-substring-search.zsh"\nbindkey "^[[A" history-substring-search-up\nbindkey "^[[B" history-substring-search-down

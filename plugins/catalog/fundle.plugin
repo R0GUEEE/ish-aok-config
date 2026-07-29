@@ -1,0 +1,7 @@
+name=fundle
+tool=fish
+kind=manager
+url=https://github.com/danhper/fundle.git
+dest=$CURRENT_HOME/.local/share/fish/fundle
+adapter=fish_plugin
+init=

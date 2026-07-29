@@ -31,6 +31,15 @@ plugin_post_install(){ id=$1; adapter=$(plugin_get_field "$id" adapter); mf=$(pl
   mkdir -p "$CURRENT_HOME/.config/nnn/plugins"
   [ -d "$dest/plugins" ] && cp -R "$dest/plugins/." "$CURRENT_HOME/.config/nnn/plugins/"
  ;;
+ fish_plugin)
+  # Fish autoloads from these directories, so a git plugin is installed by
+  # copying its trees into the user's fish configuration.
+  for _fd in functions completions conf.d; do
+   [ -d "$dest/$_fd" ] || continue
+   mkdir -p "$CURRENT_HOME/.config/fish/$_fd"
+   cp -R "$dest/$_fd/." "$CURRENT_HOME/.config/fish/$_fd/" 2>/dev/null || true
+  done
+ ;;
  esac; }
 plugin_enable(){ id=$1; adapter=$(plugin_get_field "$id" adapter); case $adapter in
  bash_source) file=$CURRENT_HOME/.bashrc; line=$(plugin_get_field "$id" init); replace_block "$file" "plugin-$id" "$line";;
@@ -49,6 +58,16 @@ plugin_disable(){ id=$1; adapter=$(plugin_get_field "$id" adapter); case $adapte
  bash_source) remove_managed_block "$CURRENT_HOME/.bashrc" "plugin-$id";;
  zsh_source) remove_managed_block "$CURRENT_HOME/.zshrc" "plugin-$id";;
  fish_source) rm -f "$CURRENT_HOME/.config/fish/conf.d/ish-aok-$id.fish";;
+ fish_plugin)
+  _mf=$(plugin_manifest_file "$id"); _dest=$(sed -n 's/^dest=//p' "$_mf" 2>/dev/null)
+  [ -n "$_dest" ] && [ -d "$_dest" ] && for _fd in functions completions conf.d; do
+   [ -d "$_dest/$_fd" ] || continue
+   for _ff in "$_dest/$_fd"/*; do
+    [ -e "$_ff" ] || continue
+    rm -f "$CURRENT_HOME/.config/fish/$_fd/$(basename "$_ff")"
+   done
+  done
+  ;;
  vim_plug) remove_plugin_line "$CURRENT_HOME/.vimrc" vim-plug "$(plugin_get_field "$id" repo)";;
  nvim_lazy) remove_plugin_line "$CURRENT_HOME/.config/nvim/lua/ish_aok_plugins.lua" nvim-lazy "$(plugin_get_field "$id" repo)";;
  tmux_tpm) remove_plugin_line "$CURRENT_HOME/.tmux.conf" tmux-plugins "$(plugin_get_field "$id" repo)";;

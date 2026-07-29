@@ -1,0 +1,8 @@
+name=fast-syntax-highlighting
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/zdharma-continuum/fast-syntax-highlighting.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/fast-syntax-highlighting
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh"

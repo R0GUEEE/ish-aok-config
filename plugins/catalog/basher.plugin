@@ -1,0 +1,7 @@
+name=basher
+tool=bash
+kind=manager
+url=https://github.com/basherpm/basher.git
+dest=$CURRENT_HOME/.basher
+adapter=bash_source
+init=export PATH="$HOME/.basher/bin:$PATH"\ncommand -v basher >/dev/null 2>&1 && eval "$(basher init - bash)"

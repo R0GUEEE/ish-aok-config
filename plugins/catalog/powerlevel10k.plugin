@@ -1,0 +1,8 @@
+name=Powerlevel10k theme
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/romkatv/powerlevel10k.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/powerlevel10k
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/powerlevel10k/powerlevel10k.zsh-theme"

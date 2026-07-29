@@ -1,0 +1,8 @@
+name=zsh-autocomplete
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/marlonrichert/zsh-autocomplete.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-autocomplete
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh"

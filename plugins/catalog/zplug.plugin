@@ -1,0 +1,7 @@
+name=zplug
+tool=zsh
+kind=manager
+url=https://github.com/zplug/zplug.git
+dest=$CURRENT_HOME/.zplug
+adapter=zsh_source
+init=export ZPLUG_HOME="$HOME/.zplug"\n[ -f "$ZPLUG_HOME/init.zsh" ] && source "$ZPLUG_HOME/init.zsh"

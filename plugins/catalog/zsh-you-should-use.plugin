@@ -1,0 +1,8 @@
+name=you-should-use (alias reminder)
+tool=zsh
+kind=plugin
+manager=any
+url=https://github.com/MichaelAquilina/zsh-you-should-use.git
+dest=$CURRENT_HOME/.local/share/zsh/plugins/zsh-you-should-use
+adapter=zsh_source
+init=source "$HOME/.local/share/zsh/plugins/zsh-you-should-use/you-should-use.plugin.zsh"
