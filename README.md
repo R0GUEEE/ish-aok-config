@@ -540,7 +540,10 @@ Security, System Utilities, and Terminal & CLI. Documentation-only sections,
 including “Unsure how to contribute?”, contribution guidelines, news, Reddit,
 contributors, and licensing, are excluded and cannot appear as installable
 categories. Existing caches are automatically reparsed when the taxonomy
-version changes.
+version changes. Nested category menus use independent state, so returning from
+a subcategory cannot corrupt its parent menu. Project installer scripts are
+generated only after a project is selected, keeping first launch and catalogue
+refresh responsive.
 
 ## Package and shell menu organization
 

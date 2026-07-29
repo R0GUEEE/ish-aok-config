@@ -6688,7 +6688,7 @@ menu_file_managers() {
 # application remains available without embedding a stale, hand-maintained copy.
 AWESOME_LINUX_REPO_URL="https://github.com/luong-komorebi/Awesome-Linux-Software"
 AWESOME_LINUX_RAW_URL="https://raw.githubusercontent.com/luong-komorebi/Awesome-Linux-Software/master/README.md"
-AWESOME_LINUX_CATALOG_VERSION=2
+AWESOME_LINUX_CATALOG_VERSION=3
 
 awesome_linux_cache_dir() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -6864,11 +6864,11 @@ USAGE
 
 as_root() { if [ "\$(id -u)" -eq 0 ]; then "\$@"; elif command -v sudo >/dev/null 2>&1; then sudo "\$@"; else echo "Root privileges required" >&2; return 1; fi; }
 install_native() {
-  if command -v apt-get >/dev/null 2>&1; then apt-cache show "\$PACKAGE" >/dev/null 2>&1 && as_root apt-get install -y "\$PACKAGE"
+  if command -v apt-get >/dev/null 2>&1; then apt-cache show "\$PACKAGE" >/dev/null 2>&1 && as_root apt-get install -y --no-install-recommends "\$PACKAGE"
   elif command -v apk >/dev/null 2>&1; then apk search -e "\$PACKAGE" | grep -q . && as_root apk add "\$PACKAGE"
   elif command -v pacman >/dev/null 2>&1; then pacman -Si "\$PACKAGE" >/dev/null 2>&1 && as_root pacman -S --needed --noconfirm "\$PACKAGE"
-  elif command -v dnf >/dev/null 2>&1; then dnf -q list available "\$PACKAGE" >/dev/null 2>&1 && as_root dnf install -y "\$PACKAGE"
-  elif command -v zypper >/dev/null 2>&1; then as_root zypper --non-interactive install "\$PACKAGE"
+  elif command -v dnf >/dev/null 2>&1; then dnf -q list available "\$PACKAGE" >/dev/null 2>&1 && as_root dnf install -y --setopt=install_weak_deps=False "\$PACKAGE"
+  elif command -v zypper >/dev/null 2>&1; then as_root zypper --non-interactive install --no-recommends "\$PACKAGE"
   else return 1; fi
 }
 install_flatpak() {
@@ -6944,7 +6944,10 @@ awesome_linux_sync() {
     dir=$(awesome_linux_cache_dir); readme="$dir/README.md"; catalog="$dir/catalog.tsv"
     mkdir -p "$dir" || { tui_msg "Awesome Linux" "Unable to create cache directory:\n$dir"; return 1; }
     if ! awesome_linux_download "$readme"; then
-        [ -s "$catalog" ] && { tui_msg "Offline catalogue" "Refresh failed; keeping the existing cached catalogue."; return 0; }
+        awesome_linux_catalog_valid "$catalog" && {
+            tui_msg "Offline catalogue" "Refresh failed; keeping the existing valid cached catalogue."
+            return 0
+        }
         tui_msg "Download failed" "Could not retrieve the Awesome Linux Software README.\nCheck networking and $LOGFILE."
         return 1
     fi
@@ -6958,9 +6961,9 @@ awesome_linux_sync() {
         return 1
     }
     count=$(wc -l < "$catalog" | tr -d ' ')
-    awesome_linux_generate_catalog_installers "$catalog" || {
-        tui_msg "Installer generation warning" "The catalogue was updated, but one or more standalone installer scripts could not be generated."
-    }
+    # Project installers are generated lazily after a project is selected.
+    # Bulk-generating one script per catalogue row made first launch needlessly
+    # slow and created filename collisions for duplicate project names.
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$dir/last-sync"
     printf '%s\n' "$AWESOME_LINUX_CATALOG_VERSION" > "$dir/catalog-version"
     tui_msg "Awesome Linux synchronized" "$count projects imported from the upstream repository."
@@ -6975,7 +6978,6 @@ awesome_linux_catalog() {
     # stale categories immediately without requiring a network refresh.
     if [ "$cached_version" != "$AWESOME_LINUX_CATALOG_VERSION" ] || ! awesome_linux_catalog_valid "$catalog"; then
         if [ -s "$readme" ] && awesome_linux_parse "$readme" "$catalog" && awesome_linux_catalog_valid "$catalog"; then
-            awesome_linux_generate_catalog_installers "$catalog" || true
             printf '%s\n' "$AWESOME_LINUX_CATALOG_VERSION" > "$dir/catalog-version"
         else
             awesome_linux_sync || return 1
@@ -7151,7 +7153,7 @@ DEST=$(printf '%s' "$dst" | sed 's/["\\]/\\&/g')
 install_dependencies() {
     [ -n "$deps" ] || return 0
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y $deps
+        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $deps
     elif command -v apk >/dev/null 2>&1; then
         apk_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++/build-base/g; s/gcc/build-base/g')
         apk add --no-cache $apk_deps
@@ -7160,9 +7162,9 @@ install_dependencies() {
         pacman -S --needed --noconfirm $pacman_deps
     elif command -v dnf >/dev/null 2>&1; then
         dnf_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja-build/g; s/golang-go/golang/g')
-        dnf install -y $dnf_deps
+        dnf install -y --setopt=install_weak_deps=False $dnf_deps
     elif command -v zypper >/dev/null 2>&1; then
-        zypper --non-interactive install $deps
+        zypper --non-interactive install --no-recommends $deps
     else
         echo "Install these build dependencies manually: $deps" >&2
     fi
@@ -7287,9 +7289,13 @@ awesome_linux_browse_file() { # filtered TSV
 
 awesome_linux_category_level() { # <catalog> <prefix> <title>
     local catalog="$1" prefix="${2:-}" title="${3:-Categories}"
-    local map="${SYSTUI_TMP}/awesome-category-map.$$" c tag label path filtered exact children
+    local map labels c tag label path filtered exact children
     local args=() n=0
-    : > "$map"
+    map=$(mktemp "${SYSTUI_TMP}/awesome-category-map.XXXXXX") || {
+        tui_msg "Awesome Linux" "Unable to create the category menu."
+        return 1
+    }
+    labels="${map}.labels"
 
     # Build only the immediate children beneath the requested category path.
     while IFS= read -r path; do
@@ -7302,7 +7308,7 @@ awesome_linux_category_level() { # <catalog> <prefix> <title>
         [ -n "$path" ] || continue
         label=${path%% / *}
         printf '%s\n' "$label"
-    done < <(awk -F '\t' '{print $2}' "$catalog") | sort -fu > "${map}.labels"
+    done < <(awk -F '\t' '{print $2}' "$catalog") | sort -fu > "$labels"
     while IFS= read -r label; do
         [ -n "$label" ] || continue
         n=$((n+1)); tag=$(printf 'c%04d' "$n")
@@ -7317,8 +7323,8 @@ awesome_linux_category_level() { # <catalog> <prefix> <title>
             args+=("$tag" "$label ($exact projects)")
         fi
         printf '%s\t%s\t%s\t%s\n' "$tag" "$path" "$exact" "$children" >> "$map"
-    done < "${map}.labels"
-    rm -f "${map}.labels"
+    done < "$labels"
+    rm -f "$labels"
 
     # If the category itself contains entries, expose them separately.
     if [ -n "$prefix" ]; then
@@ -7328,9 +7334,15 @@ awesome_linux_category_level() { # <catalog> <prefix> <title>
     args+=(__back "Back")
 
     while true; do
-        c=$(tui_menu_no_tags "Awesome Linux — $title" "Select a category:" "${args[@]}") || return 0
+        c=$(tui_menu_no_tags "Awesome Linux — $title" "Select a category:" "${args[@]}") || {
+            rm -f "$map" "$labels"
+            return 0
+        }
         case "$c" in
-            __back) return 0 ;;
+            __back)
+                rm -f "$map" "$labels"
+                return 0
+                ;;
             __projects)
                 filtered="${SYSTUI_TMP}/awesome-category-direct.tsv"
                 awk -F '\t' -v p="$prefix" '$2==p' "$catalog" | sort -t $'\t' -k3,3f > "$filtered"
