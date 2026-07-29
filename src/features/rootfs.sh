@@ -1,6 +1,6 @@
 # ROOTFS BUILDER — expanded
 #
-# Distros: Debian/Devuan/Ubuntu (debootstrap), Alpine (apk.static),
+# Distros: Debian/Devuan (debootstrap), Ubuntu (qemu-debootstrap), Alpine (apk.static),
 #          Arch (pacstrap/tarball), Fedora (dnf --installroot + repofrompath),
 #          Void (official ROOTFS tarball).
 # Extras : build presets, foreign-arch builds via qemu-user-static + binfmt,
@@ -597,7 +597,7 @@ rootfs_builder() {
     distro=$(tui_radio "Rootfs Builder 1/12" "Distribution (SPACE to select, ENTER to confirm):" \
         debian "Debian (debootstrap)" on \
         devuan "Devuan (debootstrap, no systemd)" off \
-        ubuntu "Ubuntu (debootstrap)" off \
+        ubuntu "Ubuntu (qemu-debootstrap)" off \
         alpine "Alpine Linux (apk.static)" off \
         arch   "Arch Linux (pacstrap / bootstrap tarball)" off \
         fedora "Fedora (dnf --installroot)" off \
@@ -1089,15 +1089,23 @@ build_debfamily() { # distro release arch mirror target pkgs use_qemu
     local wgetrc="" selected_mirror=""
 
     # Derive foreign/native mode from the actual host and target architectures
-    # at execution time. This prevents a stale or restored use_qemu flag from
-    # adding --foreign to native Ubuntu (or other Debian-family) builds.
+    # at execution time. Ubuntu uses qemu-debootstrap below; this flag controls
+    # the remaining Debian-family builders.
     if needs_qemu "$arch"; then
         use_qemu=1
     else
         use_qemu=0
     fi
-    if ! command -v debootstrap >/dev/null 2>&1; then
-        tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
+    local bootstrap_tool="debootstrap"
+    if [ "$distro" = ubuntu ]; then
+        bootstrap_tool="qemu-debootstrap"
+    fi
+    if ! command -v "$bootstrap_tool" >/dev/null 2>&1; then
+        if [ "$distro" = ubuntu ]; then
+            tui_msg "Missing tool" "qemu-debootstrap is required for Ubuntu rootfs builds.\nInstall qemu-user-static (and binfmt-support where available), then retry."
+        else
+            tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
+        fi
         return 1
     fi
 
@@ -1177,7 +1185,16 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         [ -n "$include" ] && opts+=(--include="$include")
     fi
 
-    if [ "$use_qemu" = 1 ]; then
+    if [ "$distro" = ubuntu ]; then
+        # Ubuntu builds always use qemu-debootstrap. The wrapper manages QEMU,
+        # first/second-stage execution, and the target emulator as needed.
+        # Do not pass --foreign here; qemu-debootstrap controls that internally.
+        rootfs_set_build_stage "$target" bootstrap
+        run_cmd "qemu-debootstrap ubuntu/$release ($arch)" \
+            env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
+            qemu-debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
+        rootfs_set_build_stage "$target" bootstrap-complete
+    elif [ "$use_qemu" = 1 ]; then
         opts+=(--foreign)
         rootfs_set_build_stage "$target" bootstrap-first-stage
         run_cmd "debootstrap --foreign $distro/$release ($arch)" \
