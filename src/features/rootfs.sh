@@ -82,9 +82,9 @@ rootfs_release_candidates() { # <distro> <arch>
         void) printf '%s\n' current; return 0 ;;
     esac
     if command -v curl >/dev/null 2>&1; then
-        html=$(curl -LfsS --connect-timeout 4 --max-time 10 "$url" 2>/dev/null || true)
+        html=$(curl -4 -LfsS --connect-timeout 4 --max-time 10 "$url" 2>/dev/null || true)
     elif command -v wget >/dev/null 2>&1; then
-        html=$(wget -qO- -T 10 "$url" 2>/dev/null || true)
+        html=$(wget -4 -qO- -T 10 "$url" 2>/dev/null || true)
     fi
     names=$(printf '%s' "$html" | sed -nE 's/.*href="([^"/]+)\/?".*/\1/p' | sed 's:/$::' | sort -Vu)
     case "$distro" in
@@ -512,13 +512,13 @@ rootfs_fetch_ubuntu_keyring() {
     [ -r "$existing" ] && { printf '%s\n' "$existing"; return 0; }
     tmp=$(mktemp -d) || return 1
     if command -v apt-get >/dev/null 2>&1; then
-        (cd "$tmp" && apt-get update >/dev/null 2>&1 && apt-get download ubuntu-keyring >/dev/null 2>&1) || true
+        (cd "$tmp" && apt-get -o Acquire::ForceIPv4=true update >/dev/null 2>&1 && apt-get -o Acquire::ForceIPv4=true download ubuntu-keyring >/dev/null 2>&1) || true
     fi
     if ! find "$tmp" -name 'ubuntu-keyring_*.deb' -print -quit | grep -q .; then
-        page=$(curl -LfsS --connect-timeout 5 --max-time 20 \
+        page=$(curl -4 -LfsS --connect-timeout 5 --max-time 20 \
             https://archive.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/ 2>/dev/null || true)
         deb=$(printf '%s' "$page" | grep -Eo 'ubuntu-keyring_[^" ]+_all\.deb' | sort -V | tail -n1)
-        [ -n "$deb" ] && curl -LfsS -o "$tmp/$deb" \
+        [ -n "$deb" ] && curl -4 -LfsS -o "$tmp/$deb" \
             "https://archive.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/$deb" 2>/dev/null || true
     fi
     deb=$(find "$tmp" -name 'ubuntu-keyring_*.deb' -print -quit)
@@ -751,9 +751,9 @@ user creation). Install on the host first if you haven't:
         devuan) def_mirror="http://deb.devuan.org/merged" ;;
         ubuntu)
             if [ "$arch" = "arm64" ] || [ "$arch" = "armhf" ]; then
-                def_mirror="http://ports.ubuntu.com/ubuntu-ports"
+                def_mirror="https://ports.ubuntu.com/ubuntu-ports"
             else
-                def_mirror="http://archive.ubuntu.com/ubuntu"
+                def_mirror="https://archive.ubuntu.com/ubuntu"
             fi ;;
         alpine) def_mirror="http://dl-cdn.alpinelinux.org/alpine" ;;
         arch)   def_mirror="https://geo.mirror.pkgbuild.com" ;;
@@ -1023,12 +1023,90 @@ EOF
 
 # ---- Per-distro bootstrap backends ------------------------------------------
 
+# Test a repository path over IPv4. iSH-AOK environments may expose IPv6
+# DNS records even when no usable IPv6 route exists, producing "No route to host".
+rootfs_probe_deb_mirror() { # mirror release
+    local mirror="${1%/}" release="$2" probe="$mirror/dists/$release/InRelease"
+    if command -v curl >/dev/null 2>&1; then
+        curl -4 -LfsS --connect-timeout 8 --max-time 20 --range 0-1023 "$probe" -o /dev/null 2>>"$LOGFILE"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -4 -q --spider --timeout=20 --tries=1 "$probe" 2>>"$LOGFILE"
+    else
+        return 2
+    fi
+}
+
+# Select a reachable Ubuntu endpoint. The selected architecture determines
+# whether the regular archive or Ubuntu Ports archive is valid.
+rootfs_select_ubuntu_mirror() { # requested arch release
+    local requested="${1%/}" arch="$2" release="$3" candidate
+    local candidates=()
+    [ -n "$requested" ] && candidates+=("$requested")
+    case "$arch" in
+        arm64|armhf)
+            candidates+=(
+                "https://ports.ubuntu.com/ubuntu-ports"
+                "http://ports.ubuntu.com/ubuntu-ports"
+            ) ;;
+        *)
+            candidates+=(
+                "https://archive.ubuntu.com/ubuntu"
+                "https://us.archive.ubuntu.com/ubuntu"
+                "http://archive.ubuntu.com/ubuntu"
+                "http://us.archive.ubuntu.com/ubuntu"
+            ) ;;
+    esac
+    local seen=" "
+    for candidate in "${candidates[@]}"; do
+        candidate=${candidate%/}
+        case "$seen" in *" $candidate "*) continue ;; esac
+        seen+="$candidate "
+        log "rootfs: probing Ubuntu mirror over IPv4: $candidate"
+        if rootfs_probe_deb_mirror "$candidate" "$release"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Create a temporary wget configuration that prevents debootstrap's downloader
+# from choosing an unusable IPv6 route. GNU wget reads this through WGETRC.
+rootfs_ipv4_wgetrc() {
+    local f
+    f=$(mktemp "${TMPDIR:-/tmp}/systui-wgetrc.XXXXXX") || return 1
+    cat >"$f" <<'EOF'
+inet4_only = on
+timeout = 30
+tries = 3
+retry_connrefused = on
+EOF
+    printf '%s\n' "$f"
+}
+
 build_debfamily() { # distro release arch mirror target pkgs use_qemu
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6" use_qemu="$7"
+    local wgetrc="" selected_mirror=""
     if ! command -v debootstrap >/dev/null 2>&1; then
         tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
         return 1
     fi
+
+    if [ "$distro" = ubuntu ]; then
+        selected_mirror=$(rootfs_select_ubuntu_mirror "$mirror" "$arch" "$release" 2>/dev/null || true)
+        if [ -z "$selected_mirror" ]; then
+            tui_msg "Ubuntu mirror unreachable" "No Ubuntu mirror could be reached over IPv4 for $release/$arch.
+
+Check that iSH-AOK has network access and DNS resolution, then retry. The builder tested the selected mirror plus Ubuntu's official fallback endpoints."
+            return 1
+        fi
+        [ "$selected_mirror" = "$mirror" ] || log "rootfs: using reachable Ubuntu fallback mirror $selected_mirror"
+        mirror="$selected_mirror"
+    elif ! rootfs_probe_deb_mirror "$mirror" "$release"; then
+        warn "Repository preflight failed for $mirror; debootstrap will still be attempted."
+    fi
+
+    wgetrc=$(rootfs_ipv4_wgetrc 2>/dev/null || true)
 
     # Use the matching archive keyring when available. This is especially
     # important when building Ubuntu from a Debian/Devuan host.
@@ -1094,26 +1172,38 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         opts+=(--foreign)
         rootfs_set_build_stage "$target" bootstrap-first-stage
         run_cmd "debootstrap --foreign $distro/$release ($arch)" \
-            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
+            env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
+            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
 
         # iSH-AOK may execute supported foreign architectures directly. Try
         # that first; only require qemu-user-static when direct execution fails.
         if chroot "$target" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
             log "debootstrap: second stage completed using native/iSH-AOK execution"
             rootfs_set_build_stage "$target" bootstrap-complete
+            rm -f "$wgetrc"
             return 0
         fi
 
-        setup_qemu_chroot "$target" "$arch" || return 1
+        setup_qemu_chroot "$target" "$arch" || { rm -f "$wgetrc"; return 1; }
         run_cmd "debootstrap second stage ($arch)" \
-            chroot "$target" /debootstrap/debootstrap --second-stage || return 1
+            chroot "$target" /debootstrap/debootstrap --second-stage || { rm -f "$wgetrc"; return 1; }
         rootfs_set_build_stage "$target" bootstrap-complete
     else
         rootfs_set_build_stage "$target" bootstrap
         run_cmd "debootstrap $distro/$release" \
-            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
+            env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
+            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
         rootfs_set_build_stage "$target" bootstrap-complete
     fi
+    if [ "$distro" = ubuntu ]; then
+        mkdir -p "$target/etc/apt/apt.conf.d"
+        cat >"$target/etc/apt/apt.conf.d/99systui-force-ipv4" <<'EOF'
+// iSH-AOK may resolve IPv6 addresses without providing an IPv6 route.
+Acquire::ForceIPv4 "true";
+Acquire::Retries "3";
+EOF
+    fi
+    rm -f "$wgetrc"
     return 0
 }
 
