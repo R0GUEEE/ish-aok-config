@@ -3061,13 +3061,271 @@ menu_shell_plugins() {
     done
 }
 
+# ---- Shell configuration and alias management ------------------------------
+shellcfg_target() {
+    local target
+    target=$(shell_plugin_target) || return 1
+    printf '%s\n' "$target"
+}
+
+shellcfg_file_for() { # shellcfg_file_for <kind> <home>
+    case "$1" in
+        bash)    printf '%s/.bashrc\n' "$2" ;;
+        zsh)     printf '%s/.zshrc\n' "$2" ;;
+        fish)    printf '%s/.config/fish/config.fish\n' "$2" ;;
+        profile) printf '%s/.profile\n' "$2" ;;
+        bash_profile) printf '%s/.bash_profile\n' "$2" ;;
+        zprofile) printf '%s/.zprofile\n' "$2" ;;
+        inputrc) printf '%s/.inputrc\n' "$2" ;;
+    esac
+}
+
+shellcfg_choose_file() { # shellcfg_choose_file <home>
+    local h="$1"
+    tui_menu "Shell config file" "Select a populated configuration target:" \
+        bash ".bashrc — Bash interactive config $( [ -f "$h/.bashrc" ] && echo '[exists]' )" \
+        zsh ".zshrc — Zsh interactive config $( [ -f "$h/.zshrc" ] && echo '[exists]' )" \
+        fish "config.fish — Fish config $( [ -f "$h/.config/fish/config.fish" ] && echo '[exists]' )" \
+        profile ".profile — POSIX login environment $( [ -f "$h/.profile" ] && echo '[exists]' )" \
+        bash_profile ".bash_profile — Bash login config $( [ -f "$h/.bash_profile" ] && echo '[exists]' )" \
+        zprofile ".zprofile — Zsh login config $( [ -f "$h/.zprofile" ] && echo '[exists]' )" \
+        inputrc ".inputrc — Readline key bindings $( [ -f "$h/.inputrc" ] && echo '[exists]' )" \
+        back "Back"
+}
+
+shellcfg_backup() { # file user
+    local f="$1" u="$2" stamp backup
+    [ -f "$f" ] || { tui_msg "Backup" "Nothing to back up: $f"; return 0; }
+    stamp=$(date +%Y%m%d-%H%M%S)
+    backup="$f.systui-$stamp.bak"
+    cp -a "$f" "$backup" && chown "$u" "$backup" 2>/dev/null || true
+    tui_msg "Backup created" "$backup"
+}
+
+shellcfg_validate() { # kind file
+    local k="$1" f="$2" out rc=0
+    [ -f "$f" ] || { tui_msg "Validation" "$f does not exist."; return 0; }
+    out=$(mktemp)
+    case "$k" in
+        bash|profile|bash_profile) bash -n "$f" >"$out" 2>&1 || rc=$? ;;
+        zsh|zprofile) if command -v zsh >/dev/null 2>&1; then zsh -n "$f" >"$out" 2>&1 || rc=$?; else printf 'zsh is not installed; syntax check unavailable.\n' >"$out"; rc=2; fi ;;
+        fish) if command -v fish >/dev/null 2>&1; then fish -n "$f" >"$out" 2>&1 || rc=$?; else printf 'fish is not installed; syntax check unavailable.\n' >"$out"; rc=2; fi ;;
+        inputrc) printf 'Readline files do not provide a standalone syntax checker.\n' >"$out" ;;
+    esac
+    if [ "$rc" -eq 0 ]; then tui_msg "Validation passed" "$f contains no detected syntax errors."
+    else tui_text "Validation result — $f" "$out"; fi
+    rm -f "$out"
+}
+
+shellcfg_write_managed() { # kind file user selections editor pager hist_size
+    local k="$1" f="$2" u="$3" selections="$4" editor="$5" pager="$6" hsize="$7" tmp
+    mkdir -p "$(dirname "$f")"; touch "$f"
+    tmp=$(mktemp)
+    awk '/^# >>> systui shell settings >>>$/{skip=1;next}/^# <<< systui shell settings <<<$/{skip=0;next}!skip{print}' "$f" > "$tmp"
+    {
+        cat "$tmp"
+        printf '\n# >>> systui shell settings >>>\n'
+        case "$k" in
+            fish)
+                case " $selections " in *" history "*) printf 'set -gx fish_history default\n' ;; esac
+                case " $selections " in *" editor "*) printf 'set -gx EDITOR %s\nset -gx VISUAL %s\n' "$editor" "$editor" ;; esac
+                case " $selections " in *" pager "*) printf 'set -gx PAGER %s\n' "$pager" ;; esac
+                case " $selections " in *" color "*) printf 'set -gx CLICOLOR 1\n' ;; esac
+                case " $selections " in *" vi "*) printf 'fish_vi_key_bindings\n' ;; esac
+                case " $selections " in *" autocd "*) printf '# Fish changes to a directory when its path is entered.\n' ;; esac
+                ;;
+            inputrc)
+                case " $selections " in *" completion "*) printf 'set completion-ignore-case on\nset show-all-if-ambiguous on\n' ;; esac
+                case " $selections " in *" vi "*) printf 'set editing-mode vi\n' ;; esac
+                case " $selections " in *" color "*) printf 'set colored-stats on\nset visible-stats on\n' ;; esac
+                ;;
+            *)
+                case " $selections " in *" history "*) printf 'export HISTSIZE=%s\nexport HISTFILESIZE=%s\n' "$hsize" "$((hsize * 2))"; [ "$k" = zsh ] && printf 'setopt APPEND_HISTORY SHARE_HISTORY HIST_IGNORE_DUPS\n' || printf 'export HISTCONTROL=ignoreboth:erasedups\nshopt -s histappend 2>/dev/null || true\n' ;; esac
+                case " $selections " in *" editor "*) printf 'export EDITOR=%q\nexport VISUAL=%q\n' "$editor" "$editor" ;; esac
+                case " $selections " in *" pager "*) printf 'export PAGER=%q\n' "$pager" ;; esac
+                case " $selections " in *" color "*) printf 'export CLICOLOR=1\nexport LS_COLORS="${LS_COLORS:-}"\n' ;; esac
+                case " $selections " in *" completion "*) [ "$k" = zsh ] && printf 'autoload -Uz compinit && compinit\n' || printf '[[ $- == *i* ]] && [ -r /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion\n' ;; esac
+                case " $selections " in *" autocd "*) [ "$k" = zsh ] && printf 'setopt AUTO_CD\n' || printf 'shopt -s autocd 2>/dev/null || true\n' ;; esac
+                case " $selections " in *" glob "*) [ "$k" = zsh ] && printf 'setopt EXTENDED_GLOB GLOB_DOTS\n' || printf 'shopt -s globstar dotglob 2>/dev/null || true\n' ;; esac
+                case " $selections " in *" correction "*) [ "$k" = zsh ] && printf 'setopt CORRECT\n' ;; esac
+                case " $selections " in *" vi "*) [ "$k" = zsh ] && printf 'bindkey -v\n' || printf 'set -o vi\n' ;; esac
+                ;;
+        esac
+        printf '# <<< systui shell settings <<<\n'
+    } > "$f"
+    rm -f "$tmp"
+    chown "$u" "$f" 2>/dev/null || true
+}
+
+shellcfg_populated_entries() { # kind file user
+    local k="$1" f="$2" u="$3" selected editor pager hsize
+    selected=$(tui_check "Shell settings" "SPACE selects entries to automatically populate in $(basename "$f"):" \
+        history "Persistent history, duplicate filtering and append mode" on \
+        editor "EDITOR and VISUAL environment variables" on \
+        pager "Default PAGER" off \
+        color "Color-aware command environment" on \
+        completion "Programmable/tab completion initialization" on \
+        autocd "Change directory by entering a directory path" off \
+        glob "Recursive and hidden-file globbing" off \
+        correction "Command spelling correction (Zsh)" off \
+        vi "Vi editing/key-binding mode" off) || return 0
+    selected=${selected//\"/}
+    editor=$(tui_input "Default editor" "Command for EDITOR and VISUAL:" "${EDITOR:-nano}") || return 0
+    pager=$(tui_input "Default pager" "Command for PAGER:" "less") || return 0
+    hsize=$(tui_input "History size" "Number of commands retained:" "10000") || return 0
+    [[ "$hsize" =~ ^[0-9]+$ ]] || hsize=10000
+    shellcfg_backup "$f" "$u"
+    shellcfg_write_managed "$k" "$f" "$u" "$selected" "$editor" "$pager" "$hsize"
+    shellcfg_validate "$k" "$f"
+}
+
+menu_shell_config() {
+    local target u home_dir k f c line
+    target=$(shellcfg_target) || return 0; u=${target%%|*}; home_dir=${target#*|}
+    while true; do
+        k=$(shellcfg_choose_file "$home_dir") || return 0
+        [ "$k" = back ] || [ -z "$k" ] && return 0
+        f=$(shellcfg_file_for "$k" "$home_dir")
+        while true; do
+            c=$(tui_menu "Shell config — $(basename "$f")" "User: $u\nFile: $f" \
+                populate "Populate common configuration entries" \
+                add "Add a custom configuration line" \
+                edit "Open in editor" \
+                view "View current configuration" \
+                validate "Validate syntax" \
+                backup "Create timestamped backup" \
+                reset "Remove only the systui-managed settings block" \
+                file "Select another config file" user "Change target user" back "Back") || return 0
+            case "$c" in
+                populate) shellcfg_populated_entries "$k" "$f" "$u" ;;
+                add) line=$(tui_input "Add entry" "Enter the exact configuration line:" "") || continue; [ -n "$line" ] && plugin_add_line "$f" "$line" "$u" ;;
+                edit) mkdir -p "$(dirname "$f")"; touch "$f"; chown "$u" "$f" 2>/dev/null || true; "${EDITOR:-nano}" "$f" || true ;;
+                view) [ -f "$f" ] && tui_text "$f" "$f" || tui_msg "Shell config" "$f does not exist yet." ;;
+                validate) shellcfg_validate "$k" "$f" ;;
+                backup) shellcfg_backup "$f" "$u" ;;
+                reset) [ -f "$f" ] && sed -i '/^# >>> systui shell settings >>>$/,/^# <<< systui shell settings <<<$/{d}' "$f"; tui_msg "Done" "Removed the systui-managed settings block." ;;
+                file) break ;;
+                user) target=$(shellcfg_target) || continue; u=${target%%|*}; home_dir=${target#*|}; break ;;
+                back|"") return 0 ;;
+            esac
+        done
+    done
+}
+
+alias_file_for() { printf '%s/.config/systui/aliases.sh\n' "$1"; }
+
+aliases_enable() { # user home
+    local u="$1" h="$2" af rc
+    af=$(alias_file_for "$h")
+    mkdir -p "$(dirname "$af")"; touch "$af"; chown -R "$u" "$h/.config/systui" 2>/dev/null || true
+    for rc in "$h/.bashrc" "$h/.zshrc" "$h/.profile"; do
+        plugin_add_line "$rc" '[ -r "$HOME/.config/systui/aliases.sh" ] && . "$HOME/.config/systui/aliases.sh"' "$u"
+    done
+    mkdir -p "$h/.config/fish"; touch "$h/.config/fish/config.fish"
+    plugin_add_line "$h/.config/fish/config.fish" 'test -r "$HOME/.config/systui/aliases.fish"; and source "$HOME/.config/systui/aliases.fish"' "$u"
+}
+
+alias_valid_name() { [[ "$1" =~ ^[A-Za-z_.][A-Za-z0-9_.-]*$ ]]; }
+
+alias_set() { # file name command user
+    local f="$1" n="$2" cmd="$3" u="$4" tmp escaped
+    alias_valid_name "$n" || { tui_msg "Invalid alias" "Use letters, digits, underscore, dot or hyphen; do not begin with a digit."; return 1; }
+    mkdir -p "$(dirname "$f")"; touch "$f"; tmp=$(mktemp)
+    awk -v p="alias ${n}=" 'index($0,p)!=1{print}' "$f" > "$tmp" 2>/dev/null || true
+    escaped=${cmd//\'/\'\\\'\'}
+    printf "alias %s='%s'\n" "$n" "$escaped" >> "$tmp"
+    mv "$tmp" "$f"; chown "$u" "$f" 2>/dev/null || true
+}
+
+alias_remove() { # file name
+    local f="$1" n="$2" tmp
+    [ -f "$f" ] || return 0; tmp=$(mktemp)
+    awk -v p="alias ${n}=" 'index($0,p)!=1{print}' "$f" > "$tmp" || true
+    cat "$tmp" > "$f"; rm -f "$tmp"
+}
+
+aliases_write_fish() { # shell aliases file -> fish aliases file user
+    local sf="$1" ff="$2" u="$3"
+    mkdir -p "$(dirname "$ff")"
+    awk '
+      /^alias [A-Za-z_][A-Za-z0-9_.-]*=/{
+        line=$0; sub(/^alias /,"",line); name=line; sub(/=.*/,"",name);
+        cmd=line; sub(/^[^=]*=/,"",cmd); gsub(/^\047|\047$/,"",cmd);
+        gsub(/\047\\\047\047/,"\047",cmd);
+        printf "alias %s %c%s%c\n", name, 39, cmd, 39
+      }' "$sf" > "$ff"
+    chown "$u" "$ff" 2>/dev/null || true
+}
+
+aliases_presets() { # file user
+    local f="$1" u="$2" s item
+    s=$(tui_check "Alias catalog" "SPACE selects aliases to install:" \
+        ll "ll = ls -alF" on la "la = ls -A" off l "l = ls -CF" off \
+        dotdot ".. = cd .." on dotdot2 "... = cd ../.." off \
+        grep "grep = grep --color=auto" on dfh "dfh = df -h" off duh "duh = du -h" off \
+        ports "ports = ss -tulpn" off myip "myip = hostname -I" off \
+        update "update = distribution package update" off cls "cls = clear" off \
+        mkdirp "mkdirp = mkdir -p" off path "path = print PATH one entry per line" off) || return 0
+    s=${s//\"/}
+    for item in $s; do
+        case "$item" in
+            ll) alias_set "$f" ll 'ls -alF' "$u";; la) alias_set "$f" la 'ls -A' "$u";; l) alias_set "$f" l 'ls -CF' "$u";;
+            dotdot) alias_set "$f" .. 'cd ..' "$u";; dotdot2) alias_set "$f" ... 'cd ../..' "$u";;
+            grep) alias_set "$f" grep 'grep --color=auto' "$u";; dfh) alias_set "$f" dfh 'df -h' "$u";; duh) alias_set "$f" duh 'du -h' "$u";;
+            ports) alias_set "$f" ports 'ss -tulpn' "$u";; myip) alias_set "$f" myip 'hostname -I' "$u";; cls) alias_set "$f" cls 'clear' "$u";;
+            mkdirp) alias_set "$f" mkdirp 'mkdir -p' "$u";; path) alias_set "$f" path 'printf "%s\\n" "${PATH//:/\\n}"' "$u";;
+            update) case "$PM" in apt) alias_set "$f" update 'sudo apt update && sudo apt upgrade' "$u";; apk) alias_set "$f" update 'sudo apk update && sudo apk upgrade' "$u";; pacman) alias_set "$f" update 'sudo pacman -Syu' "$u";; dnf) alias_set "$f" update 'sudo dnf upgrade' "$u";; esac;;
+        esac
+    done
+}
+
+menu_aliases() {
+    local target u home_dir f ff c n cmd src
+    target=$(shellcfg_target) || return 0; u=${target%%|*}; home_dir=${target#*|}; f=$(alias_file_for "$home_dir"); ff="$home_dir/.config/systui/aliases.fish"
+    aliases_enable "$u" "$home_dir"
+    while true; do
+        c=$(tui_menu "Alias manager" "User: $u\nAliases: $f" \
+            presets "Install aliases from populated catalog" add "Add or replace an alias" remove "Remove an alias" \
+            list "List managed aliases" edit "Edit aliases file directly" import "Import aliases from another file" \
+            sync "Regenerate Fish-compatible aliases" enable "Enable alias file in shell configs" validate "Validate alias syntax" \
+            user "Change target user" back "Back") || return 0
+        case "$c" in
+            presets) aliases_presets "$f" "$u"; aliases_write_fish "$f" "$ff" "$u" ;;
+            add) n=$(tui_input "Alias name" "Name:" "ll") || continue; cmd=$(tui_input "Alias command" "Command executed by '$n':" "ls -alF") || continue; alias_set "$f" "$n" "$cmd" "$u" && aliases_write_fish "$f" "$ff" "$u" ;;
+            remove) n=$(tui_input "Remove alias" "Alias name to remove:" "") || continue; [ -n "$n" ] && alias_remove "$f" "$n"; aliases_write_fish "$f" "$ff" "$u" ;;
+            list) [ -s "$f" ] && tui_text "Managed aliases — $u" "$f" || tui_msg "Alias manager" "No managed aliases are defined." ;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true; chown "$u" "$f" 2>/dev/null || true; aliases_write_fish "$f" "$ff" "$u" ;;
+            import) src=$(tui_input "Import aliases" "Path to a shell file containing alias lines:" "$home_dir/.bash_aliases") || continue; if [ -f "$src" ]; then grep '^alias [A-Za-z_.][A-Za-z0-9_.-]*=' "$src" >> "$f" || true; awk '!seen[$0]++' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; chown "$u" "$f" 2>/dev/null || true; aliases_write_fish "$f" "$ff" "$u"; else tui_msg "Import failed" "$src was not found."; fi ;;
+            sync) aliases_write_fish "$f" "$ff" "$u"; tui_msg "Done" "Fish aliases regenerated at $ff" ;;
+            enable) aliases_enable "$u" "$home_dir"; tui_msg "Done" "Managed aliases are sourced by Bash, Zsh, POSIX profile and Fish." ;;
+            validate) if bash -n "$f" >/tmp/systui-alias-check 2>&1; then tui_msg "Validation passed" "$f contains no Bash syntax errors."; else tui_text "Alias validation" /tmp/systui-alias-check; fi; rm -f /tmp/systui-alias-check ;;
+            user) target=$(shellcfg_target) || continue; u=${target%%|*}; home_dir=${target#*|}; f=$(alias_file_for "$home_dir"); ff="$home_dir/.config/systui/aliases.fish"; aliases_enable "$u" "$home_dir" ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
 menu_shells() {
     while true; do
         local c
-        c=$(tui_menu "Shells & Plugins" "Shell environment:" managers "Managers (install, remove and configure each shell)" plugins "Plugins (Starship, fzf, completions and more)" history "History settings" readline "Readline/inputrc tuning" bashopts "Bash options" aliases "Common aliases" default "Set default shell" advanced "Advanced shell settings" back "Back") || return 0
+        c=$(tui_menu "Shells & Plugins" "Shell environment:" \
+            managers "Managers (install, remove and configure each shell)" \
+            config "Shell config files (.bashrc, .zshrc, config.fish and profiles)" \
+            aliases "Alias manager (catalog, custom aliases, import and validation)" \
+            plugins "Plugins (Starship, fzf, completions and more)" \
+            history "History settings" readline "Readline/inputrc tuning" bashopts "Bash options" \
+            default "Set default shell" advanced "Advanced shell settings" back "Back") || return 0
         case "$c" in
-            managers) menu_shell_hierarchy;; plugins) menu_shell_plugins;; history) tui_msg "History" "Configure history in per-user shell rc files.";; readline) "${EDITOR:-nano}" /etc/inputrc || true;; bashopts) tui_msg "Bash options" "Configure through ~/.bashrc.";; aliases) printf '%s
-' "alias ll='ls -alF'" "alias ..='cd ..'" > /etc/profile.d/99-systui-aliases.sh; tui_msg "Done" "Aliases installed.";; default) local u sh; u=$(tui_input "User" "Username:" "${SUDO_USER:-root}") || continue; sh=$(tui_radio "Default shell" "SPACE selects:" bash "Bash" on zsh "Zsh" off fish "Fish" off) || continue; chsh -s "$(command -v "$sh")" "$u";; advanced) tui_msg "Advanced" "Edit /etc/profile, /etc/profile.d and per-user rc files.";; back|"") return 0;;
+            managers) menu_shell_hierarchy ;;
+            config) menu_shell_config ;;
+            aliases) menu_aliases ;;
+            plugins) menu_shell_plugins ;;
+            history) tui_msg "History" "Use Shell config files → Populate common configuration entries to manage persistent history." ;;
+            readline) "${EDITOR:-nano}" /etc/inputrc || true ;;
+            bashopts) menu_shell_config ;;
+            default) local u sh; u=$(tui_input "User" "Username:" "${SUDO_USER:-root}") || continue; sh=$(tui_radio "Default shell" "SPACE selects:" bash "Bash" on zsh "Zsh" off fish "Fish" off) || continue; chsh -s "$(command -v "$sh")" "$u" ;;
+            advanced) menu_shells_advanced ;;
+            back|"") return 0 ;;
         esac
     done
 }

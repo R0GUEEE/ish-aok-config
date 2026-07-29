@@ -580,3 +580,11 @@ The updater fetches the current branch from `origin`, backs up and stashes local
 ## RootFS additional package catalogue
 
 The RootFS Builder now opens a categorized package catalogue after preset selection. It supports space-to-select package lists, reusable rescue/developer/server/network/container/diagnostic presets, catalogue search, manual native package names, selection review, and de-duplication. Canonical package names are translated through the existing Alpine, Arch, Fedora, and Void package maps where available.
+
+### Shell configuration and aliases
+
+`System Configuration → Shells` includes:
+
+- **Shell config files** — automatically populated targets for `.bashrc`, `.zshrc`, Fish `config.fish`, `.profile`, `.bash_profile`, `.zprofile`, and `.inputrc`. Common settings can be selected with SPACE and written into a removable systui-managed block. The tool also supports custom entries, backups, direct editing, viewing, and syntax validation.
+- **Alias manager** — installs aliases from a catalog, adds or replaces custom aliases, removes aliases, imports existing alias definitions, validates syntax, and generates Fish-compatible aliases. Managed aliases are stored under `~/.config/systui/` and sourced from supported shell files.
+
