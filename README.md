@@ -489,6 +489,17 @@ Kernel-dependent features are skipped safely when unavailable.
 
 ## Expanded rootfs and package management
 
+- Guided backend selection with Automatic or explicit choices: mmdebstrap,
+  debootstrap, cdebootstrap, qemu-debootstrap, and multistrap for Debian-family
+  roots; pacstrap or the official bootstrap tarball for Arch; and the native
+  APK, DNF, Zypper, stage3, or Void tarball backend for other distributions.
+- Backend-specific configuration menus cover variants/flavours, components,
+  bootstrap include/exclude lists, keyrings, merged `/usr`, execution modes,
+  documentation/locale pruning, cdebootstrap configuration directories and
+  authentication, and generated or custom multistrap configurations.
+- Backend settings are persisted in `.systui-backend.conf` inside the build so
+  interrupted rootfs generation resumes with the same tool configuration. They
+  can be edited later through Rootfs → Manage → Configure bootstrap backend.
 - Repository-backed, SPACE-selectable release discovery with offline fallbacks.
 - Expanded minimal, workstation, development, server, web, and security presets.
 - Profile-based custom package installation and additional individual packages.
@@ -498,7 +509,8 @@ Kernel-dependent features are skipped safely when unavailable.
 - System Configuration → Packages begins with Package Managers, followed by Repositories and Catalogue.
 - Package-manager configuration covers APT, apt-fast, Nala, pip, pipx, Flatpak, Snap, Cargo, npm, pnpm, and Yarn.
 - Additional iSH-AOK, memory, writeback, tmpfs, and DNS-cache performance controls.
-- `install.sh` installs rootfs-building, archive, keyring, QEMU, and scripting prerequisites where packaged.
+- Rootfs backend prerequisites remain optional and are checked only after a
+  backend is selected; the minimal `install.sh` does not install them.
 - Menu cancellation paths return to their parent menu instead of propagating a fatal status.
 
 ## Additional rootfs distributions

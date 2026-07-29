@@ -1,6 +1,7 @@
 # ROOTFS BUILDER — expanded
 #
-# Distros: Debian/Devuan/Ubuntu (debootstrap), Alpine (apk.static),
+# Distros: Debian/Devuan/Ubuntu/Kali (mmdebstrap, debootstrap, cdebootstrap,
+#          qemu-debootstrap, or multistrap), Alpine (apk.static),
 #          Arch (pacstrap/tarball), Fedora (dnf --installroot + repofrompath),
 #          Void (official ROOTFS tarball).
 # Extras : build presets, foreign-arch builds via qemu-user-static + binfmt,
@@ -10,6 +11,353 @@
 ###############################################################################
 
 ROOTFS_BASE="/opt/rootfs"
+
+rootfs_fetch_text() { # <url>
+    if command -v curl >/dev/null 2>&1; then
+        curl -4 -LfsS --connect-timeout 10 --max-time 120 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -4 -qO- -T 120 "$1"
+    else
+        return 127
+    fi
+}
+
+rootfs_fetch_file() { # <url> <destination>
+    if command -v curl >/dev/null 2>&1; then
+        curl -4 -fL --retry 3 --connect-timeout 10 --max-time 600 -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -4 -q -T 600 -O "$2" "$1"
+    else
+        return 127
+    fi
+}
+
+rootfs_backend_available() { # <backend>
+    case "$1" in
+        mmdebstrap|debootstrap|cdebootstrap|multistrap|pacstrap|dnf|zypper)
+            command -v "$1" >/dev/null 2>&1
+            ;;
+        qemu-debootstrap)
+            command -v qemu-debootstrap >/dev/null 2>&1 &&
+                command -v debootstrap >/dev/null 2>&1
+            ;;
+        apk-static)
+            command -v tar >/dev/null 2>&1 &&
+                command -v gzip >/dev/null 2>&1 &&
+                { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }
+            ;;
+        arch-bootstrap)
+            command -v tar >/dev/null 2>&1 && command -v zstd >/dev/null 2>&1 &&
+                { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }
+            ;;
+        gentoo-stage3|void-tarball)
+            command -v tar >/dev/null 2>&1 && command -v xz >/dev/null 2>&1 &&
+                { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+rootfs_backend_status() { # <backend>
+    rootfs_backend_available "$1" && printf 'available\n' || printf 'missing prerequisites\n'
+}
+
+rootfs_resolve_backend() { # <distro> <selected>
+    local distro="$1" selected="${2:-auto}"
+    [ "$selected" = auto ] || { printf '%s\n' "$selected"; return 0; }
+    case "$distro" in
+        debian|devuan|ubuntu|kali)
+            if rootfs_backend_available mmdebstrap; then printf 'mmdebstrap\n'
+            elif rootfs_backend_available debootstrap; then printf 'debootstrap\n'
+            elif rootfs_backend_available cdebootstrap; then printf 'cdebootstrap\n'
+            elif rootfs_backend_available multistrap; then printf 'multistrap\n'
+            else return 1; fi
+            ;;
+        alpine) printf 'apk-static\n' ;;
+        arch)
+            if rootfs_backend_available pacstrap; then printf 'pacstrap\n'
+            else printf 'arch-bootstrap\n'; fi
+            ;;
+        fedora) printf 'dnf\n' ;;
+        opensuse|tumbleweed) printf 'zypper\n' ;;
+        gentoo) printf 'gentoo-stage3\n' ;;
+        void) printf 'void-tarball\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+rootfs_backend_menu() { # <distro>
+    local distro="$1" selected
+    case "$distro" in
+        debian|devuan|ubuntu|kali)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — mmdebstrap, debootstrap, cdebootstrap, then multistrap" on \
+                mmdebstrap "mmdebstrap — modern APT bootstrap ($(rootfs_backend_status mmdebstrap))" off \
+                debootstrap "debootstrap — classic two-stage bootstrap ($(rootfs_backend_status debootstrap))" off \
+                cdebootstrap "cdebootstrap — compiled minimal bootstrap ($(rootfs_backend_status cdebootstrap))" off \
+                qemu-debootstrap "qemu-debootstrap — foreign-architecture wrapper ($(rootfs_backend_status qemu-debootstrap))" off \
+                multistrap "multistrap — configuration-driven APT bootstrap ($(rootfs_backend_status multistrap))" off) || return 1
+            ;;
+        arch)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — prefer pacstrap, then official bootstrap tarball" on \
+                pacstrap "pacstrap — arch-install-scripts ($(rootfs_backend_status pacstrap))" off \
+                arch-bootstrap "Official Arch bootstrap tarball ($(rootfs_backend_status arch-bootstrap))" off) || return 1
+            ;;
+        alpine)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — apk.static" on \
+                apk-static "Downloaded apk.static ($(rootfs_backend_status apk-static))" off) || return 1
+            ;;
+        fedora)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — DNF installroot" on \
+                dnf "dnf --installroot ($(rootfs_backend_status dnf))" off) || return 1
+            ;;
+        opensuse|tumbleweed)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — Zypper root mode" on \
+                zypper "zypper --root ($(rootfs_backend_status zypper))" off) || return 1
+            ;;
+        gentoo)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — official stage3 tarball" on \
+                gentoo-stage3 "Official Gentoo stage3 ($(rootfs_backend_status gentoo-stage3))" off) || return 1
+            ;;
+        void)
+            selected=$(tui_radio "Rootfs Builder 2/13" "Bootstrap backend (SPACE selects):" \
+                auto "Automatic — official ROOTFS tarball" on \
+                void-tarball "Official Void ROOTFS tarball ($(rootfs_backend_status void-tarball))" off) || return 1
+            ;;
+    esac
+    rootfs_resolve_backend "$distro" "$selected"
+}
+
+# Debian-family backend configuration is kept separate from the general build
+# state so interrupted builds can be resumed with the exact same tool options.
+rootfs_backend_config_defaults() { # <distro> <backend>
+    local distro="$1" backend="$2"
+    ROOTFS_BACKEND_VARIANT=minbase
+    ROOTFS_BACKEND_COMPONENTS=main
+    [ "$distro" = ubuntu ] && ROOTFS_BACKEND_COMPONENTS="main,universe"
+    ROOTFS_BACKEND_INCLUDE=""
+    ROOTFS_BACKEND_EXCLUDE=""
+    ROOTFS_BACKEND_KEYRING_MODE=auto
+    ROOTFS_BACKEND_KEYRING_PATH=""
+    ROOTFS_BACKEND_MERGED=auto
+    ROOTFS_BACKEND_VERBOSE=no
+    ROOTFS_MMDEBSTRAP_MODE=root
+    ROOTFS_MMDEBSTRAP_PRUNE=no
+    ROOTFS_CDEBOOTSTRAP_CONFIGDIR=""
+    ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH=no
+    ROOTFS_MULTISTRAP_CLEANUP=yes
+    ROOTFS_MULTISTRAP_IMPORTANT=no
+    ROOTFS_MULTISTRAP_MARKAUTO=yes
+    ROOTFS_MULTISTRAP_KEYRING_PACKAGE=""
+    ROOTFS_MULTISTRAP_CONFIG=""
+    case "$backend" in
+        cdebootstrap) ROOTFS_BACKEND_VARIANT=minimal ;;
+        multistrap) ROOTFS_BACKEND_VARIANT=required ;;
+    esac
+}
+
+rootfs_backend_valid_components() {
+    [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9+.-]+([,[:space:]]+[A-Za-z0-9+.-]+)*$'
+}
+
+rootfs_backend_edit_packages() { # <title> <current>; prints sanitized list
+    local value
+    value=$(tui_input "$1" "Space-separated native package names (blank for none):" "$2") || return 1
+    rootfs_sanitize_packages "$value"
+}
+
+rootfs_backend_keyring_menu() {
+    local mode path
+    mode=$(tui_radio "Repository verification" "Archive signing keyring:" \
+        auto "Automatically select the distribution keyring" $([ "$ROOTFS_BACKEND_KEYRING_MODE" = auto ] && echo on || echo off) \
+        custom "Use a custom keyring file" $([ "$ROOTFS_BACKEND_KEYRING_MODE" = custom ] && echo on || echo off)) || return 0
+    if [ "$mode" = custom ]; then
+        path=$(tui_input "Custom keyring" "Absolute path to a readable keyring file:" "$ROOTFS_BACKEND_KEYRING_PATH") || return 0
+        case "$path" in /*) ;; *) tui_msg "Invalid keyring" "The keyring path must be absolute."; return 0;; esac
+        [ -r "$path" ] || { tui_msg "Invalid keyring" "The selected keyring is not readable:\n$path"; return 0; }
+        ROOTFS_BACKEND_KEYRING_PATH="$path"
+    fi
+    ROOTFS_BACKEND_KEYRING_MODE="$mode"
+}
+
+rootfs_backend_config_menu() { # <distro> <backend> [preserve]
+    local distro="$1" backend="$2" c value
+    [ "${3:-reset}" = preserve ] || rootfs_backend_config_defaults "$distro" "$backend"
+    while true; do
+        case "$backend" in
+            debootstrap|qemu-debootstrap)
+                c=$(tui_menu "$backend configuration" "Configure the selected bootstrap tool:" \
+                    variant "Variant: $ROOTFS_BACKEND_VARIANT" \
+                    components "Archive components: $ROOTFS_BACKEND_COMPONENTS" \
+                    include "Bootstrap include: ${ROOTFS_BACKEND_INCLUDE:-none}" \
+                    exclude "Bootstrap exclude: ${ROOTFS_BACKEND_EXCLUDE:-none}" \
+                    merged "Merged /usr: $ROOTFS_BACKEND_MERGED" \
+                    keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
+                    verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
+                    done "Use these settings") || return 1
+                case "$c" in
+                    variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "debootstrap variant" "Base package set:" minbase "Required packages plus apt" on buildd "Build environment" off default "Required and important packages" off) || true ;;
+                    components) value=$(tui_input "Archive components" "Comma-separated components:" "$ROOTFS_BACKEND_COMPONENTS") || continue; rootfs_backend_valid_components "$value" && ROOTFS_BACKEND_COMPONENTS="${value// /,}" || tui_msg "Invalid components" "Use names separated by commas, such as main,contrib,non-free." ;;
+                    include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
+                    exclude) value=$(rootfs_backend_edit_packages "Bootstrap exclude" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
+                    merged) ROOTFS_BACKEND_MERGED=$(tui_radio "Merged /usr" "Control /bin, /sbin and /lib symlinks:" auto "Tool/release default" on yes "Force merged /usr" off no "Force split /usr" off) || true ;;
+                    keyring) rootfs_backend_keyring_menu ;;
+                    verbose) [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && ROOTFS_BACKEND_VERBOSE=no || ROOTFS_BACKEND_VERBOSE=yes ;;
+                    done) return 0 ;;
+                esac ;;
+            mmdebstrap)
+                c=$(tui_menu "mmdebstrap configuration" "Configure mmdebstrap:" \
+                    variant "Variant: $ROOTFS_BACKEND_VARIANT" \
+                    mode "Execution mode: $ROOTFS_MMDEBSTRAP_MODE" \
+                    components "Archive components: $ROOTFS_BACKEND_COMPONENTS" \
+                    include "Bootstrap include: ${ROOTFS_BACKEND_INCLUDE:-none}" \
+                    exclude "APT remove patterns: ${ROOTFS_BACKEND_EXCLUDE:-none}" \
+                    keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
+                    prune "Exclude docs/locales: $ROOTFS_MMDEBSTRAP_PRUNE" \
+                    verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
+                    done "Use these settings") || return 1
+                case "$c" in
+                    variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "mmdebstrap variant" "Base package set:" minbase "Minimal debootstrap-compatible root" on apt "Essential packages plus apt" off required "Required priority" off important "Required and important priority" off standard "Standard system" off buildd "Build environment" off) || true ;;
+                    mode) ROOTFS_MMDEBSTRAP_MODE=$(tui_radio "mmdebstrap mode" "Filesystem ownership/execution mode:" root "Run directly as root" on auto "Let mmdebstrap choose" off unshare "User namespace mode" off) || true ;;
+                    components) value=$(tui_input "Archive components" "Comma-separated components:" "$ROOTFS_BACKEND_COMPONENTS") || continue; rootfs_backend_valid_components "$value" && ROOTFS_BACKEND_COMPONENTS="${value// /,}" || tui_msg "Invalid components" "Use names separated by commas." ;;
+                    include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
+                    exclude) value=$(rootfs_backend_edit_packages "APT remove patterns" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
+                    keyring) rootfs_backend_keyring_menu ;;
+                    prune) [ "$ROOTFS_MMDEBSTRAP_PRUNE" = yes ] && ROOTFS_MMDEBSTRAP_PRUNE=no || ROOTFS_MMDEBSTRAP_PRUNE=yes ;;
+                    verbose) [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && ROOTFS_BACKEND_VERBOSE=no || ROOTFS_BACKEND_VERBOSE=yes ;;
+                    done) return 0 ;;
+                esac ;;
+            cdebootstrap)
+                c=$(tui_menu "cdebootstrap configuration" "Configure cdebootstrap:" \
+                    flavour "Flavour: $ROOTFS_BACKEND_VARIANT" \
+                    include "Bootstrap include: ${ROOTFS_BACKEND_INCLUDE:-none}" \
+                    exclude "Bootstrap exclude: ${ROOTFS_BACKEND_EXCLUDE:-none}" \
+                    configdir "Configuration directory: ${ROOTFS_CDEBOOTSTRAP_CONFIGDIR:-system default}" \
+                    keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
+                    unauth "Allow unauthenticated: $ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" \
+                    verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
+                    done "Use these settings") || return 1
+                case "$c" in
+                    flavour) ROOTFS_BACKEND_VARIANT=$(tui_radio "cdebootstrap flavour" "Base package set:" minimal "Essential packages plus apt" on standard "Required and important packages" off build "Build environment" off) || true ;;
+                    include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
+                    exclude) value=$(rootfs_backend_edit_packages "Bootstrap exclude" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
+                    configdir) value=$(tui_input "cdebootstrap config" "Optional absolute configuration directory (blank for system default):" "$ROOTFS_CDEBOOTSTRAP_CONFIGDIR") || continue; if [ -z "$value" ]; then ROOTFS_CDEBOOTSTRAP_CONFIGDIR=""; elif [ "${value#/}" != "$value" ] && [ -d "$value" ]; then ROOTFS_CDEBOOTSTRAP_CONFIGDIR="$value"; else tui_msg "Invalid directory" "Select an existing absolute directory or leave blank."; fi ;;
+                    keyring) rootfs_backend_keyring_menu ;;
+                    unauth) if [ "$ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" = yes ]; then ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH=no; elif tui_yesno "Unsafe repository mode" "Disable package authentication? This permits unverified packages and is not recommended."; then ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH=yes; fi ;;
+                    verbose) [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && ROOTFS_BACKEND_VERBOSE=no || ROOTFS_BACKEND_VERBOSE=yes ;;
+                    done) return 0 ;;
+                esac ;;
+            multistrap)
+                c=$(tui_menu "multistrap configuration" "Configure the generated multistrap file:" \
+                    include "Repository packages: ${ROOTFS_BACKEND_INCLUDE:-required set only}" \
+                    cleanup "Clean downloaded package data: $ROOTFS_MULTISTRAP_CLEANUP" \
+                    important "Add Priority important packages: $ROOTFS_MULTISTRAP_IMPORTANT" \
+                    markauto "Track dependency auto/manual state: $ROOTFS_MULTISTRAP_MARKAUTO" \
+                    keypkg "Archive keyring package: ${ROOTFS_MULTISTRAP_KEYRING_PACKAGE:-automatic}" \
+                    custom "Custom config file: ${ROOTFS_MULTISTRAP_CONFIG:-generated}" \
+                    done "Use these settings") || return 1
+                case "$c" in
+                    include) value=$(rootfs_backend_edit_packages "multistrap packages" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
+                    cleanup) [ "$ROOTFS_MULTISTRAP_CLEANUP" = yes ] && ROOTFS_MULTISTRAP_CLEANUP=no || ROOTFS_MULTISTRAP_CLEANUP=yes ;;
+                    important) [ "$ROOTFS_MULTISTRAP_IMPORTANT" = yes ] && ROOTFS_MULTISTRAP_IMPORTANT=no || ROOTFS_MULTISTRAP_IMPORTANT=yes ;;
+                    markauto) [ "$ROOTFS_MULTISTRAP_MARKAUTO" = yes ] && ROOTFS_MULTISTRAP_MARKAUTO=no || ROOTFS_MULTISTRAP_MARKAUTO=yes ;;
+                    keypkg) value=$(tui_input "Archive keyring package" "Native package containing repository signing keys (blank for automatic):" "$ROOTFS_MULTISTRAP_KEYRING_PACKAGE") || continue; if [ -z "$value" ] || rootfs_valid_package_name "$value"; then ROOTFS_MULTISTRAP_KEYRING_PACKAGE="$value"; else tui_msg "Invalid package" "Enter one native package name."; fi ;;
+                    custom) value=$(tui_input "Custom multistrap config" "Absolute readable config file (blank to generate one):" "$ROOTFS_MULTISTRAP_CONFIG") || continue; if [ -z "$value" ]; then ROOTFS_MULTISTRAP_CONFIG=""; elif [ "${value#/}" != "$value" ] && [ -r "$value" ]; then ROOTFS_MULTISTRAP_CONFIG="$value"; else tui_msg "Invalid config" "Select an absolute readable file or leave blank."; fi ;;
+                    done) return 0 ;;
+                esac ;;
+        esac
+    done
+}
+
+rootfs_backend_config_file() { printf '%s/.systui-backend.conf\n' "$1"; }
+
+rootfs_backend_config_write() { # <target>
+    local file; file=$(rootfs_backend_config_file "$1")
+    cat > "$file" <<EOF
+VARIANT="$(rootfs_state_escape "$ROOTFS_BACKEND_VARIANT")"
+COMPONENTS="$(rootfs_state_escape "$ROOTFS_BACKEND_COMPONENTS")"
+INCLUDE="$(rootfs_state_escape "$ROOTFS_BACKEND_INCLUDE")"
+EXCLUDE="$(rootfs_state_escape "$ROOTFS_BACKEND_EXCLUDE")"
+KEYRING_MODE="$(rootfs_state_escape "$ROOTFS_BACKEND_KEYRING_MODE")"
+KEYRING_PATH="$(rootfs_state_escape "$ROOTFS_BACKEND_KEYRING_PATH")"
+MERGED_USR="$(rootfs_state_escape "$ROOTFS_BACKEND_MERGED")"
+VERBOSE="$(rootfs_state_escape "$ROOTFS_BACKEND_VERBOSE")"
+MMDEBSTRAP_MODE="$(rootfs_state_escape "$ROOTFS_MMDEBSTRAP_MODE")"
+MMDEBSTRAP_PRUNE="$(rootfs_state_escape "$ROOTFS_MMDEBSTRAP_PRUNE")"
+CDEBOOTSTRAP_CONFIGDIR="$(rootfs_state_escape "$ROOTFS_CDEBOOTSTRAP_CONFIGDIR")"
+CDEBOOTSTRAP_ALLOW_UNAUTH="$(rootfs_state_escape "$ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH")"
+MULTISTRAP_CLEANUP="$(rootfs_state_escape "$ROOTFS_MULTISTRAP_CLEANUP")"
+MULTISTRAP_IMPORTANT="$(rootfs_state_escape "$ROOTFS_MULTISTRAP_IMPORTANT")"
+MULTISTRAP_MARKAUTO="$(rootfs_state_escape "$ROOTFS_MULTISTRAP_MARKAUTO")"
+MULTISTRAP_KEYRING_PACKAGE="$(rootfs_state_escape "$ROOTFS_MULTISTRAP_KEYRING_PACKAGE")"
+MULTISTRAP_CONFIG="$(rootfs_state_escape "$ROOTFS_MULTISTRAP_CONFIG")"
+EOF
+    chmod 600 "$file"
+}
+
+rootfs_backend_config_load() { # <target> <distro> <backend>
+    local target="$1" distro="$2" backend="$3" file key value
+    rootfs_backend_config_defaults "$distro" "$backend"
+    file=$(rootfs_backend_config_file "$target")
+    [ -r "$file" ] || return 0
+    while IFS='=' read -r key value; do
+        value=${value#\"}; value=${value%\"}
+        case "$key" in
+            VARIANT) ROOTFS_BACKEND_VARIANT="$value" ;;
+            COMPONENTS) ROOTFS_BACKEND_COMPONENTS="$value" ;;
+            INCLUDE) ROOTFS_BACKEND_INCLUDE="$value" ;;
+            EXCLUDE) ROOTFS_BACKEND_EXCLUDE="$value" ;;
+            KEYRING_MODE) ROOTFS_BACKEND_KEYRING_MODE="$value" ;;
+            KEYRING_PATH) ROOTFS_BACKEND_KEYRING_PATH="$value" ;;
+            MERGED_USR) ROOTFS_BACKEND_MERGED="$value" ;;
+            VERBOSE) ROOTFS_BACKEND_VERBOSE="$value" ;;
+            MMDEBSTRAP_MODE) ROOTFS_MMDEBSTRAP_MODE="$value" ;;
+            MMDEBSTRAP_PRUNE) ROOTFS_MMDEBSTRAP_PRUNE="$value" ;;
+            CDEBOOTSTRAP_CONFIGDIR) ROOTFS_CDEBOOTSTRAP_CONFIGDIR="$value" ;;
+            CDEBOOTSTRAP_ALLOW_UNAUTH) ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH="$value" ;;
+            MULTISTRAP_CLEANUP) ROOTFS_MULTISTRAP_CLEANUP="$value" ;;
+            MULTISTRAP_IMPORTANT) ROOTFS_MULTISTRAP_IMPORTANT="$value" ;;
+            MULTISTRAP_MARKAUTO) ROOTFS_MULTISTRAP_MARKAUTO="$value" ;;
+            MULTISTRAP_KEYRING_PACKAGE) ROOTFS_MULTISTRAP_KEYRING_PACKAGE="$value" ;;
+            MULTISTRAP_CONFIG) ROOTFS_MULTISTRAP_CONFIG="$value" ;;
+        esac
+    done < "$file"
+}
+
+rootfs_backend_config_summary() { # <backend>
+    case "$1" in
+        debootstrap|qemu-debootstrap)
+            printf 'variant=%s, components=%s, merged-usr=%s' "$ROOTFS_BACKEND_VARIANT" "$ROOTFS_BACKEND_COMPONENTS" "$ROOTFS_BACKEND_MERGED" ;;
+        mmdebstrap)
+            printf 'variant=%s, mode=%s, components=%s, prune=%s' "$ROOTFS_BACKEND_VARIANT" "$ROOTFS_MMDEBSTRAP_MODE" "$ROOTFS_BACKEND_COMPONENTS" "$ROOTFS_MMDEBSTRAP_PRUNE" ;;
+        cdebootstrap)
+            printf 'flavour=%s, configdir=%s, authenticated=%s' "$ROOTFS_BACKEND_VARIANT" "${ROOTFS_CDEBOOTSTRAP_CONFIGDIR:-default}" "$([ "$ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" = yes ] && echo no || echo yes)" ;;
+        multistrap)
+            printf 'config=%s, cleanup=%s, important=%s, markauto=%s' "${ROOTFS_MULTISTRAP_CONFIG:-generated}" "$ROOTFS_MULTISTRAP_CLEANUP" "$ROOTFS_MULTISTRAP_IMPORTANT" "$ROOTFS_MULTISTRAP_MARKAUTO" ;;
+        *)
+            printf 'backend defaults' ;;
+    esac
+}
+
+rootfs_backend_reconfigure() { # <target>
+    local target="$1" distro backend
+    distro=$(rootfs_state_get "$target" DISTRO 2>/dev/null || true)
+    backend=$(rootfs_state_get "$target" BACKEND 2>/dev/null || true)
+    case "$distro:$backend" in
+        debian:*|devuan:*|ubuntu:*|kali:*) ;;
+        *) tui_msg "Backend configuration" "This build does not use a configurable Debian-family backend."; return 0 ;;
+    esac
+    case "$backend" in mmdebstrap|debootstrap|cdebootstrap|qemu-debootstrap|multistrap) ;; *) tui_msg "Backend configuration" "No configurable backend was recorded for this build."; return 0;; esac
+    rootfs_backend_config_load "$target" "$distro" "$backend"
+    rootfs_backend_config_menu "$distro" "$backend" preserve || return 0
+    rootfs_backend_config_write "$target"
+    tui_msg "Backend configuration" "Saved $backend settings for future resume/rebuild operations."
+}
 
 # Host arch in deb terms, for foreign-arch detection.
 host_debarch() {
@@ -350,7 +698,7 @@ rootfs_release_menu() { # <distro> <arch>
         tags+=("$r" "$distro $r" "$state")
     done <<< "$candidates"
     tags+=(custom "Enter a release manually" off)
-    r=$(tui_radio "Rootfs Builder 2/12" "Release from the $distro repository (SPACE selects):" "${tags[@]}") || return 1
+    r=$(tui_radio "Rootfs Builder 4/13" "Release from the $distro repository (SPACE selects):" "${tags[@]}") || return 1
     if [ "$r" = custom ]; then
         r=$(tui_input "Custom release" "Release/branch name:" "$def") || return 1
     fi
@@ -679,7 +1027,7 @@ menu_rootfs() {
         local c
         # Safely capture menu result and handle cancellation (ESC/Cancel)
         if ! c=$(tui_menu "Rootfs" "Mini root filesystems:" \
-            build  "Build a new rootfs (guided, 12 stages)" \
+            build  "Build a new rootfs (guided, 13 stages)" \
             manage "Manage existing rootfs (chroot, inspect, delete...)" \
             back   "Back"); then
             # User pressed ESC/Cancel - gracefully return to parent menu
@@ -724,6 +1072,7 @@ PRESET="$(rootfs_state_escape "$8")"
 HOSTNAME="$(rootfs_state_escape "$9")"
 POSTCFG="$(rootfs_state_escape "${10}")"
 TIMEZONE="$(rootfs_state_escape "${11}")"
+BACKEND="$(rootfs_state_escape "${12}")"
 STAGE="configured"
 EOF
 }
@@ -764,22 +1113,24 @@ rootfs_fetch_ubuntu_keyring() {
 }
 
 rootfs_continue_generation() { # <target>
-    local t="$1" distro release arch mirror pkgs use_qemu stage action
+    local t="$1" distro release arch mirror pkgs use_qemu backend stage action
     distro=$(rootfs_state_get "$t" DISTRO || true)
     release=$(rootfs_state_get "$t" RELEASE || true)
     arch=$(rootfs_state_get "$t" ARCH || true)
     mirror=$(rootfs_state_get "$t" MIRROR || true)
     pkgs=$(rootfs_state_get "$t" PACKAGES || true)
     use_qemu=$(rootfs_state_get "$t" USE_QEMU || true)
+    backend=$(rootfs_state_get "$t" BACKEND || true)
     stage=$(rootfs_state_get "$t" STAGE || true)
 
     [ -n "$distro" ] || distro=$(sed -n 's/^ID=//p' "$t/etc/os-release" 2>/dev/null | tr -d '"' | head -n1)
     [ -n "$release" ] || release=$(sed -n 's/^VERSION_CODENAME=//p' "$t/etc/os-release" 2>/dev/null | tr -d '"' | head -n1)
     [ -n "$arch" ] || arch=$(host_debarch)
     [ -n "$use_qemu" ] || { needs_qemu "$arch" && use_qemu=1 || use_qemu=0; }
+    backend=$(rootfs_resolve_backend "$distro" "${backend:-auto}" 2>/dev/null || true)
 
     action=$(tui_check "Continue generation" \
-        "Detected: ${distro:-unknown} ${release:-unknown} ($arch), stage: ${stage:-unknown}\nSPACE selects recovery steps:" \
+        "Detected: ${distro:-unknown} ${release:-unknown} ($arch), backend: ${backend:-unknown}, stage: ${stage:-unknown}\nSPACE selects recovery steps:" \
         second "Complete interrupted debootstrap second stage" on \
         repair "Repair dpkg/APT package configuration" on \
         packages "Install remaining packages from build state" on \
@@ -789,8 +1140,9 @@ rootfs_continue_generation() { # <target>
     if [ ! -x "$t/bin/sh" ] && [ -n "$distro" ] && [ -n "$release" ] && [ -n "$mirror" ]; then
         case "$distro" in
             debian|devuan|ubuntu|kali)
-                tui_yesno "Resume bootstrap" "The base system is incomplete. Re-run debootstrap into this existing target?" || return 0
-                build_debfamily "$distro" "$release" "$arch" "$mirror" "$t" "$pkgs" "$use_qemu" || {
+                tui_yesno "Resume bootstrap" "The base system is incomplete. Re-run ${backend:-the selected backend} into this existing target?" || return 0
+                [ -n "$backend" ] || { tui_msg "Backend unavailable" "Install mmdebstrap, debootstrap, cdebootstrap, or multistrap before resuming this build."; return 0; }
+                build_debfamily "$distro" "$release" "$arch" "$mirror" "$t" "$pkgs" "$use_qemu" "$backend" || {
                     tui_msg "Resume failed" "Bootstrap recovery failed. See $LOGFILE."; return 0; }
                 ;;
             *) tui_msg "Unsupported state" "Automatic pre-bootstrap resume currently supports Debian, Devuan, Ubuntu and Kali roots."; return 0 ;;
@@ -824,23 +1176,38 @@ rootfs_continue_generation() { # <target>
 }
 
 rootfs_builder() {
-    local distro release arch mirror target pkgs hostname_v rootpw
+    local distro backend release arch mirror target pkgs hostname_v rootpw
     local init_choice init_pkgs="" preset use_qemu=0
 
     # ---- 1: distro (SPACE selects) ----
-    distro=$(tui_radio "Rootfs Builder 1/12" "Distribution (SPACE to select, ENTER to confirm):" \
-        debian "Debian (debootstrap)" on \
-        devuan "Devuan (debootstrap, no systemd)" off \
-        ubuntu "Ubuntu (debootstrap; QEMU only for foreign arch)" off \
+    distro=$(tui_radio "Rootfs Builder 1/13" "Distribution (SPACE to select, ENTER to confirm):" \
+        debian "Debian" on \
+        devuan "Devuan (no systemd)" off \
+        ubuntu "Ubuntu" off \
         alpine "Alpine Linux (apk.static)" off \
         arch   "Arch Linux (pacstrap / bootstrap tarball)" off \
         fedora "Fedora (dnf --installroot)" off \
-        kali   "Kali Linux (debootstrap, rolling)" off \
+        kali   "Kali Linux (rolling)" off \
         opensuse "openSUSE Leap (zypper --root)" off \
         tumbleweed "openSUSE Tumbleweed (zypper --root)" off \
         gentoo "Gentoo Linux (official stage3)" off \
         void   "Void Linux (official ROOTFS tarball)" off) || return 0
     [ -z "$distro" ] && return
+
+    # ---- 2: bootstrap backend ----
+    backend=$(rootfs_backend_menu "$distro") || {
+        tui_msg "Backend unavailable" "No usable bootstrap backend was selected for $distro.\n\nInstall the selected tool (for example mmdebstrap, debootstrap, cdebootstrap, qemu-debootstrap, multistrap, pacstrap, dnf, or zypper) and retry."
+        return 0
+    }
+    if ! rootfs_backend_available "$backend"; then
+        tui_msg "Missing backend" "The selected backend '$backend' is not available on this host.\n\nInstall its command or required downloader/archive tools, then retry."
+        return 0
+    fi
+    case "$distro" in
+        debian|devuan|ubuntu|kali)
+            rootfs_backend_config_menu "$distro" "$backend" || return 0
+            ;;
+    esac
 
     # ---- 2/3: architecture then release ----
     # Architecture must be selected before Ubuntu release discovery so ARM
@@ -849,7 +1216,7 @@ rootfs_builder() {
         arch="amd64"
         tui_msg "Architecture" "Arch Linux official repos are x86_64 only.\n(For ARM, see Arch Linux ARM — not covered here.)"
     else
-        arch=$(tui_radio "Rootfs Builder 3/12" "Target architecture (SPACE to select):" \
+        arch=$(tui_radio "Rootfs Builder 3/13" "Target architecture (SPACE to select):" \
             amd64 "x86_64 / amd64" on \
             arm64 "aarch64 / arm64" off \
             armhf "ARM 32-bit hard-float" off \
@@ -882,7 +1249,7 @@ user creation). Install on the host first if you haven't:
     # ---- 4: init system ----
     case "$distro" in
         debian|ubuntu|kali)
-            init_choice=$(tui_radio "Rootfs Builder 4/12" \
+            init_choice=$(tui_radio "Rootfs Builder 5/13" \
                 "Init system (SPACE to select).\nsystemd is the distro default; alternatives are swapped in via --include:" \
                 systemd  "systemd (distro default)" on \
                 sysvinit "SysVinit (sysvinit-core)" off \
@@ -898,7 +1265,7 @@ user creation). Install on the host first if you haven't:
                     ;;
             esac ;;
         devuan)
-            init_choice=$(tui_radio "Rootfs Builder 4/12" \
+            init_choice=$(tui_radio "Rootfs Builder 5/13" \
                 "Init system for Devuan (SPACE to select; systemd is not an option here):" \
                 sysvinit "SysVinit (Devuan default)" on \
                 openrc   "OpenRC" off \
@@ -921,7 +1288,7 @@ user creation). Install on the host first if you haven't:
     esac
 
     # ---- 5: preset and package profiles ----
-    preset=$(tui_radio "Rootfs Builder 5/12" "Build preset (SPACE to select):" \
+    preset=$(tui_radio "Rootfs Builder 6/13" "Build preset (SPACE to select):" \
         minimal    "Minimal — base system only" off \
         standard   "Standard — shell, editor, certificates, network tools" on \
         workstation "CLI workstation — standard + productivity and diagnostics" off \
@@ -998,24 +1365,27 @@ user creation). Install on the host first if you haven't:
         gentoo) def_mirror="https://distfiles.gentoo.org/releases" ;;
         void)   def_mirror="https://repo-default.voidlinux.org" ;;
     esac
-    mirror=$(tui_input "Rootfs Builder 6/12" "Mirror URL:" "$def_mirror") || return 0
+    mirror=$(tui_input "Rootfs Builder 7/13" "Mirror URL:" "$def_mirror") || return 0
 
     # ---- 7: target directory ----
-    target=$(tui_input "Rootfs Builder 7/12" "Target directory for the rootfs:" \
+    target=$(tui_input "Rootfs Builder 8/13" "Target directory for the rootfs:" \
         "$ROOTFS_BASE/${distro}-${release}-${arch}") || return 0
     if [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
         tui_msg "Target exists" "$target is not empty.\n\nUse Rootfs > Manage > Continue generation to safely resume it."
         return 0
     fi
     mkdir -p "$target"
+    case "$distro" in
+        debian|devuan|ubuntu|kali) rootfs_backend_config_write "$target" ;;
+    esac
 
     # ---- 8: identity ----
-    hostname_v=$(tui_input "Rootfs Builder 8/12" "Hostname for the rootfs:" "${distro}-mini") || return 0
+    hostname_v=$(tui_input "Rootfs Builder 9/13" "Hostname for the rootfs:" "${distro}-mini") || return 0
     rootpw=$(tui_password "Root password" "Root password (blank = locked account):") || return 0
 
     # ---- 9: optional user account ----
     local mkuser="" userpw="" usersudo=0
-    if tui_yesno "Rootfs Builder 9/12" "Create a regular user account inside the rootfs?"; then
+    if tui_yesno "Rootfs Builder 10/13" "Create a regular user account inside the rootfs?"; then
         mkuser=$(tui_input "User" "Username:" "user") || mkuser=""
         if [ -n "$mkuser" ]; then
             userpw=$(tui_password "User" "Password for $mkuser (blank = locked):") || userpw=""
@@ -1026,7 +1396,7 @@ user creation). Install on the host first if you haven't:
 
     # ---- 10: expanded in-rootfs configuration ----
     local postcfg tz="" locale_v="C.UTF-8" shell_v="bash" editor_v="nano" ssh_port="22"
-    postcfg=$(tui_check "Rootfs Builder 10/12" "In-rootfs configuration (SPACE toggles):" \
+    postcfg=$(tui_check "Rootfs Builder 11/13" "In-rootfs configuration (SPACE toggles):" \
         dns       "Write DNS resolvers" on \
         hosts     "Write hostname and /etc/hosts" on \
         tz        "Set timezone" on \
@@ -1051,17 +1421,19 @@ user creation). Install on the host first if you haven't:
 
     # ---- 11: compression (tar.gz is the default) ----
     local comp
-    comp=$(tui_radio "Rootfs Builder 11/12" "Compression format (SPACE to select):" \
+    comp=$(tui_radio "Rootfs Builder 12/13" "Compression format (SPACE to select):" \
         gz   "tar.gz — maximum compatibility (default)" on \
         zst  "tar.zst — faster and usually smaller" off \
         xz   "tar.xz — smallest, slowest" off \
         none "No archive — directory only" off) || return 0
 
     # ---- 12: confirm ----
-    tui_yesno "Rootfs Builder 12/12" \
+    tui_yesno "Rootfs Builder 13/13" \
 "Ready to build:
 
   Distro   : $distro $release ($arch$( [ $use_qemu = 1 ] && echo ', foreign via qemu'))
+  Backend  : $backend
+  Tool cfg : $(rootfs_backend_config_summary "$backend")
   Init     : $init_choice
   Preset   : $preset
   Mirror   : $mirror
@@ -1076,12 +1448,12 @@ Proceed?" || return 0
 
     rootfs_write_build_state "$target" \
         "$distro" "$release" "$arch" "$mirror" "$pkgs" "$use_qemu" \
-        "$init_choice" "$preset" "$hostname_v" "$postcfg" "$tz"
+        "$init_choice" "$preset" "$hostname_v" "$postcfg" "$tz" "$backend"
 
     case "$distro" in
-        debian|devuan|ubuntu|kali) build_debfamily "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" "$use_qemu" ;;
+        debian|devuan|ubuntu|kali) build_debfamily "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" "$use_qemu" "$backend" ;;
         alpine)               build_alpine "$release" "$alpine_arch" "$mirror" "$target" "$pkgs" ;;
-        arch)                 build_arch "$mirror" "$target" "$pkgs" ;;
+        arch)                 build_arch "$mirror" "$target" "$pkgs" "$backend" ;;
         fedora)               build_fedora "$release" "$fedora_arch" "$mirror" "$target" "$pkgs" ;;
         opensuse|tumbleweed)  build_opensuse "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" ;;
         gentoo)               build_gentoo "$release" "$arch" "$mirror" "$target" "$pkgs" ;;
@@ -1227,6 +1599,7 @@ BUILD_DATE="$(date '+%F %T')"
 DISTRO="$distro"
 RELEASE="$release"
 ARCH="$arch"
+BACKEND="$(rootfs_state_get "$target" BACKEND 2>/dev/null || echo unknown)"
 INIT="$init_choice"
 PRESET="$preset"
 PACKAGES="$pkgs"
@@ -1406,9 +1779,9 @@ EOF
     return $rc
 }
 
-build_debfamily() { # distro release arch mirror target pkgs use_qemu
+build_debfamily() { # distro release arch mirror target pkgs use_qemu backend
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6" use_qemu="$7"
-    local wgetrc="" selected_mirror=""
+    local backend="${8:-debootstrap}" wgetrc="" selected_mirror=""
 
     # Derive foreign/native mode from the actual host and target architectures.
     # Native Ubuntu builds must use plain debootstrap. QEMU is only introduced
@@ -1418,15 +1791,41 @@ build_debfamily() { # distro release arch mirror target pkgs use_qemu
     else
         use_qemu=0
     fi
-    if ! command -v debootstrap >/dev/null 2>&1; then
-        tui_msg "Missing tool" "debootstrap is required for $distro rootfs builds.\nInstall debootstrap with the host package manager and retry."
-        return 1
-    fi
-    if ! rootfs_validate_debootstrap_suite "$release"; then
-        tui_msg "Unsupported release" "The installed debootstrap does not support suite '$release'.\n\nUpdate debootstrap or select a supported release."
-        rootfs_set_build_stage "$target" unsupported-release
-        return 1
-    fi
+    rootfs_backend_config_load "$target" "$distro" "$backend"
+    case "$backend" in
+        debootstrap|qemu-debootstrap)
+            command -v "$backend" >/dev/null 2>&1 || {
+                tui_msg "Missing tool" "$backend is required for the selected backend.\nInstall it with the host package manager and retry."
+                return 1
+            }
+            # qemu-debootstrap delegates suite handling to debootstrap.
+            command -v debootstrap >/dev/null 2>&1 || {
+                tui_msg "Missing tool" "debootstrap is required for the selected backend.\nInstall debootstrap with the host package manager and retry."
+                return 1
+            }
+            if ! rootfs_validate_debootstrap_suite "$release"; then
+                tui_msg "Unsupported release" "The installed debootstrap does not support suite '$release'.\n\nUpdate debootstrap, select mmdebstrap, or choose a supported release."
+                rootfs_set_build_stage "$target" unsupported-release
+                return 1
+            fi
+            ;;
+        mmdebstrap)
+            command -v mmdebstrap >/dev/null 2>&1 || {
+                tui_msg "Missing tool" "mmdebstrap is required for the selected backend.\nInstall mmdebstrap with the host package manager and retry."
+                return 1
+            }
+            ;;
+        cdebootstrap|multistrap)
+            command -v "$backend" >/dev/null 2>&1 || {
+                tui_msg "Missing tool" "$backend is required for the selected backend.\nInstall it with the host package manager and retry."
+                return 1
+            }
+            ;;
+        *)
+            tui_msg "Unsupported backend" "'$backend' cannot build a Debian-family rootfs."
+            return 1
+            ;;
+    esac
 
     if [ "$distro" = ubuntu ]; then
         selected_mirror=$(rootfs_select_ubuntu_mirror "$mirror" "$arch" "$release" 2>/dev/null || true)
@@ -1470,10 +1869,18 @@ Check that iSH-AOK has network access and DNS resolution, then retry. The builde
             ;;
     esac
 
+    if [ "$ROOTFS_BACKEND_KEYRING_MODE" = custom ]; then
+        [ -r "$ROOTFS_BACKEND_KEYRING_PATH" ] || {
+            tui_msg "Keyring unavailable" "The configured keyring is not readable:\n$ROOTFS_BACKEND_KEYRING_PATH"
+            return 1
+        }
+        keyring="$ROOTFS_BACKEND_KEYRING_PATH"
+    fi
+
     if [ -z "$keyring" ] && [ -n "$keyring_pkg" ] && command -v apt-get >/dev/null 2>&1; then
         log "rootfs: attempting to install missing keyring package $keyring_pkg"
         DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true update >>"$LOGFILE" 2>&1 || true
-        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true install -y "$keyring_pkg" >>"$LOGFILE" 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends "$keyring_pkg" >>"$LOGFILE" 2>&1 || true
         case "$distro" in
             debian) [ -r /usr/share/keyrings/debian-archive-keyring.gpg ] && keyring=/usr/share/keyrings/debian-archive-keyring.gpg ;;
             devuan)
@@ -1488,7 +1895,9 @@ Check that iSH-AOK has network access and DNS resolution, then retry. The builde
     if [ "$distro" = ubuntu ] && [ -z "$keyring" ]; then
         keyring=$(rootfs_fetch_ubuntu_keyring 2>/dev/null || true)
     fi
-    if [ "$distro" = ubuntu ] && [ -z "$keyring" ]; then
+    if [ "$distro" = ubuntu ] && [ -z "$keyring" ] \
+        && ! { [ "$backend" = cdebootstrap ] && [ "$ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" = yes ]; } \
+        && ! { [ "$backend" = multistrap ] && [ -n "$ROOTFS_MULTISTRAP_CONFIG" ]; }; then
         tui_msg "Ubuntu keyring missing" \
 "Ubuntu rootfs verification requires ubuntu-archive-keyring.gpg.
 
@@ -1496,14 +1905,101 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         return 1
     fi
 
-    local opts=(--arch="$arch" --variant=minbase)
-    [ "$distro" = ubuntu ] && opts+=(--components=main,universe)
+    local opts=(--arch="$arch") csv_include="${ROOTFS_BACKEND_INCLUDE// /,}" csv_exclude="${ROOTFS_BACKEND_EXCLUDE// /,}"
+    [ "$ROOTFS_BACKEND_VARIANT" = default ] || opts+=(--variant="$ROOTFS_BACKEND_VARIANT")
+    [ -n "$ROOTFS_BACKEND_COMPONENTS" ] && opts+=(--components="$ROOTFS_BACKEND_COMPONENTS")
+    [ -n "$csv_include" ] && opts+=(--include="$csv_include")
+    [ -n "$csv_exclude" ] && opts+=(--exclude="$csv_exclude")
+    case "$ROOTFS_BACKEND_MERGED" in yes) opts+=(--merged-usr);; no) opts+=(--no-merged-usr);; esac
+    [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && opts+=(--verbose)
     [ -n "$keyring" ] && opts+=(--keyring="$keyring")
 
     # Additional packages are intentionally not passed through --include.
     # A missing optional package or failing maintainer script must not destroy
     # an otherwise valid base rootfs. Extras are installed after bootstrap.
-    if [ "$use_qemu" = 1 ]; then
+    if [ "$backend" = mmdebstrap ]; then
+        local mmopts=(--mode="$ROOTFS_MMDEBSTRAP_MODE" --format=directory --variant="$ROOTFS_BACKEND_VARIANT" --architectures="$arch" --skip=check/empty)
+        [ -n "$ROOTFS_BACKEND_COMPONENTS" ] && mmopts+=(--components="$ROOTFS_BACKEND_COMPONENTS")
+        [ -n "$keyring" ] && mmopts+=(--keyring="$keyring")
+        local mm_include="$ROOTFS_BACKEND_INCLUDE" p
+        for p in $ROOTFS_BACKEND_EXCLUDE; do mm_include+=" ${p}-"; done
+        [ -n "${mm_include//[[:space:]]/}" ] && mmopts+=(--include="${mm_include# }")
+        if [ "$ROOTFS_MMDEBSTRAP_PRUNE" = yes ]; then
+            mmopts+=(
+                --dpkgopt='path-exclude=/usr/share/man/*'
+                --dpkgopt='path-exclude=/usr/share/locale/*'
+                --dpkgopt='path-include=/usr/share/locale/locale.alias'
+                --dpkgopt='path-exclude=/usr/share/doc/*'
+                --dpkgopt='path-include=/usr/share/doc/*/copyright'
+            )
+        fi
+        [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && mmopts+=(--verbose)
+        rootfs_set_build_stage "$target" bootstrap
+        run_cmd "mmdebstrap $distro/$release ($arch)" \
+            env DEBIAN_FRONTEND=noninteractive \
+            mmdebstrap "${mmopts[@]}" "$release" "$target" "$mirror" || return 1
+        rootfs_set_build_stage "$target" bootstrap-complete
+    elif [ "$backend" = qemu-debootstrap ]; then
+        rootfs_set_build_stage "$target" bootstrap
+        run_cmd "qemu-debootstrap $distro/$release ($arch)" \
+            env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
+            qemu-debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
+        rootfs_set_build_stage "$target" bootstrap-complete
+    elif [ "$backend" = cdebootstrap ]; then
+        local cdopts=(--arch="$arch" --flavour="$ROOTFS_BACKEND_VARIANT")
+        [ -n "$csv_include" ] && cdopts+=(--include="$csv_include")
+        [ -n "$csv_exclude" ] && cdopts+=(--exclude="$csv_exclude")
+        [ -n "$keyring" ] && cdopts+=(--keyring="$keyring")
+        [ -n "$ROOTFS_CDEBOOTSTRAP_CONFIGDIR" ] && cdopts+=(--configdir="$ROOTFS_CDEBOOTSTRAP_CONFIGDIR")
+        [ "$ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" = yes ] && cdopts+=(--allow-unauthenticated)
+        [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && cdopts+=(--verbose)
+        [ "$use_qemu" = 1 ] && cdopts+=(--foreign)
+        rootfs_set_build_stage "$target" bootstrap
+        run_cmd "cdebootstrap $distro/$release ($arch)" \
+            cdebootstrap "${cdopts[@]}" "$release" "$target" "$mirror" || return 1
+        if [ "$use_qemu" = 1 ]; then setup_qemu_chroot "$target" "$arch" || return 1; fi
+        rootfs_chroot_exec "$target" "Configure cdebootstrap packages" \
+            'export DEBIAN_FRONTEND=noninteractive; dpkg --configure -a' || return 1
+        rootfs_set_build_stage "$target" bootstrap-complete
+    elif [ "$backend" = multistrap ]; then
+        local msconf="" mspkg="$ROOTFS_MULTISTRAP_KEYRING_PACKAGE"
+        if [ -n "$ROOTFS_MULTISTRAP_CONFIG" ]; then
+            msconf="$ROOTFS_MULTISTRAP_CONFIG"
+        else
+            msconf=$(mktemp "${TMPDIR:-/tmp}/systui-multistrap.XXXXXX.conf") || return 1
+            [ -n "$mspkg" ] || mspkg="$keyring_pkg"
+            cat > "$msconf" <<EOF
+[General]
+arch=$arch
+directory=$target
+cleanup=$ROOTFS_MULTISTRAP_CLEANUP
+noauth=false
+unpack=true
+bootstrap=Base
+aptsources=Base
+markauto=$ROOTFS_MULTISTRAP_MARKAUTO
+addimportant=$ROOTFS_MULTISTRAP_IMPORTANT
+allowrecommends=false
+
+[Base]
+packages=$ROOTFS_BACKEND_INCLUDE
+source=$mirror
+suite=$release
+keyring=$mspkg
+omitdebsrc=true
+EOF
+        fi
+        rootfs_set_build_stage "$target" bootstrap
+        run_cmd "multistrap $distro/$release ($arch)" multistrap -a "$arch" -d "$target" -f "$msconf" || {
+            [ "$msconf" = "$ROOTFS_MULTISTRAP_CONFIG" ] || rm -f "$msconf"
+            return 1
+        }
+        [ "$msconf" = "$ROOTFS_MULTISTRAP_CONFIG" ] || rm -f "$msconf"
+        if [ "$use_qemu" = 1 ]; then setup_qemu_chroot "$target" "$arch" || return 1; fi
+        rootfs_chroot_exec "$target" "Configure multistrap packages" \
+            'export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true LC_ALL=C LANGUAGE=C LANG=C; dpkg --configure -a' || return 1
+        rootfs_set_build_stage "$target" bootstrap-complete
+    elif [ "$use_qemu" = 1 ]; then
         opts+=(--foreign)
         rootfs_set_build_stage "$target" bootstrap-first-stage
         run_cmd "debootstrap --foreign $distro/$release ($arch)" \
@@ -1558,12 +2054,12 @@ build_alpine() { # release arch mirror target pkgs
 
     log "Fetching apk.static index from $apkdir"
     local tools_apk
-    tools_apk=$(wget -qO- "$apkdir/" | grep -o 'apk-tools-static-[^"]*\.apk' | head -n1)
+    tools_apk=$(rootfs_fetch_text "$apkdir/" 2>>"$LOGFILE" | grep -o 'apk-tools-static-[^"]*\.apk' | head -n1)
     if [ -z "$tools_apk" ]; then
         warn "Could not locate apk-tools-static at $apkdir"
         rm -rf "$workdir"; return 1
     fi
-    wget -qO "$workdir/apk-tools.apk" "$apkdir/$tools_apk" || { rm -rf "$workdir"; return 1; }
+    rootfs_fetch_file "$apkdir/$tools_apk" "$workdir/apk-tools.apk" || { rm -rf "$workdir"; return 1; }
     tar -xzf "$workdir/apk-tools.apk" -C "$workdir" 2>>"$LOGFILE" || { warn "Failed to extract apk-tools-static package"; rm -rf "$workdir"; return 1; }
     [ -x "$workdir/sbin/apk.static" ] || { warn "apk.static missing after extraction"; rm -rf "$workdir"; return 1; }
 
@@ -1578,23 +2074,26 @@ build_alpine() { # release arch mirror target pkgs
     return $rc
 }
 
-build_arch() { # mirror target pkgs
-    local mirror="$1" target="$2" pkgs="$3"
+build_arch() { # mirror target pkgs backend
+    local mirror="$1" target="$2" pkgs="$3" backend="${4:-auto}"
     local mapped; mapped=$(map_packages arch $pkgs)
-    if command -v pacstrap >/dev/null; then
+    [ "$backend" = auto ] && backend=$(rootfs_resolve_backend arch auto)
+    if [ "$backend" = pacstrap ]; then
+        command -v pacstrap >/dev/null 2>&1 || { tui_msg "Missing tool" "pacstrap is not installed."; return 1; }
         run_cmd "pacstrap (Arch)" pacstrap -c "$target" base $mapped
-    else
-        tui_msg "pacstrap unavailable" \
-"pacstrap not found — falling back to the official bootstrap tarball.
-Note: packages beyond 'base' must be installed after chrooting."
+    elif [ "$backend" = arch-bootstrap ]; then
+        rootfs_backend_available arch-bootstrap || { tui_msg "Missing tools" "The Arch bootstrap tarball backend requires tar, zstd, and curl or wget."; return 1; }
         local tarball="archlinux-bootstrap-x86_64.tar.zst" workdir; workdir=$(mktemp -d) || return 1
         run_cmd "Downloading Arch bootstrap tarball" \
-            wget -O "$workdir/$tarball" "$mirror/iso/latest/$tarball" || return 1
+            rootfs_fetch_file "$mirror/iso/latest/$tarball" "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }
         run_cmd "Extracting bootstrap tarball" \
             tar -C "$target" --strip-components=1 --numeric-owner \
                 -xf "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }
         rm -rf "$workdir"
         [ -n "${mapped// }" ] && warn "Install these inside the chroot: pacman -S $mapped"
+    else
+        tui_msg "Unsupported backend" "'$backend' cannot build an Arch rootfs."
+        return 1
     fi
 }
 
@@ -1650,9 +2149,9 @@ build_gentoo() { # flavor debarch mirror target pkgs
     esac
     url="$mirror/$garch/autobuilds/current-$stage"
     meta="latest-$stage.txt"
-    tarball=$(wget -qO- "$url/$meta" 2>>"$LOGFILE" | awk '!/^#/ && /tar\.(xz|bz2)/ {print $1; exit}')
+    tarball=$(rootfs_fetch_text "$url/$meta" 2>>"$LOGFILE" | awk '!/^#/ && /tar\.(xz|bz2)/ {print $1; exit}')
     [ -n "$tarball" ] || { warn "Could not discover Gentoo stage3 at $url/$meta"; return 1; }
-    run_cmd "Downloading Gentoo stage3" wget -O "$workdir/$(basename "$tarball")" "$mirror/$garch/autobuilds/$tarball" || return 1
+    run_cmd "Downloading Gentoo stage3" rootfs_fetch_file "$mirror/$garch/autobuilds/$tarball" "$workdir/$(basename "$tarball")" || return 1
     run_cmd "Extracting Gentoo stage3" tar -C "$target" --numeric-owner -xpf "$workdir/$(basename "$tarball")" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     printf 'GENTOO_MIRRORS="%s"\n' "$mirror" >> "$target/etc/portage/make.conf"
     [ -n "${pkgs// }" ] && warn "Gentoo extras were not installed automatically. Use Rootfs > Manage > Packages after entering the rootfs."
@@ -1662,14 +2161,14 @@ build_void() { # arch mirror target pkgs use_qemu
     local arch="$1" mirror="$2" target="$3" pkgs="$4" use_qemu="$5"
     local mapped; mapped=$(map_packages void $pkgs)
     local listing tarball workdir; workdir=$(mktemp -d) || return 1
-    listing=$(wget -qO- "$mirror/live/current/" 2>>"$LOGFILE")
+    listing=$(rootfs_fetch_text "$mirror/live/current/" 2>>"$LOGFILE")
     tarball=$(grep -o "void-${arch}-ROOTFS-[0-9]*\.tar\.xz" <<<"$listing" | sort -u | tail -n1)
     if [ -z "$tarball" ]; then
         warn "Could not find a void-${arch}-ROOTFS tarball at $mirror/live/current/"
         return 1
     fi
     run_cmd "Downloading Void rootfs ($tarball)" \
-        wget -O "$workdir/$tarball" "$mirror/live/current/$tarball" || return 1
+        rootfs_fetch_file "$mirror/live/current/$tarball" "$workdir/$tarball" || return 1
     run_cmd "Extracting Void rootfs" \
         tar -C "$target" --numeric-owner -xJf "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     if [ -n "${mapped// }" ]; then
@@ -2039,6 +2538,7 @@ rootfs_manage() {
         if ! c=$(tui_menu "$(basename "$sel")" \
             "PM: $(rootfs_detect_pm "$sel")  init: $(rootfs_detect_init "$sel")" \
             continue "Continue/recover rootfs generation" \
+            backendcfg "Configure the recorded bootstrap backend" \
             enter    "Enter chroot (interactive shell)" \
             entrycfg "Configure chroot entry options" \
             cmd      "Run a single command in the chroot" \
@@ -2057,6 +2557,7 @@ rootfs_manage() {
         [ -z "$c" ] && continue
         case "$c" in
             continue) rootfs_continue_generation "$sel" ;;
+            backendcfg) rootfs_backend_reconfigure "$sel" ;;
             enter) enter_chroot "$sel" ;;
             entrycfg) rootfs_chroot_options_menu "$sel" ;;
             cmd)
