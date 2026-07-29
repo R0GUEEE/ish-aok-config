@@ -99,8 +99,7 @@ v102_current_build_menu(){
 
 v102_advanced_build_menu(){
   while :; do
-    _v102_choice=$(ui_menu 'Advanced RootFS Builder' 'Optional tools for reusable profiles, multiple builds, direct backends and recovery.' \
-      profiles 'Saved profiles, presets and inheritance' \
+    _v102_choice=$(ui_menu 'Advanced RootFS Builder' 'Optional tools for multiple builds, direct backends and recovery.' \
       matrix 'Build matrices, recipes and queue' \
       backends 'Direct builder backends and imports' \
       capabilities 'Builder capability detection' \
@@ -111,7 +110,6 @@ v102_advanced_build_menu(){
         return "$_v102_rc"
       }
     case $_v102_choice in
-      profiles) v89_profile_manager_menu;;
       matrix) v94_matrix_studio;;
       backends) v87_manual_builders_menu;;
       capabilities) v95_builder_capabilities_ui;;

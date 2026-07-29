@@ -1,5 +1,5 @@
 # id|label|handler|description
-builder|RootFS Builder|@menu:build|Create, import, configure and maintain RootFS filesystems
+rootfs|RootFS|@menu:rootfs|All RootFS tools — build, select, manage, snapshot and transfer filesystems
 system|System Configuration|v104_system_configuration_menu|Configure only the currently running iSH-AOK system
 settings|Settings|@menu:settings|Interface mode, defaults and application behavior
 search|Search|v990_navigation_search_menu|Find any available action

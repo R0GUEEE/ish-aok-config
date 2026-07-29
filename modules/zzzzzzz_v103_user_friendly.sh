@@ -87,7 +87,7 @@ v103_build_new(){
 
 v103_configure_rootfs(){
   root=$(active_rootfs 2>/dev/null || true)
-  [ -n "$root" ] && [ "$root" != / ] || { ui_msg 'Select a RootFS' 'Choose an existing RootFS before configuring it.'; v944_select_rootfs_anywhere 2>/dev/null || rootfs_registry_select; root=$(active_rootfs 2>/dev/null || true); }
+  [ -n "$root" ] && [ "$root" != / ] || { ui_msg 'Select a RootFS' 'Choose an existing RootFS before configuring it.'; rootfs_select_anywhere || rootfs_registry_select_ui; root=$(active_rootfs 2>/dev/null || true); }
   [ -n "$root" ] || return 1
   ui_text 'Configure RootFS' "Active RootFS: $root\n\nThe wizard will guide you through common settings one section at a time."
   while :; do

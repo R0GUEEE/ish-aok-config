@@ -76,8 +76,8 @@ plugin_post_build_v113(){ v113_pipeline_register "$1"; }
 v1100_builder_dashboard(){ v1110_builder_dashboard; }
 main_menu(){
   while :; do
-    _c=$(ui_menu "$PROGRAM $VERSION" "$(printf 'System: %s | %s | %s\nActive RootFS: %s' "${DISTRO_ID:-unknown}" "${ARCH:-unknown}" "${PKG_MGR:-unknown}" "$(active_rootfs 2>/dev/null || printf none)")" builder 'RootFS Builder' manage 'RootFS & Workspaces' system 'System Configuration' catalog 'Software Catalog' plugins 'Modules, Plugins & SDK' health 'Health & Diagnostics' search Search settings Settings about About exit Exit) || return 0
-    case $_c in builder) v1110_builder_dashboard;; manage) v113_management_menu;; system) v104_system_configuration_menu;; catalog) v1100_software_catalog_menu;; plugins) sdk_center;; health) v112_diagnostics_menu;; search) v990_navigation_search_menu;; settings) v103_settings_menu;; about) ui_text About "iSH-AOK Config $VERSION\n\nv11.3 RootFS Library, workspaces, snapshots, image catalog, validation scorecards, and official SDK plugins.\n\nProject: https://github.com/emkey1/ish-AOK";; exit) return 0;; esac
+    _c=$(ui_menu "$PROGRAM $VERSION" "$(printf 'System: %s | %s | %s\nActive RootFS: %s' "${DISTRO_ID:-unknown}" "${ARCH:-unknown}" "${PKG_MGR:-unknown}" "$(active_rootfs 2>/dev/null || printf none)")" rootfs 'RootFS' system 'System Configuration' catalog 'Software Catalog' plugins 'Modules, Plugins & SDK' health 'Health & Diagnostics' search Search settings Settings about About exit Exit) || return 0
+    case $_c in rootfs) v113_management_menu;; system) v104_system_configuration_menu;; catalog) v1100_software_catalog_menu;; plugins) sdk_center;; health) v112_diagnostics_menu;; search) v990_navigation_search_menu;; settings) v103_settings_menu;; about) ui_text About "iSH-AOK Config $VERSION\n\nv11.3 RootFS Library, workspaces, snapshots, image catalog, validation scorecards, and official SDK plugins.\n\nProject: https://github.com/emkey1/ish-AOK";; exit) return 0;; esac
   done
 }
 workspace_dashboard_v90(){ main_menu; }
@@ -123,7 +123,7 @@ v113_lifecycle_menu(){
 v113_management_menu(){
   v113_init >/dev/null 2>&1 || true
   while :; do
-    _c=$(ui_menu 'RootFS & Workspace Management' 'Portable lifecycle management for iSH-AOK filesystems.' library 'RootFS Library' lifecycle 'Clone, export, tags, delete, bulk packages' workspaces 'Workspace Manager' snapshots 'Snapshot Manager' images 'Image Library' plugins 'Official Plugins' performance 'Performance Dashboard' builder 'RootFS Builder' legacy 'Legacy RootFS tools' back Back) || return 0
-    case $_c in library) v113_rootfs_library_menu;; lifecycle) v113_lifecycle_menu;; workspaces) v113_workspace_menu;; snapshots) v113_snapshot_menu;; images) v113_image_menu;; plugins) v113_official_plugins_menu;; performance) ui_text Performance "$(v113_performance_report)";; builder) v1110_builder_dashboard;; legacy) v104_manage_rootfs_menu;; back) return 0;; esac
+    _c=$(ui_menu 'RootFS' 'All RootFS tools — build, manage, snapshot, package and export.' builder 'RootFS Builder' library 'RootFS Library' lifecycle 'Clone, export, tags, delete, bulk packages' workspaces 'Workspace Manager' snapshots 'Snapshot Manager' images 'Image Library' plugins 'Official Plugins' performance 'Performance Dashboard' legacy 'Legacy RootFS tools' back Back) || return 0
+    case $_c in builder) v1110_builder_dashboard;; library) v113_rootfs_library_menu;; lifecycle) v113_lifecycle_menu;; workspaces) v113_workspace_menu;; snapshots) v113_snapshot_menu;; images) v113_image_menu;; plugins) v113_official_plugins_menu;; performance) ui_text Performance "$(v113_performance_report)";; legacy) v104_manage_rootfs_menu;; back) return 0;; esac
   done
 }

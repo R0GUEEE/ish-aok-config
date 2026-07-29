@@ -75,7 +75,7 @@ v104_select_target_rootfs(){
   target=$(v104_context_get)
   if [ "$target" = / ] || [ ! -d "$target" ]; then
     ui_msg 'Select a RootFS' 'Choose the RootFS that you want to edit. System Configuration is used for the running system.'
-    v944_select_rootfs_anywhere 2>/dev/null || rootfs_registry_select || return 1
+    rootfs_select_anywhere || rootfs_registry_select_ui || return 1
     target=$(v104_context_get)
   fi
   [ "$target" != / ] && [ -d "$target" ] || {
@@ -101,7 +101,7 @@ v104_edit_existing_rootfs(){
       enter 'Enter RootFS shell' \
       back 'Back') || return 0
     case $choice in
-      select) v944_select_rootfs_anywhere 2>/dev/null || rootfs_registry_select; target=$(v104_context_get); [ "$target" != / ] || return;;
+      select) rootfs_select_anywhere || rootfs_registry_select_ui; target=$(v104_context_get); [ "$target" != / ] || return;;
       identity) system_menu;;
       users) users_menu;;
       shells) shell_wizards_menu;;
@@ -115,6 +115,9 @@ v104_edit_existing_rootfs(){
     esac
   done
 }
+
+# Compatibility name used by the v11 builder and RootFS management menus.
+v104_manage_rootfs_menu(){ v104_edit_existing_rootfs; }
 
 v104_builder_help(){
   ui_text 'RootFS Builder Help' 'RootFS Builder is only for creating or changing filesystem trees that are separate from the running system.

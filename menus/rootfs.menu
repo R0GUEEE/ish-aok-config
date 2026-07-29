@@ -1,3 +1,4 @@
+builder|RootFS Builder|@menu:build|Create, import and configure new RootFS filesystems
 select|Select RootFS|@menu:rootfs_select|Registered, recent or any filesystem path
 enter|Enter Active RootFS|rootfs_chroot_studio|Mount and enter the active filesystem
 chroot_any|Chroot any RootFS directory|v951_chroot_any_directory|Choose any directory without activating it first

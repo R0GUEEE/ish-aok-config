@@ -8,7 +8,8 @@ for f in "$BASE"/lib/*.sh; do [ "$f" = "$BASE/lib/core.sh" ] || . "$f"; done
 for f in "$BASE"/modules/package/*.sh "$BASE"/modules/services/*.sh "$BASE"/modules/*.sh; do [ -r "$f" ] && . "$f"; done
 
 grep -Eq "VERSION='(10|11)\.[0-9]+\.[0-9]+'" "$BASE/lib/core.sh"
-grep -q '^builder|RootFS Builder|@menu:build|' "$BASE/menus/main.menu"
+grep -q '^rootfs|RootFS|@menu:rootfs|' "$BASE/menus/main.menu"
+grep -q '^builder|RootFS Builder|@menu:build|' "$BASE/menus/rootfs.menu"
 grep -q '^system|System Configuration|v104_system_configuration_menu|' "$BASE/menus/main.menu"
 ! grep -Eq '^manage\||^configure\||^maintenance\|' "$BASE/menus/main.menu"
 grep -q '^edit|Edit an Existing RootFS|v104_edit_existing_rootfs|' "$BASE/menus/build.menu"

@@ -30,7 +30,7 @@ register_builder(){ register_action "$1" "$2" build "$3" "${4:-}"; }
 v91_menu_title(){
   case $1 in
     workspace) printf 'Unified Workspace';;
-    rootfs) printf 'RootFS Explorer';;
+    rootfs) printf 'RootFS';;
     build) printf 'Unified Build Studio';;
     administration|management) printf 'System Tools';;
     projects) printf 'Projects & Automation';;
