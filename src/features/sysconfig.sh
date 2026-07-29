@@ -2843,15 +2843,220 @@ restored; otherwise the OMB lines in .bashrc are commented out." || continue
 }
 
 
-menu_shell_plugins() {
+
+shell_plugin_target() {
+    local u home_dir
+    u=$(tui_input "Plugin user" "Configure shell plugins for which user?" "${SUDO_USER:-root}") || return 1
+    home_dir=$(user_home "$u")
+    [ -n "$home_dir" ] || { tui_msg "Error" "User '$u' was not found."; return 1; }
+    printf '%s|%s\n' "$u" "$home_dir"
+}
+
+plugin_rc_file() {
+    case "$1" in
+        bash) printf '%s/.bashrc\n' "$2" ;;
+        zsh)  printf '%s/.zshrc\n' "$2" ;;
+        fish) printf '%s/.config/fish/config.fish\n' "$2" ;;
+    esac
+}
+
+plugin_add_line() {
+    local file="$1" line="$2" u="$3"
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+    grep -Fqx "$line" "$file" 2>/dev/null || printf '\n%s\n' "$line" >> "$file"
+    chown "$u" "$file" 2>/dev/null || true
+}
+
+plugin_remove_match() {
+    local file="$1" pattern="$2"
+    [ -f "$file" ] || return 0
+    sed -i "\\|$pattern|d" "$file" 2>/dev/null || true
+}
+
+plugin_choose_shells() {
+    tui_check "Shell integration" "SPACE selects shells to configure:" \
+        bash "Bash (~/.bashrc)" on \
+        zsh  "Zsh (~/.zshrc)" on \
+        fish "Fish (~/.config/fish/config.fish)" off
+}
+
+plugin_show_status() {
+    local name="$1" command_name="$2" home_dir="$3" pattern="$4"
+    {
+        echo "Plugin : $name"
+        echo "Binary : $(command -v "$command_name" 2>/dev/null || echo 'not installed')"
+        echo
+        for sh in bash zsh fish; do
+            local rc; rc=$(plugin_rc_file "$sh" "$home_dir")
+            printf '%-5s : %s\n' "$sh" "$rc"
+            grep -n "$pattern" "$rc" 2>/dev/null || echo "        no integration found"
+        done
+    } > /tmp/systui.plugin-status
+    tui_text "$name status" /tmp/systui.plugin-status
+}
+
+menu_plugin_starship() {
+    local u="$1" home_dir="$2" c shells sh rc preset
     while true; do
-        local c sel
-        c=$(tui_menu "Shell Plugins" "Cross-shell enhancements:" starship "Starship" fzf "fzf" comp "Completions" zoxide "zoxide" atuin "Atuin" direnv "direnv" carapace "Carapace" syntax "Syntax highlighting" autosuggest "Autosuggestions" back "Back") || return 0
+        c=$(tui_menu "Starship — $u" "Install and configure the cross-shell prompt:" \
+            install "Install using the official starship.rs installer" \
+            integrate "Enable Starship for selected shells" \
+            preset "Apply a built-in Starship preset" \
+            basic "Write a basic ~/.config/starship.toml" \
+            edit "Edit ~/.config/starship.toml" \
+            disable "Remove Starship initialization from selected shells" \
+            status "Show installation and shell integration status" \
+            back "Back") || return 0
         case "$c" in
-            starship) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh";;
-            fzf) pm_install fzf;;
-            comp) sel=$(tui_check "Completions" "SPACE selects:" bash-completion "Bash" on zsh-completions "Zsh" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_install $sel;;
-            zoxide) pm_install zoxide;; atuin) pm_install atuin 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; direnv) pm_install direnv;; carapace) pm_install carapace 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; syntax) pm_install zsh-syntax-highlighting;; autosuggest) pm_install zsh-autosuggestions;; back|"") return 0;;
+            install) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh" ;;
+            integrate)
+                shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
+                for sh in $shells; do
+                    rc=$(plugin_rc_file "$sh" "$home_dir")
+                    case "$sh" in
+                        bash) plugin_add_line "$rc" 'eval "$(starship init bash)"' "$u" ;;
+                        zsh) plugin_add_line "$rc" 'eval "$(starship init zsh)"' "$u" ;;
+                        fish) plugin_add_line "$rc" 'starship init fish | source' "$u" ;;
+                    esac
+                done ;;
+            preset)
+                command -v starship >/dev/null || { tui_msg "Missing" "Install Starship first."; continue; }
+                preset=$(tui_radio "Starship preset" "SPACE selects a preset:" \
+                    plain-text-symbols "Plain text symbols" on \
+                    bracketed-segments "Bracketed segments" off \
+                    nerd-font-symbols "Nerd Font symbols" off \
+                    pastel-powerline "Pastel Powerline" off \
+                    no-empty-icons "No empty icons" off) || continue
+                mkdir -p "$home_dir/.config"
+                su - "$u" -c "starship preset '$preset' -o ~/.config/starship.toml" || tui_msg "Failed" "Unable to apply preset '$preset'." ;;
+            basic)
+                mkdir -p "$home_dir/.config"
+                cat > "$home_dir/.config/starship.toml" <<'EOF'
+add_newline = true
+command_timeout = 1000
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+
+[directory]
+truncation_length = 4
+truncate_to_repo = false
+
+[git_status]
+disabled = false
+EOF
+                chown -R "$u" "$home_dir/.config/starship.toml" 2>/dev/null || true ;;
+            edit) mkdir -p "$home_dir/.config"; touch "$home_dir/.config/starship.toml"; "${EDITOR:-nano}" "$home_dir/.config/starship.toml" || true ;;
+            disable)
+                shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
+                for sh in $shells; do rc=$(plugin_rc_file "$sh" "$home_dir"); plugin_remove_match "$rc" 'starship init'; done ;;
+            status) plugin_show_status "Starship" starship "$home_dir" 'starship init' ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_plugin_fzf() {
+    local u="$1" home_dir="$2" c shells sh rc opts
+    while true; do
+        c=$(tui_menu "fzf — $u" "Install and configure fuzzy finding:" \
+            install "Install fzf" integrate "Enable key bindings and completion" \
+            options "Set FZF_DEFAULT_OPTS" edit "Edit shell configuration" \
+            disable "Remove fzf configuration" remove "Remove fzf package" \
+            status "Show status" back "Back") || return 0
+        case "$c" in
+            install) pm_install fzf ;;
+            integrate)
+                shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
+                for sh in $shells; do rc=$(plugin_rc_file "$sh" "$home_dir"); case "$sh" in
+                    bash) plugin_add_line "$rc" '[ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash' "$u"; plugin_add_line "$rc" '[ -f /usr/share/bash-completion/completions/fzf ] && source /usr/share/bash-completion/completions/fzf' "$u" ;;
+                    zsh) plugin_add_line "$rc" '[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ] && source /usr/share/doc/fzf/examples/key-bindings.zsh' "$u"; plugin_add_line "$rc" '[ -f /usr/share/doc/fzf/examples/completion.zsh ] && source /usr/share/doc/fzf/examples/completion.zsh' "$u" ;;
+                    fish) plugin_add_line "$rc" 'fzf --fish | source' "$u" ;;
+                esac; done ;;
+            options) opts=$(tui_input "fzf options" "FZF_DEFAULT_OPTS:" "--height=40% --layout=reverse --border") || continue; plugin_add_line "$home_dir/.profile" "export FZF_DEFAULT_OPTS='$opts'" "$u" ;;
+            edit) "${EDITOR:-nano}" "$home_dir/.profile" || true ;;
+            disable) for rc in "$home_dir/.bashrc" "$home_dir/.zshrc" "$home_dir/.config/fish/config.fish" "$home_dir/.profile"; do plugin_remove_match "$rc" 'fzf'; plugin_remove_match "$rc" 'FZF_DEFAULT_OPTS'; done ;;
+            remove) pm_remove fzf ;;
+            status) plugin_show_status "fzf" fzf "$home_dir" 'fzf' ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_plugin_simple_init() { # title command package init-bash init-zsh init-fish user home [config]
+    local title="$1" cmd="$2" pkg="$3" ib="$4" iz="$5" ifish="$6" u="$7" home_dir="$8" cfg="${9:-}"
+    local c shells sh rc
+    while true; do
+        c=$(tui_menu "$title — $u" "Install and configure $title:" \
+            install "Install $pkg" integrate "Enable for selected shells" \
+            edit "Edit plugin configuration" disable "Remove shell integration" \
+            remove "Remove package" status "Show status" back "Back") || return 0
+        case "$c" in
+            install) pm_install "$pkg" ;;
+            integrate)
+                shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
+                for sh in $shells; do rc=$(plugin_rc_file "$sh" "$home_dir"); case "$sh" in bash) [ -n "$ib" ] && plugin_add_line "$rc" "$ib" "$u";; zsh) [ -n "$iz" ] && plugin_add_line "$rc" "$iz" "$u";; fish) [ -n "$ifish" ] && plugin_add_line "$rc" "$ifish" "$u";; esac; done ;;
+            edit)
+                [ -n "$cfg" ] || cfg="$home_dir/.profile"
+                mkdir -p "$(dirname "$cfg")"; touch "$cfg"; chown "$u" "$cfg" 2>/dev/null || true
+                "${EDITOR:-nano}" "$cfg" || true ;;
+            disable) for rc in "$home_dir/.bashrc" "$home_dir/.zshrc" "$home_dir/.config/fish/config.fish"; do plugin_remove_match "$rc" "$cmd"; done ;;
+            remove) pm_remove "$pkg" ;;
+            status) plugin_show_status "$title" "$cmd" "$home_dir" "$cmd" ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_plugin_completions() {
+    local u="$1" home_dir="$2" c sel
+    while true; do
+        c=$(tui_menu "Completions — $u" "Manage shell completion packages and settings:" \
+            install "Install selected completion packages" \
+            bashcfg "Configure Bash completion loading" \
+            zshcfg "Configure Zsh completion system" \
+            remove "Remove selected completion packages" status "Show status" back "Back") || return 0
+        case "$c" in
+            install) sel=$(tui_check "Completion packages" "SPACE selects:" bash-completion "Bash completion" on zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_install $sel ;;
+            bashcfg) plugin_add_line "$home_dir/.bashrc" '[[ $- == *i* ]] && [ -r /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion' "$u" ;;
+            zshcfg) plugin_add_line "$home_dir/.zshrc" 'autoload -Uz compinit && compinit' "$u" ;;
+            remove) sel=$(tui_check "Remove completions" "SPACE selects:" bash-completion "Bash completion" off zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_remove $sel ;;
+            status) plugin_show_status "Completions" bash "$home_dir" 'compinit\|bash_completion' ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_shell_plugins() {
+    local target u home_dir c
+    target=$(shell_plugin_target) || return 0
+    u=${target%%|*}; home_dir=${target#*|}
+    while true; do
+        c=$(tui_menu "Shell Plugins — $u" "Install, configure, inspect or remove cross-shell enhancements:" \
+            starship "Starship prompt — installer, presets and shell integration" \
+            fzf "fzf — key bindings, completion and default options" \
+            comp "Completions — packages and shell initialization" \
+            zoxide "zoxide — shell initialization and configuration" \
+            atuin "Atuin — history initialization and config" \
+            direnv "direnv — shell hooks and direnvrc" \
+            carapace "Carapace — multi-shell completion initialization" \
+            syntax "Zsh syntax highlighting — source and style settings" \
+            autosuggest "Zsh autosuggestions — source and style settings" \
+            user "Change target user" back "Back") || return 0
+        case "$c" in
+            starship) menu_plugin_starship "$u" "$home_dir" ;;
+            fzf) menu_plugin_fzf "$u" "$home_dir" ;;
+            comp) menu_plugin_completions "$u" "$home_dir" ;;
+            zoxide) menu_plugin_simple_init "zoxide" zoxide zoxide 'eval "$(zoxide init bash)"' 'eval "$(zoxide init zsh)"' 'zoxide init fish | source' "$u" "$home_dir" "$home_dir/.config/zoxide/config.toml" ;;
+            atuin) menu_plugin_simple_init "Atuin" atuin atuin 'eval "$(atuin init bash)"' 'eval "$(atuin init zsh)"' 'atuin init fish | source' "$u" "$home_dir" "$home_dir/.config/atuin/config.toml" ;;
+            direnv) menu_plugin_simple_init "direnv" direnv direnv 'eval "$(direnv hook bash)"' 'eval "$(direnv hook zsh)"' 'direnv hook fish | source' "$u" "$home_dir" "$home_dir/.config/direnv/direnvrc" ;;
+            carapace) menu_plugin_simple_init "Carapace" carapace carapace 'source <(carapace _carapace bash)' 'source <(carapace _carapace zsh)' 'carapace _carapace fish | source' "$u" "$home_dir" "$home_dir/.config/carapace/bridges.yaml" ;;
+            syntax) menu_plugin_simple_init "Zsh syntax highlighting" zsh-syntax-highlighting zsh-syntax-highlighting '' 'source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' '' "$u" "$home_dir" "$home_dir/.zshrc" ;;
+            autosuggest) menu_plugin_simple_init "Zsh autosuggestions" zsh-autosuggestions zsh-autosuggestions '' 'source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh' '' "$u" "$home_dir" "$home_dir/.zshrc" ;;
+            user) target=$(shell_plugin_target) || continue; u=${target%%|*}; home_dir=${target#*|} ;;
+            back|"") return 0 ;;
         esac
     done
 }
