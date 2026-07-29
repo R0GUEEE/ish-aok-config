@@ -4754,13 +4754,81 @@ fm_cargo_install() {
     command -v "$bin" >/dev/null 2>&1
 }
 
+fm_configure_tere_shells() { # fm_configure_tere_shells <user>
+    local u="$1"
+    fm_as_user "$u" "for rc in ~/.bashrc ~/.zshrc; do
+        touch \"\$rc\"
+        if ! grep -q '^# systui-tere-wrapper$' \"\$rc\" 2>/dev/null; then
+            cat >> \"\$rc\" <<'EOF'
+
+# systui-tere-wrapper
+tere() {
+    local result=\$(command tere \"\$@\")
+    [ -n \"\$result\" ] && cd -- \"\$result\"
+}
+EOF
+        fi
+    done"
+}
+
+fm_install_tere() {
+    local url="https://github.com/mgunyho/tere/releases/download/v1.6.0/tere-1.6.0-aarch64-unknown-linux-gnu.zip"
+    local arch tmp u bin
+    arch=$(uname -m 2>/dev/null || printf unknown)
+    case "$arch" in
+        aarch64|arm64) ;;
+        *)
+            tui_msg "Unsupported architecture" "This Tere release is for aarch64/arm64. Detected: $arch"
+            return 1
+            ;;
+    esac
+
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v unzip >/dev/null 2>&1 || pm_install unzip
+    command -v curl >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 || {
+        tui_msg "Error" "curl and unzip are required to install Tere."
+        return 1
+    }
+
+    tmp=$(mktemp -d) || return 1
+    if ! curl -fL "$url" -o "$tmp/tere.zip" >>"$LOGFILE" 2>&1; then
+        rm -rf "$tmp"
+        tui_msg "Error" "Failed to download Tere v1.6.0. See $LOGFILE."
+        return 1
+    fi
+    if ! unzip -q "$tmp/tere.zip" -d "$tmp/unpacked" >>"$LOGFILE" 2>&1; then
+        rm -rf "$tmp"
+        tui_msg "Error" "Failed to extract the Tere archive. See $LOGFILE."
+        return 1
+    fi
+
+    bin=$(find "$tmp/unpacked" -type f -name tere -print -quit)
+    [ -n "$bin" ] || {
+        rm -rf "$tmp"
+        tui_msg "Error" "The downloaded archive did not contain the tere binary."
+        return 1
+    }
+    chmod +x "$bin"
+    mkdir -p /usr/local/bin
+    cp -f "$bin" /usr/local/bin/tere
+    chmod 0755 /usr/local/bin/tere
+    rm -rf "$tmp"
+
+    u=$(fm_target_user) || return 0
+    fm_configure_tere_shells "$u"
+    tui_msg "Installed" "Tere v1.6.0 was installed to /usr/local/bin/tere and integrated with .bashrc and .zshrc for $u."
+}
+
 fm_install() {
     local fm="$1" pkg
+    if [ "$fm" = tere ]; then
+        fm_install_tere
+        return $?
+    fi
     pkg=$(fm_pkg_for "$fm")
     pm_install "$pkg" >/dev/null 2>&1 || true
     command -v "$fm" >/dev/null 2>&1 && { tui_msg "Installed" "$fm is installed."; return 0; }
     case "$fm" in
-        tere)  fm_cargo_install tere ;;
         yazi)  fm_cargo_install yazi-fm yazi; fm_cargo_install yazi-cli ya || true ;;
         broot) fm_cargo_install broot ;;
         xplr)  fm_cargo_install xplr ;;
@@ -4773,6 +4841,7 @@ fm_remove() {
     pkg=$(fm_pkg_for "$fm")
     command -v "$pkg" >/dev/null 2>&1 && pm_remove "$pkg"
     [ -x /root/.cargo/bin/"$fm" ] && rm -f /root/.cargo/bin/"$fm"
+    [ "$fm" = tere ] && rm -f /usr/local/bin/tere
     tui_msg "Removed" "Removal completed for $fm. User configuration was preserved."
 }
 
@@ -4801,15 +4870,7 @@ cmd open \${{
 EOF"
             ;;
         tere)
-            fm_as_user "$u" "grep -q 'command tere' ~/.bashrc 2>/dev/null || cat >> ~/.bashrc <<'EOF'
-
-# tere: exit into the selected directory
-tere() {
-    local result
-    result=\$(command tere --mouse=on --skip-first-run-prompt \"\$@\")
-    [ -n \"\$result\" ] && cd -- \"\$result\"
-}
-EOF"
+            fm_configure_tere_shells "$u"
             ;;
         yazi)
             fm_as_user "$u" "mkdir -p ~/.config/yazi; cat > ~/.config/yazi/yazi.toml <<'EOF'
