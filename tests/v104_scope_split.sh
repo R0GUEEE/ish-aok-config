@@ -8,13 +8,13 @@ for f in "$BASE"/lib/*.sh; do [ "$f" = "$BASE/lib/core.sh" ] || . "$f"; done
 for f in "$BASE"/modules/package/*.sh "$BASE"/modules/services/*.sh "$BASE"/modules/*.sh; do [ -r "$f" ] && . "$f"; done
 
 grep -Eq "VERSION='(10|11)\.[0-9]+\.[0-9]+'" "$BASE/lib/core.sh"
-grep -q '^rootfs|RootFS|@menu:rootfs|' "$BASE/menus/main.menu"
-grep -q '^builder|RootFS Builder|@menu:build|' "$BASE/menus/rootfs.menu"
+[ -r "$BASE/menus/rootfs.menu" ]
+grep -q '^rootfs|Mini RootFS Builder|@menu:rootfs|' "$BASE/menus/main.menu"
 grep -q '^system|System Configuration|v104_system_configuration_menu|' "$BASE/menus/main.menu"
 ! grep -Eq '^manage\||^configure\||^maintenance\|' "$BASE/menus/main.menu"
-grep -q '^edit|Edit an Existing RootFS|v104_edit_existing_rootfs|' "$BASE/menus/build.menu"
-! grep -q '^multi|' "$BASE/menus/build_advanced.menu"
-for fn in v104_main_scope_call v104_system_configuration_menu v104_edit_existing_rootfs v104_builder_help v104_about; do command -v "$fn" >/dev/null; done
+[ ! -e "$BASE/menus/build.menu" ]
+[ ! -e "$BASE/menus/build_advanced.menu" ]
+for fn in v104_main_scope_call v104_system_configuration_menu v104_edit_existing_rootfs v104_about; do command -v "$fn" >/dev/null; done
 mkdir -p "$HOME/target-rootfs"
 set_active_rootfs "$HOME/target-rootfs"
 v104_test_scope(){ [ "$(active_rootfs)" = / ]; }

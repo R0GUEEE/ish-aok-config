@@ -30,17 +30,6 @@ v1000_action_available(){ command_exists "$1" 2>/dev/null; }
 
 v1000_recommended_rows(){
   root=$(v1000_active_rootfs)
-  if ! v1000_rootfs_ready "$root"; then
-    printf '%s|%s|%s\n' rootfs_anywhere 'Select RootFS from any path' 'No usable active RootFS is selected'
-    printf '%s|%s|%s\n' rootfs_registry 'Select registered RootFS' 'Choose an existing registered filesystem'
-  else
-    printf '%s|%s|%s\n' chroot 'Enter active RootFS' "Open $root with Chroot Studio"
-    printf '%s|%s|%s\n' packages 'Manage packages' 'Install, remove or upgrade packages in the active RootFS'
-    printf '%s|%s|%s\n' services 'Manage services' 'Inspect the active init and service configuration'
-    printf '%s|%s|%s\n' health 'Run RootFS health check' 'Check filesystem readiness and common configuration problems'
-    printf '%s|%s|%s\n' package_rootfs 'Package active or other RootFS' 'Create a checksummed RootFS tarball'
-  fi
-  printf '%s|%s|%s\n' unified_build 'Build a RootFS' 'Configure, validate and execute a RootFS build'
   printf '%s|%s|%s\n' navigation_search 'Search all tools' 'Find any tool without traversing menus'
 }
 
@@ -84,11 +73,9 @@ v1000_task_center_report_ui(){ v1000_task_center_report || true; ui_text 'Task C
 
 v1000_task_center_menu(){
   while :; do
-    c=$(ui_menu 'Task Center' "$(v1000_context_text)" recommended 'Recommended actions' rootfs 'RootFS tools' build 'Build tools' favorites 'Favorites' recent 'Recent actions' search 'Search all tools' report 'Task Center report' back 'Back') || { rc=$?; [ "$rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$rc"; }
+    c=$(ui_menu 'Task Center' "$(v1000_context_text)" recommended 'Recommended actions' favorites 'Favorites' recent 'Recent actions' search 'Search all tools' report 'Task Center report' back 'Back') || { rc=$?; [ "$rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$rc"; }
     case $c in
       recommended) v1000_run_recommended;;
-      rootfs) v91_menu_run rootfs;;
-      build) v91_menu_run build;;
       favorites) workspace_favorites_menu;;
       recent) workspace_recent_menu;;
       search) v990_navigation_search_menu;;

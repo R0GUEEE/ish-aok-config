@@ -1,8 +1,10 @@
-builder|RootFS Builder|@menu:build|Create, import and configure new RootFS filesystems
-select|Select RootFS|@menu:rootfs_select|Registered, recent or any filesystem path
-enter|Enter Active RootFS|rootfs_chroot_studio|Mount and enter the active filesystem
-chroot_any|Chroot any RootFS directory|v951_chroot_any_directory|Choose any directory without activating it first
-manage|Manage active RootFS|@menu:rootfs_manage|Configure packages, repositories, services and boot
-protect|Snapshots & Repair|@menu:rootfs_protect|Snapshot, health and recovery tools
-transfer|Clone, Compare & Package|@menu:rootfs_transfer|Copy, inspect and archive filesystems
-back|Back|@return|
+# id|label|handler|description
+guided|Configure and build|v1160_guided|Guided distribution, init, packages, identity and output workflow
+target|Distribution and architecture|v1160_distro_menu|Choose distribution, release and target architecture
+init|Init system|v1160_init_menu|Choose OpenRC, SysVinit, runit, systemd or no boot init where supported
+packages|Packages|v1160_packages_menu|Select package presets with Space and add custom packages
+location|Target directory|v1160_location_menu|Choose the build directory and package mirror
+identity|Hostname and users|v1160_identity_menu|Configure hostname, root access and a regular user
+output|Compression output|v1160_output_menu|Create a gzip, XZ or Zstandard archive
+review|Open full builder|v1160_rootfs_menu|Review, save templates, run preflight and build
+back|Back|@return|Return to the main menu

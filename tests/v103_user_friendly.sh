@@ -9,10 +9,12 @@ for f in "$BASE"/modules/package/*.sh "$BASE"/modules/services/*.sh "$BASE"/modu
 case "$VERSION" in 10.[3-9].*|10.1[0-9].*|1[1-9].*) :;; *) exit 1;; esac
 [ ! -e "$BASE/menus/projects.menu" ]
 ! grep -q '^projects|' "$BASE/menus/main.menu"
-grep -q '^rootfs|RootFS|@menu:rootfs|' "$BASE/menus/main.menu"
-grep -q '^builder|RootFS Builder|@menu:build|' "$BASE/menus/rootfs.menu"
+[ -r "$BASE/menus/rootfs.menu" ]
+grep -q '^rootfs|Mini RootFS Builder|@menu:rootfs|' "$BASE/menus/main.menu"
+[ ! -e "$BASE/menus/build.menu" ]
 grep -q '^system|System Configuration|v104_system_configuration_menu|' "$BASE/menus/main.menu"
-for fn in v103_build_new v103_quick_profiles_menu v103_health_dashboard v103_fix_rootfs v103_typed_confirm v103_mode_menu; do command -v "$fn" >/dev/null; done
+for fn in v103_build_new v103_quick_profiles_menu v103_fix_rootfs v103_typed_confirm v103_mode_menu; do command -v "$fn" >/dev/null; done
+! command -v v103_health_dashboard >/dev/null 2>&1
 V87_BUILD_PROFILE=${TMPDIR:-/tmp}/v103-profile.$$
 : >"$V87_BUILD_PROFILE"
 v103_quick_profile_apply developer >/dev/null 2>&1

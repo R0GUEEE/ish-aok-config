@@ -88,15 +88,15 @@ v90_administration_menu(){
 
 v90_reports_menu(){
   while :; do
-    c=$(ui_menu Reports 'Generate and review workspace and RootFS reports.' workspace 'Workspace report' rootfs 'RootFS reports studio' health 'Health dashboard' compatibility 'Compatibility analysis' distribution 'Distribution report' services 'Service report' repositories 'Repository report' platform 'Platform report') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    case $c in workspace) ui_text 'Workspace report' "$(workspace_report_v90)";; rootfs) rootfs_reports_studio;; health) rootfs_health_interactive;; compatibility) compatibility_deep_report_v72;; distribution) root=$(v90_active_rootfs); ui_text Distribution "$(cat "$(v84_distribution_report "$root")")";; services) root=$(v90_active_rootfs); ui_text Services "$(cat "$(service_v85_report "$root")")";; repositories) root=$(v90_active_rootfs); ui_text Repositories "$(cat "$(repo_v86_report "$root")")";; platform) ui_text Platform "$(platform_v80_report)";; esac
+    c=$(ui_menu Reports 'Generate and review workspace and RootFS reports.' workspace 'Workspace report' rootfs 'RootFS reports studio' compatibility 'Compatibility analysis' distribution 'Distribution report' services 'Service report' repositories 'Repository report' platform 'Platform report') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
+    case $c in workspace) ui_text 'Workspace report' "$(workspace_report_v90)";; rootfs) rootfs_reports_studio;; compatibility) compatibility_deep_report_v72;; distribution) root=$(v90_active_rootfs); ui_text Distribution "$(cat "$(v84_distribution_report "$root")")";; services) root=$(v90_active_rootfs); ui_text Services "$(cat "$(service_v85_report "$root")")";; repositories) root=$(v90_active_rootfs); ui_text Repositories "$(cat "$(repo_v86_report "$root")")";; platform) ui_text Platform "$(platform_v80_report)";; esac
   done
 }
 
 v90_settings_menu(){
   while :; do
-    c=$(ui_menu Settings 'Workspace and application settings.' context 'Workspace context' workspace 'Workspace preferences' setup 'Setup and profiles' plugins 'Plugin and Module SDK' classic 'Classic navigation') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    case $c in context) v90_context_menu;; workspace) workspace_settings_menu;; setup) setup_profiles_menu;; plugins) sdk_center;; classic) classic_main_menu;; esac
+    c=$(ui_menu Settings 'Workspace and application settings.' context 'Workspace context' workspace 'Workspace preferences' setup 'Setup and profiles') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
+    case $c in context) v90_context_menu;; workspace) workspace_settings_menu;; setup) setup_profiles_menu;; esac
   done
 }
 

@@ -156,22 +156,6 @@ sdk_module_details(){
   awk -F '\t' -v id="$_sdk_id" '$1==id{printf "ID: %s\nTitle: %s\nCategory: %s\nVersion: %s\nStatus: %s\nOrigin: %s\nManifest: %s\nEntry: %s\nRequires: %s\nDescription: %s\n",$1,$2,$3,$4,$5,$6,$7,$8,$9,$10}' "$V75_MODULE_INDEX"
 }
 
-sdk_modules_menu(){
-  while :; do
-    sdk_discover_modules; set --
-    while IFS="$(printf '\t')" read -r id title category version status origin manifest entry requires description; do set -- "$@" "$id" "$title [$status]"; done <"$V75_MODULE_INDEX"
-    [ "$#" -gt 0 ] || { ui_msg 'Module SDK' 'No modules were discovered.'; return; }
-    id=$(ui_menu 'Dynamic modules' 'Select a module to inspect or change.' "$@") || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    status=$(awk -F '\t' -v id="$id" '$1==id{print $5}' "$V75_MODULE_INDEX")
-    choice=$(ui_menu "Module: $id" "$(sdk_module_details "$id")" toggle "$( [ "$status" = disabled ] && echo Enable || echo Disable ) module" validate 'Validate manifest' path 'Show module path') || continue
-    case $choice in
-      toggle) [ "$status" = disabled ] && sdk_enable "$id" || sdk_disable "$id"; notification_add info "Module $id state changed";;
-      validate) manifest=$(awk -F '\t' -v id="$id" '$1==id{print $7}' "$V75_MODULE_INDEX"); sdk_validate_manifest "$manifest" && ui_msg Validation 'Manifest is valid.' || ui_msg Validation 'Manifest validation failed.';;
-      path) ui_msg Path "$(awk -F '\t' -v id="$id" '$1==id{print $7}' "$V75_MODULE_INDEX")";;
-    esac
-  done
-}
-
 sdk_install_local_plugin(){
   src=$(ui_input 'Install extension' 'Path to plugin directory or tar archive') || return
   [ -e "$src" ] || { ui_msg Error "Not found: $src"; return 1; }
@@ -198,13 +182,4 @@ sdk_remove_user_plugin(){
   id=$(ui_menu 'Remove extension' 'Choose an installed user extension.' "$@") || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
   ui_yesno Remove "Remove $id?" || return
   rm -rf "$V75_PLUGIN_DIR/$id"; sdk_enable "$id"; activity_add plugin "Removed extension $id"
-}
-
-sdk_center(){
-  while :; do
-    c=$(ui_menu 'Module and Plugin SDK' 'Discover, validate and manage dynamic extensions.' modules 'Browse discovered modules' install 'Install local extension' remove 'Remove user extension' report 'Module report' template 'Create plugin template copy' rescan 'Rescan extensions') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    case $c in
-      modules) sdk_modules_menu;; install) sdk_install_local_plugin;; remove) sdk_remove_user_plugin;; report) ui_text 'Module report' "$(sdk_module_report)";; template) dest=$(ui_input Template 'Destination directory' "${HOME:-/root}/ish-aok-plugin-example") || continue; cp -R "$ISH_AOK_CONFIG_ROOT/templates/plugin-sdk" "$dest" && ui_msg Template "Created: $dest";; rescan) sdk_discover_modules; command_registry_build; ui_msg SDK 'Extensions rescanned.';;
-    esac
-  done
 }

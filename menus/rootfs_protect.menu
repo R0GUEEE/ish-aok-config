@@ -1,4 +1,0 @@
-snapshots|Snapshots|aok_snapshots_menu|Create and browse snapshots
-repair|Repair RootFS|rootfs_repair_studio|Repair common filesystem problems
-health|Health Check|rootfs_health_interactive|Run interactive health checks
-back|Back|@return|

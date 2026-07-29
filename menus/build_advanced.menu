@@ -1,8 +1,0 @@
-# id|label|handler|description
-profiles|Build Profiles|@menu:build_profile|Save and reuse build configurations
-backends|Direct Build Backends|v87_manual_builders_menu|Use debootstrap, apk, pacstrap, dnf, xbps or archive import directly
-matrix|Build Matrix|v94_matrix_studio|Build multiple targets sequentially
-queue|Recipes and Queue|v89_recipes_queue_menu|Manage reusable recipes and queued work
-recovery|Build Execution and Recovery|v88_build_execution_menu|Review plan, run, resume, recover and inspect history
-capabilities|Builder Capabilities|v95_builder_capabilities_ui|Detect available backends
-back|Back|@return|

@@ -120,19 +120,6 @@ rootfs_package_native(){
   esac
 }
 
-plugin_marketplace_enhanced(){
-  catfile="$BASE/catalogs/plugin-marketplace.tsv"
-  [ -r "$catfile" ] || { ui_msg Plugins 'Plugin catalog not found.'; return; }
-  while :; do
-    c=$(ui_menu 'Plugin Marketplace' "$(v71_breadcrumb 'Plugin Marketplace')" browse 'Browse by category' search 'Search plugin catalog' managers 'Open plugin framework managers') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    case $c in
-      browse) cats=$(awk -F '\t' 'NF>=2 && $1!~/^#/{print $1}' "$catfile" | sort -u); set --; for x in $cats; do set -- "$@" "$x" "$x plugins"; done; cat=$(ui_menu Categories 'Choose a category.' "$@") || continue; ui_text Plugins "$(awk -F '\t' -v c="$cat" '$1==c{printf "%-24s %s\n",$2,$3}' "$catfile")";;
-      search) q=$(ui_input Plugins 'Search name or description') || continue; ui_text Results "$(awk -F '\t' -v q="$q" 'BEGIN{IGNORECASE=1} $0~q{printf "%-14s %-24s %s\n",$1,$2,$3}' "$catfile")";;
-      managers) plugin_apps_menu 2>/dev/null || plugin_manager_menu;;
-    esac
-  done
-}
-
 rootfs_automation_profiles(){
   c=$(ui_menu 'Automation Profiles' 'Run a multi-step workflow.' developer 'Developer rootfs readiness' minimal 'Minimal rootfs cleanup' builder 'Builder readiness' server 'Server readiness' portable 'Portable low-memory profile') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
   case $c in
@@ -163,9 +150,9 @@ build_queue_manager_v71(){
 aok_v71_workflows_menu(){
   while :; do
     c=$(ui_menu 'iSH-AOK Workflow Edition' "$(v71_breadcrumb 'Workflow Edition')\nActive: $(active_rootfs)" \
-      registry 'RootFS registry and favorites' health 'Interactive health dashboard' packages 'Native package studio' \
+      registry 'RootFS registry and favorites' packages 'Native package studio' \
       snapshots 'Snapshot browser' diff 'RootFS diff viewer' search 'Global RootFS search' reports 'Report generator' \
-      plugins 'Enhanced plugin marketplace' queue 'Build queue manager' automation 'Automation profiles' engineering 'System engineering tools') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
-    case $c in registry) rootfs_registry_browser;; health) rootfs_health_interactive;; packages) rootfs_package_native;; snapshots) rootfs_snapshot_browser;; diff) rootfs_diff_viewer;; search) rootfs_global_search;; reports) rootfs_report_generate;; plugins) plugin_marketplace_enhanced;; queue) build_queue_manager_v71;; automation) rootfs_automation_profiles;; engineering) v72_engineering_menu;; esac
+      queue 'Build queue manager' automation 'Automation profiles' engineering 'System engineering tools') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
+    case $c in registry) rootfs_registry_browser;; packages) rootfs_package_native;; snapshots) rootfs_snapshot_browser;; diff) rootfs_diff_viewer;; search) rootfs_global_search;; reports) rootfs_report_generate;; queue) build_queue_manager_v71;; automation) rootfs_automation_profiles;; engineering) v72_engineering_menu;; esac
   done
 }

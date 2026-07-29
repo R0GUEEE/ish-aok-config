@@ -35,6 +35,6 @@ set -e
 [ "$rc" -ne 0 ]
 
 command -v rootfs_select_anywhere >/dev/null
-grep -q '^anywhere|Select from any path|rootfs_select_anywhere|' "$BASE/menus/rootfs_select.menu"
+[ ! -e "$BASE/menus/rootfs_select.menu" ]
 grep -Eq "VERSION='(10\.[0-9]+\.[0-9]+|[1-9][1-9][0-9]*\.[0-9]+\.[0-9]+)'|VERSION='([7-9]\.)" "$BASE/lib/core.sh"
 printf 'v9.4.4 RootFS anywhere selection: PASS\n'

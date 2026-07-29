@@ -6,10 +6,10 @@ export ISH_AOK_CONFIG_ROOT="$BASE"
 for f in "$BASE"/lib/*.sh; do [ "$f" = "$BASE/lib/core.sh" ] || . "$f"; done
 for f in "$BASE"/modules/*.sh; do . "$f"; done
 
-grep -q '^new|Create a New RootFS|v103_build_new|' "$BASE/menus/build.menu"
-grep -q '^current|Current Build|v103_build_review|' "$BASE/menus/build.menu"
-grep -q '^advanced|More Build Options|@menu:build_advanced|' "$BASE/menus/build.menu"
-[ "$(grep -c '^[^#].*|' "$BASE/menus/build.menu")" -ge 4 ]
+[ ! -e "$BASE/menus/build.menu" ]
+[ ! -e "$BASE/menus/build_advanced.menu" ]
+[ -r "$BASE/menus/rootfs.menu" ]
+grep -q '^guided|Configure and build|v1160_guided|' "$BASE/menus/rootfs.menu"
 for fn in v102_guided_build v102_current_build_menu v102_advanced_build_menu v102_build_summary; do
   command -v "$fn" >/dev/null 2>&1
 done

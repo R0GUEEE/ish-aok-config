@@ -19,5 +19,5 @@ v87_profile_set "$V89_PROFILE_LIBRARY/test.profile" ARCH amd64
 v89_profile_compare_files "$V87_BUILD_PROFILE" "$V89_PROFILE_LIBRARY/test.profile" | grep -q ARCH
 v89_build_profiles_report | grep -q 'Build Profiles and Presets'
 grep -q -- '--build-profiles-report' "$BASE/modules/main.sh"
-grep -q "command_register build_profiles" "$BASE/lib/dispatcher_v73.sh"
+! grep -q "command_register build_profiles" "$BASE/lib/dispatcher_v73.sh"
 printf 'v8.9 build profiles tests passed\n'

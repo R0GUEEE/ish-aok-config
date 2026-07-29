@@ -26,7 +26,6 @@ software_development_advanced_menu(){
       build 'Build systems and compilers' \
       containers 'Containers, proot and isolation' \
       workflows 'Workflow Engine' \
-      sdk 'Module and Plugin SDK' \
       reliability 'Architecture and reliability' \
       operations 'Operations hardening and integrity' \
       distribution 'Distribution integration and compatibility' \
@@ -41,7 +40,6 @@ software_development_advanced_menu(){
       build) build_compilers_menu;;
       containers) container_center;;
       workflows) workflow_engine_menu;;
-      sdk) sdk_center;;
       reliability) v82_reliability_menu;;
       operations) v83_operations_menu;;
       distribution) v84_distribution_integration_menu;;
@@ -54,14 +52,12 @@ software_development_advanced_menu(){
 
 software_development_menu(){
   while :; do
-    c=$(ui_menu 'Software and development' 'Install software, manage plugins, and configure development tools.' \
+    c=$(ui_menu 'Software and development' 'Install software and configure development tools.' \
       packages 'Packages: install, remove and repair' \
-      plugins 'Plugins and frameworks' \
       developer 'Developer tools' \
       advanced 'Advanced tools') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
     case $c in
       packages) package_center_v6;;
-      plugins) plugin_marketplace_center;;
       developer) developer_center_v6;;
       advanced) software_development_advanced_menu;;
     esac
@@ -225,7 +221,6 @@ classic_main_menu(){
       system 'System administration' \
       user 'User environment' \
       storage 'Storage, network and backups' \
-      health 'Monitoring and recovery' \
       exit 'Exit') || { _menu_rc=$?; [ "$_menu_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_menu_rc"; };
     case $c in
       workspace) workspace_dashboard_v73;;
@@ -235,7 +230,6 @@ classic_main_menu(){
       system) system_admin_menu;;
       user) user_interface_menu;;
       storage) storage_network_menu;;
-      health) monitoring_recovery_menu;;
       exit) return;;
     esac
   done

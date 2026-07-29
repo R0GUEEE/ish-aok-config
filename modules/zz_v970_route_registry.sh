@@ -31,10 +31,10 @@ v970_open_route(){
 # All compatibility entry points now resolve through one registry.
 workspace_dashboard_v90(){ v970_open_route workspace_dashboard_v90; }
 workspace_dashboard_v91(){ v970_open_route workspace_dashboard_v91; }
-rootfs_explorer_menu(){ v970_open_route rootfs_explorer_menu; }
-v90_rootfs_actions_menu(){ v970_open_route v90_rootfs_actions_menu; }
-unified_build_menu(){ v970_open_route unified_build_menu; }
-v90_build_workflow_menu(){ v970_open_route v90_build_workflow_menu; }
+rootfs_explorer_menu(){ v970_open_route rootfs; }
+v90_rootfs_actions_menu(){ v970_open_route rootfs; }
+unified_build_menu(){ v970_open_route rootfs; }
+v90_build_workflow_menu(){ v970_open_route rootfs; }
 v90_administration_menu(){ v970_open_route v90_administration_menu; }
 v90_reports_menu(){ v970_open_route v90_reports_menu; }
 v90_settings_menu(){ v970_open_route v90_settings_menu; }
@@ -42,8 +42,7 @@ v90_settings_menu(){ v970_open_route v90_settings_menu; }
 v970_favorite_alias_id(){
   case $1 in
     workspace_dashboard_v90|workspace_dashboard_v91|dashboard) printf '%s\n' dashboard;;
-    rootfs_explorer_menu|v90_rootfs_actions_menu|rootfs) printf '%s\n' rootfs_explorer;;
-    unified_build_menu|v90_build_workflow_menu|build) printf '%s\n' unified_build;;
+    rootfs_explorer_menu|v90_rootfs_actions_menu|rootfs|unified_build_menu|v90_build_workflow_menu|build) printf '%s\n' rootfs_builder;;
     v90_administration_menu|management) printf '%s\n' system_tools;;
     v90_reports_menu) printf '%s\n' reports;;
     v90_settings_menu) printf '%s\n' settings;;

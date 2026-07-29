@@ -91,28 +91,10 @@ v103_configure_rootfs(){
   [ -n "$root" ] || return 1
   ui_text 'Configure RootFS' "Active RootFS: $root\n\nThe wizard will guide you through common settings one section at a time."
   while :; do
-    c=$(ui_menu 'Configure a RootFS' "Active: $root" identity 'Hostname, locale and timezone' users 'Users, passwords and sudo' shell 'Shell, prompt and terminal' editor 'Default editor and editor configuration' network 'Networking, DNS and repositories' ssh 'SSH server and remote access' packages 'Recommended software' health 'Check configuration health' advanced 'Advanced configuration tools' back 'Back') || return 0
+    c=$(ui_menu 'Configure a RootFS' "Active: $root" identity 'Hostname, locale and timezone' users 'Users, passwords and sudo' shell 'Shell, prompt and terminal' editor 'Default editor and editor configuration' network 'Networking, DNS and repositories' ssh 'SSH server and remote access' packages 'Recommended software' advanced 'Advanced configuration tools' back 'Back') || return 0
     case $c in
-      identity) system_menu;; users) users_menu;; shell) shell_wizards_menu;; editor) editors_menu;; network) network_center;; ssh) ssh_menu;; packages) rootfs_package_native;; health) v103_health_dashboard;; advanced) system_menu;; back) return;;
+      identity) system_menu;; users) users_menu;; shell) shell_wizards_menu;; editor) editors_menu;; network) network_center;; ssh) ssh_menu;; packages) rootfs_package_native;; advanced) system_menu;; back) return;;
     esac
-  done
-}
-
-v103_health_text(){
-  root=$(active_rootfs 2>/dev/null || printf none)
-  printf 'System Health\n\n'
-  [ "$root" != none ] && [ -d "$root" ] && printf '✓ RootFS path is available\n' || printf '✗ No valid RootFS is selected\n'
-  [ "$root" != none ] && [ -x "$root/bin/sh" -o -x "$root/usr/bin/sh" ] && printf '✓ RootFS contains a shell\n' || printf '⚠ RootFS shell was not found\n'
-  [ "$root" != none ] && [ -r "$root/etc/os-release" ] && printf '✓ Distribution metadata is present\n' || printf '⚠ /etc/os-release is missing\n'
-  [ "$root" != none ] && [ -r "$root/etc/resolv.conf" ] && printf '✓ DNS configuration exists\n' || printf '⚠ DNS configuration is missing\n'
-  [ "$root" != none ] && [ -r "$root/etc/passwd" ] && printf '✓ User database exists\n' || printf '⚠ User database is missing\n'
-  df -P "${root:-/}" >/dev/null 2>&1 && printf '✓ Storage is accessible\n' || printf '⚠ Storage check failed\n'
-}
-
-v103_health_dashboard(){
-  while :; do
-    c=$(ui_menu 'System Health' "$(v103_health_text)\n\nChoose an item to inspect or repair." refresh 'Run checks again' report 'Open detailed health report' repair 'Fix My RootFS' packages 'Repair package manager or repositories' dns 'Repair DNS and networking' services 'Inspect services and init system' back 'Back') || return 0
-    case $c in refresh) :;; report) rootfs_health_report;; repair) v103_fix_rootfs;; packages) rootfs_package_native;; dns) network_center;; services) service_center_v6;; back) return;; esac
   done
 }
 
@@ -124,25 +106,25 @@ v103_typed_confirm(){
 
 v103_fix_rootfs(){
   while :; do
-    c=$(ui_menu 'Fix My RootFS' 'Choose the closest problem. Diagnostics run before any repair action.' boot "RootFS won't start or enter" apt 'apt, apk, pacman, dnf or xbps does not work' dns 'DNS or Internet access is broken' ssh 'SSH will not start or accept connections' locale 'Locale or timezone problems' packages 'Missing or broken packages' permissions 'Broken ownership or permissions' build 'A RootFS build failed' full 'Run complete health diagnostics' back 'Back') || return 0
+    c=$(ui_menu 'Fix My RootFS' 'Choose the closest problem. Diagnostics run before any repair action.' boot "RootFS won't start or enter" apt 'apt, apk, pacman, dnf or xbps does not work' dns 'DNS or Internet access is broken' ssh 'SSH will not start or accept connections' locale 'Locale or timezone problems' packages 'Missing or broken packages' permissions 'Broken ownership or permissions' full 'Run complete health diagnostics' back 'Back') || return 0
     case $c in
-      boot) rootfs_repair_studio;; apt|packages) rootfs_package_native;; dns) network_center;; ssh) ssh_menu;; locale) system_menu;; permissions) security_tools_menu;; build) v88_build_execution_menu;; full) rootfs_health_report;; back) return;;
+      boot) rootfs_repair_studio;; apt|packages) rootfs_package_native;; dns) network_center;; ssh) ssh_menu;; locale) system_menu;; permissions) security_tools_menu;; full) rootfs_health_report;; back) return;;
     esac
   done
 }
 
 v103_maintenance_menu(){
   while :; do
-    c=$(ui_menu 'System Maintenance' 'Common checks and repairs are grouped here.' health 'System Health dashboard' fix 'Fix My RootFS wizard' packages 'Package maintenance' services 'Service and boot management' storage 'Storage, mounts and backups' network 'Networking, DNS and SSH' cleanup 'Safe cleanup' advanced 'Advanced maintenance tools' back 'Back') || return 0
-    case $c in health) v103_health_dashboard;; fix) v103_fix_rootfs;; packages) rootfs_package_native;; services) service_center_v6;; storage) storage_backup_menu;; network) network_center;; cleanup) rootfs_safe_cleanup;; advanced) system_menu;; back) return;; esac
+    c=$(ui_menu 'System Maintenance' 'Common repairs are grouped here.' fix 'Fix My RootFS wizard' packages 'Package maintenance' services 'Service and boot management' storage 'Storage, mounts and backups' network 'Networking, DNS and SSH' cleanup 'Safe cleanup' advanced 'Advanced maintenance tools' back 'Back') || return 0
+    case $c in fix) v103_fix_rootfs;; packages) rootfs_package_native;; services) service_center_v6;; storage) storage_backup_menu;; network) network_center;; cleanup) rootfs_safe_cleanup;; advanced) system_menu;; back) return;; esac
   done
 }
 
 # Friendlier settings landing screen while preserving advanced settings.
 v103_settings_menu(){
   while :; do
-    c=$(ui_menu 'Settings' "Interface mode: $V103_MODE" mode 'Simple or Advanced interface mode' defaults 'Application defaults' ui 'Terminal UI and display settings' favorites 'Favorites and search' plugins 'Extensions and plugins' diagnostics 'Diagnostics and reports' advanced 'Advanced settings' help 'Help and keyboard behavior' back 'Back') || return 0
-    case $c in mode) v103_mode_menu;; defaults) project_settings_menu;; ui) ui_mode_menu;; favorites) v990_navigation_search_menu;; plugins) sdk_modules_menu;; diagnostics) v101_route_audit; ui_text 'Routing diagnostics' "$(cat "$V962_ROUTE_REPORT" 2>/dev/null)";; advanced) v91_menu_run settings_advanced;; help) ui_text Help 'Enter selects an item. Escape or Cancel returns to the previous menu. Every normal operation asks for confirmation before destructive changes. Search finds advanced tools that are not shown in Simple mode.';; back) return;; esac
+    c=$(ui_menu 'Settings' "Interface mode: $V103_MODE" mode 'Simple or Advanced interface mode' defaults 'Application defaults' ui 'Terminal UI and display settings' favorites 'Favorites and search' advanced 'Advanced settings' help 'Help and keyboard behavior' back 'Back') || return 0
+    case $c in mode) v103_mode_menu;; defaults) project_settings_menu;; ui) ui_mode_menu;; favorites) v990_navigation_search_menu;; advanced) v91_menu_run settings_advanced;; help) ui_text Help 'Enter selects an item. Escape or Cancel returns to the previous menu. Every normal operation asks for confirmation before destructive changes. Search finds advanced tools that are not shown in Simple mode.';; back) return;; esac
   done
 }
 

@@ -1,18 +1,6 @@
 #!/bin/sh
 # v11.0.0 milestone 1: modular foundation and RootFS-first navigation.
 
-v1100_plugins_menu(){
-  while :; do
-    inventory=$(v11_plugin_inventory 2>/dev/null || true)
-    c=$(ui_menu 'Modules & Plugins' 'Manifest-based module discovery. Disabled modules are listed but never sourced automatically.' \
-      inventory 'Show discovered v11 modules' legacy 'Manage shell/editor plugins' sdk 'Open module SDK tools' back 'Back') || return 0
-    case $c in
-      inventory) [ -n "$inventory" ] && ui_text 'v11 module inventory' "$inventory" || ui_msg 'v11 module inventory' 'No v11 modules were discovered.';;
-      legacy) plugin_manager_menu;; sdk) sdk_modules_menu;; back) return 0;;
-    esac
-  done
-}
-
 v1100_software_catalog_menu(){
   while :; do
     c=$(ui_menu 'Software Catalog' 'Central metadata supplies software labels, categories, descriptions, and configuration routes.' \
@@ -60,10 +48,10 @@ main_menu(){
   while :; do
     c=$(ui_menu "$PROGRAM $VERSION" "$(printf 'System: %s | %s | %s\nActive RootFS: %s' "${DISTRO_ID:-unknown}" "${ARCH:-unknown}" "${PKG_MGR:-unknown}" "$(active_rootfs 2>/dev/null || printf none)")" \
       builder 'RootFS Builder' rootfs 'Manage RootFS' system 'System Configuration' catalog 'Software Catalog' \
-      plugins 'Modules & Plugins' health 'Health & Diagnostics' search 'Search' settings 'Settings' about 'About' exit 'Exit') || return 0
+      search 'Search' settings 'Settings' about 'About' exit 'Exit') || return 0
     case $c in
       builder) v1100_builder_dashboard;; rootfs) v104_manage_rootfs_menu;; system) v104_system_configuration_menu;;
-      catalog) v1100_software_catalog_menu;; plugins) v1100_plugins_menu;; health) v112_diagnostics_menu;;
+      catalog) v1100_software_catalog_menu;;
       search) v990_navigation_search_menu;; settings) v103_settings_menu;; about) v1100_about;; exit) return 0;;
     esac
   done

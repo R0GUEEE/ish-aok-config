@@ -10,12 +10,7 @@ for f in "$BASE"/modules/package/*.sh "$BASE"/modules/services/*.sh "$BASE"/modu
 
 command -v rootfs_registry_select_ui >/dev/null
 command -v rootfs_registry_browser >/dev/null
-grep -q '^registered|Select registered RootFS|rootfs_registry_select_ui|' "$BASE/menus/rootfs_select.menu"
-
-# @return must signal the parent declarative loop to close.
-rc=0
-v91_menu_dispatch rootfs back || rc=$?
-[ "$rc" -eq 90 ]
+[ ! -e "$BASE/menus/rootfs_select.menu" ]
 
 # Simulate selecting a valid RootFS and ensure it becomes active.
 tmp="$HOME/rootfs"

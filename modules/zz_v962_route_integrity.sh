@@ -7,10 +7,10 @@ V962_ROUTE_REPORT=${V962_ROUTE_REPORT:-$REPORT_DIR/menu-routing-v962.txt}
 # command IDs may still call these names; all now terminate at the v9.6 menu tree.
 workspace_dashboard_v90(){ v91_menu_run workspace; }
 workspace_dashboard_v91(){ v91_menu_run workspace; }
-rootfs_explorer_menu(){ v91_menu_run rootfs; }
-unified_build_menu(){ v91_menu_run build; }
-v90_rootfs_actions_menu(){ v91_menu_run rootfs; }
-v90_build_workflow_menu(){ v91_menu_run build; }
+rootfs_explorer_menu(){ main_menu; }
+unified_build_menu(){ v91_menu_run rootfs; }
+v90_rootfs_actions_menu(){ main_menu; }
+v90_build_workflow_menu(){ v91_menu_run rootfs; }
 v90_administration_menu(){ v91_menu_run management; }
 v90_reports_menu(){ v91_menu_run main; }
 v90_settings_menu(){ v91_menu_run settings; }
@@ -19,10 +19,6 @@ v962_route_manifest(){
   cat <<'ROUTES'
 workspace_dashboard_v90|workspace
 workspace_dashboard_v91|workspace
-rootfs_explorer_menu|rootfs
-unified_build_menu|build
-v90_rootfs_actions_menu|rootfs
-v90_build_workflow_menu|build
 v90_administration_menu|management
 v90_reports_menu|main
 v90_settings_menu|settings
@@ -146,7 +142,7 @@ EOF_ROUTES
   done <"$registry"
 
   printf '\nCanonical command routes:\n' >>"$V962_ROUTE_REPORT"
-  for spec in 'dashboard:workspace_dashboard_v90' 'rootfs_explorer:rootfs_explorer_menu' 'unified_build:v90_build_workflow_menu' 'workspace_context:v90_context_menu' 'classic_navigation:classic_main_menu'; do
+  for spec in 'dashboard:workspace_dashboard_v90' 'classic_navigation:classic_main_menu'; do
     id=${spec%%:*}; expected=${spec#*:}; actual=$(awk -F '\t' -v id="$id" '$1==id{print $4;exit}' "$registry")
     if [ "$actual" = "$expected" ]; then
       printf '  PASS %-24s %s\n' "$id" "$actual" >>"$V962_ROUTE_REPORT"

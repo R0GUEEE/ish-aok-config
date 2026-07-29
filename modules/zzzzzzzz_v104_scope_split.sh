@@ -52,7 +52,6 @@ v104_system_configuration_menu(){
       network 'Networking, DNS and SSH' \
       storage 'Storage, mounts and backups' \
       performance 'Performance and maintenance' \
-      health 'System health and diagnostics' \
       advanced 'Advanced system tools' \
       back 'Back') || return 0
     case $choice in
@@ -64,7 +63,6 @@ v104_system_configuration_menu(){
       network) v104_main_scope_call v1052_network_menu;;
       storage) v104_main_scope_call v1052_storage_menu;;
       performance) v104_main_scope_call performance_menu;;
-      health) v104_main_scope_call monitoring_recovery_menu;;
       advanced) v104_main_scope_call v1052_advanced_system_menu;;
       back) return 0;;
     esac
@@ -79,7 +77,7 @@ v104_select_target_rootfs(){
     target=$(v104_context_get)
   fi
   [ "$target" != / ] && [ -d "$target" ] || {
-    ui_msg 'RootFS required' 'The running system cannot be edited from RootFS Builder. Select a separate RootFS directory.'
+    ui_msg 'RootFS required' 'The running system cannot be edited here. Select a separate RootFS directory.'
     return 1
   }
 }
@@ -97,7 +95,6 @@ v104_edit_existing_rootfs(){
       packages 'Packages and repositories inside RootFS' \
       services 'Services and boot configuration inside RootFS' \
       network 'Networking, DNS and SSH inside RootFS' \
-      health 'Validate and repair RootFS' \
       enter 'Enter RootFS shell' \
       back 'Back') || return 0
     case $choice in
@@ -109,35 +106,20 @@ v104_edit_existing_rootfs(){
       packages) rootfs_package_native;;
       services) service_center_v6;;
       network) network_center;;
-      health) v103_health_dashboard;;
       enter) rootfs_chroot_studio;;
       back) return 0;;
     esac
   done
 }
 
-# Compatibility name used by the v11 builder and RootFS management menus.
+# Compatibility name used by RootFS management menus.
 v104_manage_rootfs_menu(){ v104_edit_existing_rootfs; }
-
-v104_builder_help(){
-  ui_text 'RootFS Builder Help' 'RootFS Builder is only for creating or changing filesystem trees that are separate from the running system.
-
-Create a New RootFS guides you through distribution, architecture, build type, source, destination and validation.
-
-Edit an Existing RootFS selects a target directory before exposing configuration tools. Shell, editor, package, service and network changes made there are written inside that RootFS.
-
-Current Build reviews or resumes one build.
-
-More Build Options contains only reusable profiles, direct bootstrap backends, logs and recovery. Build studios, matrices, recipes, queues and project abstractions are not part of the normal interface.
-
-Use System Configuration from the main menu to change the running iSH-AOK environment.'
-}
 
 v104_about(){
   selected=$(v104_context_get)
   ui_text 'About iSH-AOK Config' "iSH-AOK Config $VERSION
 
-RootFS Builder target: $selected
+Active RootFS: $selected
 System Configuration target: /
 
 RootFS and host configuration are isolated by design.
@@ -152,8 +134,6 @@ Project: https://github.com/emkey1/ish-AOK"
 v91_menu_title(){
   case $1 in
     main) printf '%s %s' "$PROGRAM" "$VERSION";;
-    build) printf 'RootFS Builder';;
-    build_advanced) printf 'More Build Options';;
     rootfs*) printf 'RootFS Tools';;
     settings*) printf 'Settings';;
     *) printf '%s' "$1";;
@@ -162,17 +142,14 @@ v91_menu_title(){
 
 v91_menu_text(){
   case $1 in
-    main) printf 'Choose whether to work on a RootFS or configure the running system.';;
-    build) printf 'Target: separate RootFS filesystems only.\nSelected RootFS: %s' "$(v104_context_get)";;
-    build_advanced) printf 'Optional build profiles, direct backends and recovery.';;
+    main) printf 'Choose an application area.';;
     settings*) printf 'Application behavior only; these settings do not configure a RootFS.';;
     *) printf 'Select an action.';;
   esac
 }
 
-# Compatibility redirects: old project/studio landing functions now open the
-# appropriate streamlined builder rather than exposing retired dashboards.
-v90_build_workflow_menu(){ v91_menu_run build; }
-unified_build_menu(){ v91_menu_run build; }
-v102_simple_builder_menu(){ v91_menu_run build; }
+# Compatibility redirects for removed RootFS actions now open the main menu.
+v90_build_workflow_menu(){ main_menu; }
+unified_build_menu(){ main_menu; }
+v102_simple_builder_menu(){ main_menu; }
 v1000_task_center_menu(){ main_menu; }

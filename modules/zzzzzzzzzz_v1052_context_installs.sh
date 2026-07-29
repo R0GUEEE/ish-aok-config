@@ -19,7 +19,6 @@ shells_menu(){
       bash "Bash ($(v1052_status bash))" \
       zsh "Zsh ($(v1052_status zsh))" \
       fish "Fish ($(v1052_status fish))" \
-      frameworks 'Oh My Bash, Oh My Zsh and plugins' \
       completions 'Shell completions and aliases' \
       scan 'Show installed shells' back Back) || return 0
     case $c in
@@ -29,7 +28,6 @@ shells_menu(){
       bash) command -v bash >/dev/null 2>&1 || v1052_install_and_return 'Install Bash' bash bash-completion; ensure_template bashrc "$CURRENT_HOME/.bashrc";;
       zsh) command -v zsh >/dev/null 2>&1 || v1052_install_and_return 'Install Zsh' zsh; ensure_template zshrc "$CURRENT_HOME/.zshrc";;
       fish) command -v fish >/dev/null 2>&1 || v1052_install_and_return 'Install Fish' fish; shell_wizards_menu;;
-      frameworks) plugin_manager_menu shell;;
       completions) shell_config_center;;
       scan) ui_text Shells "$(grep -v '^#' /etc/shells 2>/dev/null; for x in sh ash bash zsh fish dash mksh ksh nu; do command -v "$x" 2>/dev/null; done | sort -u)";;
       back) return 0;;

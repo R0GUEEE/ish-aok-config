@@ -20,7 +20,8 @@ v112_plugin_scan; grep -q '^sample-plugin' "$V112_INDEX" && ok 'plugin discovery
 v112_distribution_create sample-linux "$TMP/dist" apk apk 'arm64,amd64' && ok 'distribution generator' || bad 'distribution generator'
 [ "$(v112_distribution_validate "$TMP/dist")" = valid ] && ok 'distribution validation' || bad 'distribution validation'
 v112_catalog_report | grep -q github-cli && ok 'catalog report' || bad 'catalog report'
-sh -n "$ROOT/modules/zzzzzzzzzzzzzzzzzzzzz_v1120_plugin_sdk.sh" && ok 'menu syntax' || bad 'menu syntax'
+sh -n "$ROOT/modules/zzzzzzzzzzzzzzzzzzzzz_v1120_plugin_runtime.sh" && ok 'runtime syntax' || bad 'runtime syntax'
+[ ! -e "$ROOT/modules/zzzzzzzzzzzzzzzzzzzzz_v1120_plugin_sdk.sh" ] && ok 'plugin menus removed' || bad 'plugin menus removed'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

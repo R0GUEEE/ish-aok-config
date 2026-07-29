@@ -72,7 +72,7 @@ v11_catalog_items(){
 
 v11_catalog_field(){
   _v11_id=$1 _v11_field=$2
-  case $_v11_field in id) _v11_col=1;; category) _v11_col=2;; label) _v11_col=3;; description) _v11_col=4;; handler) _v11_col=5;; capability) _v11_col=6;; *) return 2;; esac
+  case $_v11_field in id) _v11_col=1;; category) _v11_col=2;; label) _v11_col=3;; description) _v11_col=4;; handler) _v11_col=5;; capability) _v11_col=6;; featured) _v11_col=7;; packages) _v11_col=8;; *) return 2;; esac
   awk -F '|' -v id="$_v11_id" -v col="$_v11_col" '$1==id {print $col; exit}' "$V11_SOFTWARE_CATALOG"
 }
 

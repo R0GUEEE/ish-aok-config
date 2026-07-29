@@ -23,6 +23,16 @@ pass=0 fail=0
 ok(){ pass=$((pass+1)); echo "PASS $1"; }
 no(){ fail=$((fail+1)); echo "FAIL $1"; }
 
+[ -e "$ROOT/menus/rootfs.menu" ] &&
+  grep -q '^guided|Configure and build|v1160_guided|' "$ROOT/menus/rootfs.menu" &&
+  [ ! -e "$ROOT/menus/rootfs_manage.menu" ] &&
+  [ ! -e "$ROOT/menus/rootfs_select.menu" ] &&
+  [ ! -e "$ROOT/menus/rootfs_protect.menu" ] &&
+  [ ! -e "$ROOT/menus/rootfs_transfer.menu" ] &&
+  ok focused_rootfs_menu_only || no focused_rootfs_menu_only
+! grep -Eq "^v113_(rootfs_library|workspace|snapshot|image|lifecycle|management)_menu\(\)" "$ROOT/modules/zzzzzzzzzzzzzzzzzzzzzz_v1130_workspace_suite.sh" &&
+  ok legacy_rootfs_ui_removed || no legacy_rootfs_ui_removed
+
 v113_init && ok init || no init
 id1=$(v113_library_register "$TMP/root-a" alpha minimal) && [ -n "$id1" ] && ok register || no register
 id2=$(v113_library_register "$TMP/root-b" beta server) && [ -n "$id2" ] && ok register2 || no register2

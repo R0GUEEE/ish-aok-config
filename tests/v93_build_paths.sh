@@ -25,5 +25,5 @@ v87_profile_set "$V87_BUILD_PROFILE" CREATE_ARCHIVE yes
 plan=$(v88_plan_generate "$TMP/plan.tsv")
 grep -q '^artifact' "$plan"
 grep -Eq "VERSION='(10\.[0-9]+\.[0-9]+|[1-9][1-9][0-9]*\.[0-9]+\.[0-9]+)'|VERSION='([7-9]\.)" "$BASE/lib/core.sh"
-grep -q 'v93_paths_menu' "$BASE/menus/build_profile.menu"
+[ ! -e "$BASE/menus/build_profile.menu" ]
 echo 'v9.3 build paths tests passed'

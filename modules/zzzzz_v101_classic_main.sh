@@ -81,10 +81,6 @@ v962_route_manifest(){
   cat <<'ROUTES'
 workspace_dashboard_v90|main
 workspace_dashboard_v91|main
-rootfs_explorer_menu|rootfs
-unified_build_menu|build
-v90_rootfs_actions_menu|rootfs
-v90_build_workflow_menu|build
 v90_administration_menu|management
 v90_reports_menu|main
 v90_settings_menu|settings

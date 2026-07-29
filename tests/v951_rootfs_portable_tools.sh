@@ -10,11 +10,11 @@ printf 'ID=test\n' >"$TMP/rootfs/etc/os-release"
 
 # Static integration checks.
 grep -Eq "VERSION='(10\.[0-9]+\.[0-9]+|[1-9][1-9][0-9]*\.[0-9]+\.[0-9]+)'|VERSION='([7-9]\.)" "$BASE/lib/core.sh"
-grep -q 'v951_chroot_any_directory' "$BASE/menus/rootfs.menu"
-grep -q 'v951_package_rootfs_directory' "$BASE/menus/rootfs_transfer.menu"
+[ -e "$BASE/menus/rootfs.menu" ]
+[ ! -e "$BASE/menus/rootfs_transfer.menu" ]
 ! grep -Rqs 'v951_package_rootfs_directory' "$BASE/menus/build"*.menu
-grep -q 'chroot_anywhere' "$BASE/lib/dispatcher_v73.sh"
-grep -q 'package_rootfs' "$BASE/lib/dispatcher_v73.sh"
+! grep -q 'chroot_anywhere' "$BASE/lib/dispatcher_v73.sh"
+! grep -q 'package_rootfs' "$BASE/lib/dispatcher_v73.sh"
 grep -q 'return "$UI_MENU_BACK_RC"' "$BASE/lib/ui.sh"
 
 # Load enough runtime to validate helpers.

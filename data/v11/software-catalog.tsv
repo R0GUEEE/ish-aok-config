@@ -1,11 +1,62 @@
-# id|category|label|description|config_handler|capability
-nano|Editors|Nano|Small terminal text editor|editors_menu|repository_manager
-neovim|Editors|Neovim|Modern Vim-compatible editor|editors_menu|repository_manager
-starship|Shells|Starship|Cross-shell prompt|starship_menu|repository_manager
-zsh|Shells|Zsh|Interactive shell with plugin ecosystem|shells_menu|repository_manager
-tmux|Terminal|tmux|Terminal multiplexer|terminal_tools_menu|repository_manager
-fzf|Terminal|fzf|Fuzzy finder|terminal_tools_menu|repository_manager
-git|Development|Git|Distributed version control|development_menu|repository_manager
-python3|Languages|Python 3|Python runtime and tooling|languages_menu|repository_manager
-openssh-server|Networking|OpenSSH Server|Remote shell server|ssh_menu|repository_manager
-rsync|Storage|rsync|Incremental file synchronization|storage_backup_menu|repository_manager
+# id|category|label|description|config_handler|capability|featured|packages
+nano|Editors|Nano|Small and approachable terminal text editor|editors_menu|repository_manager|yes|default=nano
+vim|Editors|Vim|Classic modal text editor available on nearly every distribution|editors_menu|repository_manager|no|default=vim
+neovim|Editors|Neovim|Modern Vim-compatible editor with Lua configuration|editors_menu|repository_manager|yes|default=neovim
+micro|Editors|Micro|Friendly terminal editor with familiar keyboard shortcuts|editors_menu|repository_manager|no|default=micro
+zsh|Shells|Zsh|Interactive shell with advanced completion and customization|shells_menu|repository_manager|yes|default=zsh
+fish|Shells|Fish|Interactive shell with autosuggestions and helpful defaults|shells_menu|repository_manager|no|default=fish
+bash|Shells|Bash|Widely supported GNU command shell|shells_menu|repository_manager|no|default=bash
+starship|Shells|Starship|Fast cross-shell prompt with a consistent appearance|starship_menu|repository_manager|yes|default=starship
+tmux|Terminal|tmux|Persistent terminal multiplexer for panes and sessions|terminal_tools_menu|repository_manager|yes|default=tmux
+screen|Terminal|GNU Screen|Portable terminal session manager|terminal_tools_menu|repository_manager|no|default=screen
+fzf|Terminal|fzf|Fast fuzzy finder for files history and commands|terminal_tools_menu|repository_manager|yes|default=fzf
+ripgrep|Terminal|ripgrep|Very fast recursive text search tool|terminal_tools_menu|repository_manager|yes|default=ripgrep
+fd|Terminal|fd|Simple and fast alternative to find|terminal_tools_menu|repository_manager|no|default=fd;apt=fd-find
+bat|Terminal|bat|Syntax-highlighting alternative to cat|terminal_tools_menu|repository_manager|no|default=bat
+git|Development|Git|Distributed version control system|development_menu|repository_manager|yes|default=git
+make|Development|GNU Make|Portable build automation tool|development_menu|repository_manager|no|default=make
+gcc|Development|GCC|GNU C and C++ compiler toolchain|development_menu|repository_manager|no|default=gcc
+clang|Development|Clang|LLVM-based C and C++ compiler|development_menu|repository_manager|no|default=clang
+cmake|Development|CMake|Cross-platform build-system generator|development_menu|repository_manager|no|default=cmake
+meson|Development|Meson|Fast modern build-system generator|development_menu|repository_manager|no|default=meson
+ninja|Development|Ninja|Small build system focused on speed|development_menu|repository_manager|no|default=ninja;apt=ninja-build
+pkgconf|Development|pkg-config|Compiler and linker flag discovery utility|development_menu|repository_manager|no|default=pkgconf;apt=pkg-config
+gdb|Development|GDB|GNU source-level debugger|development_menu|repository_manager|no|default=gdb
+strace|Development|strace|System-call tracing and troubleshooting utility|development_menu|repository_manager|no|default=strace
+python3|Languages|Python 3|Python runtime and standard tooling|languages_menu|repository_manager|yes|default=python3
+nodejs|Languages|Node.js|JavaScript runtime for command-line and server applications|languages_menu|repository_manager|yes|default=nodejs
+go|Languages|Go|Go compiler and standard development tools|languages_menu|repository_manager|no|default=go;apt=golang-go
+rust|Languages|Rust|Rust compiler and Cargo package tooling|languages_menu|repository_manager|no|default=rust;apt=rustc;apk=rust;pacman=rust
+perl|Languages|Perl|Mature scripting language and runtime|languages_menu|repository_manager|no|default=perl
+ruby|Languages|Ruby|Expressive scripting language and runtime|languages_menu|repository_manager|no|default=ruby
+openssh-server|Networking|OpenSSH Server|Secure remote shell server and SFTP service|ssh_menu|repository_manager|yes|default=openssh-server;apk=openssh;pacman=openssh
+openssh-client|Networking|OpenSSH Client|Secure remote login and file transfer tools|ssh_menu|repository_manager|no|default=openssh-client;apk=openssh-client-default;pacman=openssh
+curl|Networking|curl|Transfer data using HTTP and many other protocols|network_center|repository_manager|yes|default=curl
+wget|Networking|Wget|Reliable non-interactive network downloader|network_center|repository_manager|no|default=wget
+bind-tools|Networking|DNS Utilities|DNS lookup tools including dig and nslookup|network_center|repository_manager|no|default=bind-utils;apt=dnsutils;apk=bind-tools;pacman=bind
+iproute2|Networking|IPRoute2|Modern Linux network and routing utilities|network_center|repository_manager|no|default=iproute2;pacman=iproute2
+nmap|Networking|Nmap|Network exploration and service discovery utility|network_center|repository_manager|no|default=nmap
+socat|Networking|socat|Bidirectional relay for sockets pipes and devices|network_center|repository_manager|no|default=socat
+tcpdump|Networking|tcpdump|Command-line network packet analyzer|network_center|repository_manager|no|default=tcpdump
+rsync|Files and Storage|rsync|Efficient incremental file synchronization|storage_backup_menu|repository_manager|yes|default=rsync
+tree|Files and Storage|Tree|Display directory contents as a tree|v105_system_packages_menu|repository_manager|no|default=tree
+mc|Files and Storage|Midnight Commander|Two-panel terminal file manager|v105_system_packages_menu|repository_manager|no|default=mc
+ranger|Files and Storage|Ranger|Vim-inspired terminal file manager|v105_system_packages_menu|repository_manager|no|default=ranger
+nnn|Files and Storage|nnn|Small fast terminal file manager|v105_system_packages_menu|repository_manager|yes|default=nnn
+zip|Files and Storage|Zip|Create and inspect ZIP archives|v105_system_packages_menu|repository_manager|no|default=zip
+unzip|Files and Storage|Unzip|Extract and inspect ZIP archives|v105_system_packages_menu|repository_manager|no|default=unzip
+zstd|Files and Storage|Zstandard|Fast modern compression utility|v105_system_packages_menu|repository_manager|yes|default=zstd
+xz|Files and Storage|XZ Utils|High-ratio XZ and LZMA compression tools|v105_system_packages_menu|repository_manager|no|default=xz-utils;apk=xz;pacman=xz
+jq|Utilities|jq|Query and transform JSON from the command line|v105_system_packages_menu|repository_manager|yes|default=jq
+htop|Utilities|htop|Interactive process and resource viewer|v105_system_packages_menu|repository_manager|yes|default=htop
+btop|Utilities|btop|Colorful resource monitor for CPU memory disks and network|v105_system_packages_menu|repository_manager|no|default=btop
+less|Utilities|Less|Scrollable terminal text and file viewer|v105_system_packages_menu|repository_manager|no|default=less
+ca-certificates|Utilities|CA Certificates|Trusted certificate bundle for secure network connections|v105_system_packages_menu|repository_manager|yes|default=ca-certificates
+sqlite|Databases|SQLite|Small embedded SQL database and command-line shell|v105_system_packages_menu|repository_manager|yes|default=sqlite3;apk=sqlite;pacman=sqlite
+postgresql-client|Databases|PostgreSQL Client|Command-line tools for PostgreSQL servers|v105_system_packages_menu|repository_manager|no|default=postgresql-client;apk=postgresql-client;pacman=postgresql-libs
+mariadb-client|Databases|MariaDB Client|Command-line client for MariaDB and MySQL servers|v105_system_packages_menu|repository_manager|no|default=mariadb-client;pacman=mariadb-clients
+nginx|Servers|Nginx|Lightweight HTTP server and reverse proxy|v105_system_packages_menu|repository_manager|no|default=nginx
+lighttpd|Servers|Lighttpd|Small efficient HTTP server|v105_system_packages_menu|repository_manager|no|default=lighttpd
+sudo|System|sudo|Run selected commands with elevated privileges|v105_system_packages_menu|repository_manager|no|default=sudo
+doas|System|doas|Minimal command privilege utility|v105_system_packages_menu|repository_manager|no|default=doas;apt=opendoas;pacman=opendoas
+busybox|System|BusyBox|Compact collection of essential Unix utilities|v105_system_packages_menu|repository_manager|no|default=busybox

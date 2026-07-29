@@ -137,36 +137,6 @@ v112_bug_audit_ui(){
   fi
 }
 
-v112_diagnostics_menu(){
-  while :; do
-    c=$(ui_menu 'Diagnostics & Bug Check' 'Validate menus, package workflows, repositories, editors, and RootFS build support.' \
-      full 'Run complete menu and bug audit' \
-      routes 'Check declarative menu routes' \
-      repos 'Check repository health' \
-      keyrings 'Check and repair repository keyrings' \
-      rootfskeys 'Manage RootFS builder keyring cache' \
-      editor 'Test the configured editor' \
-      report 'Open the latest audit report' \
-      back 'Back') || return 0
-    case $c in
-      full) v112_bug_audit_ui;;
-      routes) command -v v962_route_audit_ui >/dev/null 2>&1 && v962_route_audit_ui || v952_menu_audit_ui;;
-      repos) v108_repository_health;;
-      keyrings) v109_repository_keyrings_menu;;
-      rootfskeys) v110_rootfs_keyrings_menu;;
-      editor)
-        testfile="$TMP_DIR/editor-test.txt"
-        printf '%s\n' 'Delete or change this line, save, and exit to verify editor return behavior.' >"$testfile"
-        edit_file "$testfile"
-        ui_text 'Editor test result' "$(cat "$testfile" 2>/dev/null || printf 'Editor test file unavailable.')"
-        rm -f "$testfile"
-        ;;
-      report) [ -r "$V112_AUDIT_REPORT" ] && ui_text 'Latest audit report' "$(cat "$V112_AUDIT_REPORT")" || ui_msg 'Audit report' 'No audit has been run yet.';;
-      back) return 0;;
-    esac
-  done
-}
-
 # Terminal-safe editor override. It restores terminal state and propagates errors
 # without ejecting the caller to the application entry menu.
 edit_file(){
@@ -221,6 +191,7 @@ v104_shell_editor_menu(){
 v104_system_configuration_menu(){
   while :; do
     choice=$(ui_menu 'System Configuration' "$(printf '%s\nChanges on this screen affect only the running system (/).' "$(v104_system_status)")" \
+      catalog 'Software Catalog — browse and configure system software' \
       packages 'Packages, package managers, repositories and keyrings' \
       environment 'Shells, editors and terminal applications' \
       network 'Networking, DNS, SSH and diagnostics' \
@@ -231,6 +202,7 @@ v104_system_configuration_menu(){
       advanced 'Additional and advanced system tools' \
       back 'Back') || return 0
     case $choice in
+      catalog) v1100_software_catalog_menu;;
       packages) v104_system_packages_menu;;
       environment) v104_main_scope_call v104_shell_editor_menu;;
       network) v104_main_scope_call v1052_network_menu;;
