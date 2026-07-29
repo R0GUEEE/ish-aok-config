@@ -45,6 +45,46 @@ v1150_arch_list(){
   printf '%s' "$_a"
 }
 
+v1150_release_default(){
+  case $1 in
+    alpine) printf latest-stable;;
+    arch|gentoo) printf current;;
+    fedora) printf latest;;
+    debian|devuan|ubuntu|void) printf stable;;
+    *) printf stable;;
+  esac
+}
+
+v1150_destination_default(){ printf '/AOK/roots/mini-%s' "$1"; }
+
+# Keep the current architecture when it is supported. Otherwise prefer the
+# 32-bit x86 spelling used by the selected distribution, which is the native
+# iSH target, and finally fall back to the first advertised architecture.
+v1150_compatible_arch(){
+  _wanted=$1
+  _arches=$(v1150_arch_list)
+  case " $_arches " in *" $_wanted "*) printf '%s' "$_wanted"; return;; esac
+  case $_wanted in
+    x86|i386|i486|i586|i686)
+      for _candidate in x86 i386; do
+        case " $_arches " in *" $_candidate "*) printf '%s' "$_candidate"; return;; esac
+      done
+      ;;
+    x86_64|amd64)
+      for _candidate in x86_64 amd64; do
+        case " $_arches " in *" $_candidate "*) printf '%s' "$_candidate"; return;; esac
+      done
+      ;;
+    aarch64|arm64)
+      for _candidate in aarch64 arm64; do
+        case " $_arches " in *" $_candidate "*) printf '%s' "$_candidate"; return;; esac
+      done
+      ;;
+  esac
+  set -- $_arches
+  printf '%s' "${1:-x86}"
+}
+
 v1150_packages(){
   _sets=$(v1150_get SETS)
   [ -n "$_sets" ] || _sets=minimal
@@ -71,6 +111,10 @@ v1150_header(){
 }
 
 v1150_target_menu(){
+  _old_distro=$(v1150_get DISTRO)
+  _old_release=$(v1150_get RELEASE)
+  _old_arch=$(v1150_get ARCH)
+  _old_dest=$(v1150_get DEST)
   set --
   while IFS='|' read -r _id _pm; do
     [ -n "$_id" ] || continue
@@ -79,11 +123,17 @@ v1150_target_menu(){
   done <<EOF_D
 $(v1150_distro_list)
 EOF_D
-  _d=$(ui_radiolist 'Distribution' 'Select the distribution for the mini RootFS.' "$@") || return 0
-  [ -n "$_d" ] || return 0
+  _d=$(ui_radiolist 'Distribution' 'Select the distribution for the mini RootFS.' "$@") || return "${UI_MENU_BACK_RC:-90}"
+  [ -n "$_d" ] || return "${UI_MENU_BACK_RC:-90}"
   v1150_set DISTRO "$_d"
 
-  _r=$(ui_input 'Release' 'Release or suite:' "$(v1150_get RELEASE)") || return 0
+  if [ "$_d" != "$_old_distro" ]; then
+    [ "$_old_release" = "$(v1150_release_default "$_old_distro")" ] && v1150_set RELEASE "$(v1150_release_default "$_d")"
+    [ "$_old_dest" = "$(v1150_destination_default "$_old_distro")" ] && v1150_set DEST "$(v1150_destination_default "$_d")"
+  fi
+  v1150_set ARCH "$(v1150_compatible_arch "$_old_arch")"
+
+  _r=$(ui_input 'Release' 'Release or suite:' "$(v1150_get RELEASE)") || return "${UI_MENU_BACK_RC:-90}"
   [ -n "$_r" ] && v1150_set RELEASE "$_r"
 
   set --
@@ -91,7 +141,7 @@ EOF_D
     _state=off; [ "$_a" = "$(v1150_get ARCH)" ] && _state=on
     set -- "$@" "$_a" "$_a" "$_state"
   done
-  _sel=$(ui_radiolist 'Architecture' 'Select the target architecture. iSH-AOK runs x86 natively.' "$@") || return 0
+  _sel=$(ui_radiolist 'Architecture' 'Select the target architecture. iSH-AOK runs x86 natively.' "$@") || return "${UI_MENU_BACK_RC:-90}"
   [ -n "$_sel" ] && v1150_set ARCH "$_sel"
 }
 
@@ -134,9 +184,45 @@ v1150_options_menu(){
   v1150_set OPTIONS "$(printf '%s' "$_sel" | tr '\n' ' ' | sed 's/ *$//')"
 }
 
+# A single checklist is the fast path: package components and image behavior
+# are selected together with Space. Prefixes keep the two result groups clear
+# without relying on non-POSIX arrays.
+v1150_features_menu(){
+  _sets=" $(v1150_get SETS) "
+  set --
+  while IFS='|' read -r _id _label _desc _file; do
+    [ -n "$_id" ] || continue
+    _state=off; case $_sets in *" $_id "*) _state=on;; esac
+    set -- "$@" "set_$_id" "Component: $_label — $_desc" "$_state"
+  done <<EOF_S
+$(v1101_package_set_list)
+EOF_S
+  for _o in stripdocs nocache network ssh sudo archive; do
+    case $_o in
+      stripdocs) _l='Small: exclude documentation and locales';;
+      nocache) _l='Small: remove downloaded package caches';;
+      network) _l='Copy DNS configuration into the RootFS';;
+      ssh) _l='Install and enable an SSH server';;
+      sudo) _l='Install sudo or doas';;
+      archive) _l='Create a compressed archive after building';;
+    esac
+    _state=off; v1150_option_on "$_o" && _state=on
+    set -- "$@" "opt_$_o" "Option: $_l" "$_state"
+  done
+  _sel=$(ui_checklist 'Mini RootFS contents' 'Use Space to select components and options. Minimal plus the three Small/network defaults produces a compact, usable image.' "$@") || return "${UI_MENU_BACK_RC:-90}"
+  _new_sets=$(printf '%s\n' "$_sel" | sed -n 's/^set_//p' | tr '\n' ' ' | sed 's/ *$//')
+  _new_options=$(printf '%s\n' "$_sel" | sed -n 's/^opt_//p' | tr '\n' ' ' | sed 's/ *$//')
+  if [ -z "$_new_sets" ]; then
+    ui_yesno Components 'No components selected. Use the Minimal component set?' || return 0
+    _new_sets=minimal
+  fi
+  v1150_set SETS "$_new_sets"
+  v1150_set OPTIONS "$_new_options"
+}
+
 v1150_destination_menu(){
-  _d=$(ui_input Destination 'Directory for the new RootFS:' "$(v1150_get DEST)") || return 0
-  [ -n "$_d" ] || return 0
+  _d=$(ui_input Destination 'Directory for the new RootFS:' "$(v1150_get DEST)") || return "${UI_MENU_BACK_RC:-90}"
+  [ -n "$_d" ] || return "${UI_MENU_BACK_RC:-90}"
   case $_d in
     /) ui_msg Destination 'The running system cannot be used as a build destination.'; return 0;;
   esac
@@ -157,12 +243,12 @@ v1150_template_list(){
 }
 
 v1150_template_save(){
-  _n=$(ui_input 'Save template' 'Template name:' "$(v1150_get DISTRO)-mini") || return 0
-  [ -n "$_n" ] || return 0
-  case $_n in *[!A-Za-z0-9._-]*) ui_msg 'Save template' 'Use letters, digits, dot, dash or underscore only.'; return 0;; esac
+  _n=$(ui_input 'Save template' 'Template name:' "$(v1150_get DISTRO)-mini") || return "${UI_MENU_BACK_RC:-90}"
+  [ -n "$_n" ] || return 1
+  case $_n in *[!A-Za-z0-9._-]*) ui_msg 'Save template' 'Use letters, digits, dot, dash or underscore only.'; return 1;; esac
   mkdir -p "$V1150_TEMPLATE_DIR" 2>/dev/null || true
   _f=$(v1150_template_file "$_n")
-  [ -f "$_f" ] && { ui_yesno 'Save template' "Template $_n already exists. Overwrite?" || return 0; }
+  [ -f "$_f" ] && { ui_yesno 'Save template' "Template $_n already exists. Overwrite?" || return 1; }
   {
     printf '# iSH-AOK mini RootFS template\n'
     printf 'DISTRO=%s\n' "$(v1150_get DISTRO)"
@@ -171,7 +257,7 @@ v1150_template_save(){
     printf 'DEST=%s\n' "$(v1150_get DEST)"
     printf 'SETS=%s\n' "$(v1150_get SETS)"
     printf 'OPTIONS=%s\n' "$(v1150_get OPTIONS)"
-  } >"$_f"
+  } >"$_f" || { ui_msg 'Save template' "Could not write $_f."; return 1; }
   ui_msg 'Save template' "Saved as $_n."
 }
 
@@ -183,13 +269,13 @@ v1150_template_load(){
   done <<EOF_T
 $(v1150_template_list)
 EOF_T
-  [ "$#" -gt 0 ] || { ui_msg Templates 'No templates have been saved yet.'; return 0; }
-  _sel=$(ui_menu 'Load template' 'Select a saved configuration.' "$@") || return 0
+  [ "$#" -gt 0 ] || { ui_msg Templates 'No templates have been saved yet.'; return 1; }
+  _sel=$(ui_menu 'Load template' 'Select a saved configuration.' "$@") || return "${UI_MENU_BACK_RC:-90}"
   _f=$(v1150_template_file "$_sel")
-  [ -r "$_f" ] || { ui_msg Templates "Template $_sel could not be read."; return 0; }
+  [ -r "$_f" ] || { ui_msg Templates "Template $_sel could not be read."; return 1; }
   for _k in DISTRO RELEASE ARCH DEST SETS OPTIONS; do
     _v=$(sed -n "s/^$_k=//p" "$_f" | tail -n 1)
-    [ -n "$_v" ] && v1150_set "$_k" "$_v"
+    grep -q "^$_k=" "$_f" && v1150_set "$_k" "$_v"
   done
   ui_msg Templates "Loaded $_sel."
 }
@@ -260,27 +346,61 @@ v1150_build(){
   fi
 }
 
+v1150_review_menu(){
+  while :; do
+    _c=$(ui_menu 'Mini RootFS ready' "$(v1150_header)" \
+      build 'Build now' \
+      save_build 'Save as a template, then build' \
+      save 'Save as a template' \
+      review 'Review packages and full configuration' \
+      edit 'Change the selections' \
+      back 'Keep this configuration and go back') || return 0
+    case $_c in
+      build) v1150_build; return;;
+      save_build) v1150_template_save && { v1150_build; return; };;
+      save) v1150_template_save;;
+      review) ui_text 'Mini RootFS configuration' "$(v1150_summary)";;
+      edit) return 2;;
+      back) return 0;;
+    esac
+  done
+}
+
+v1150_guided_create(){
+  while :; do
+    v1150_target_menu || return 0
+    v1150_destination_menu || return 0
+    v1150_features_menu || return 0
+    if v1150_review_menu; then
+      return 0
+    else
+      _review_rc=$?
+      [ "$_review_rc" -eq 2 ] || return "$_review_rc"
+    fi
+  done
+}
+
 v1150_mini_builder_menu(){
   v1150_defaults
   command -v v1101_init >/dev/null 2>&1 && v1101_init >/dev/null 2>&1 || true
   while :; do
     _c=$(ui_menu 'Create Mini RootFS' "$(v1150_header)" \
+      create 'Configure and create a mini RootFS' \
+      load_create 'Load a saved template and create' \
       target 'Distribution, release and architecture' \
       destination 'Destination directory' \
-      components 'Components — space to select' \
-      options 'Build options — space to select' \
+      contents 'Components and options — space to select' \
       templates 'Save or load a configuration template' \
       review 'Review the resolved package list' \
-      build 'Build now' \
       back 'Back') || { _r=$?; [ "$_r" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_r"; }
     case $_c in
+      create) v1150_guided_create;;
+      load_create) v1150_template_load && v1150_review_menu;;
       target) v1150_target_menu;;
       destination) v1150_destination_menu;;
-      components) v1150_components_menu;;
-      options) v1150_options_menu;;
+      contents) v1150_features_menu;;
       templates) v1150_template_menu;;
       review) ui_text 'Mini RootFS configuration' "$(v1150_summary)";;
-      build) v1150_build;;
       back) return 0;;
     esac
   done
