@@ -1052,31 +1052,236 @@ repo_manage() {
     esac
 }
 
-apt_keyring_package_for_distro() {
-    local distro="$1" pkg
-    case "$distro" in
-        debian)      set -- debian-archive-keyring ;;
-        devuan)      set -- devuan-keyring devuan-archive-keyring ;;
-        ubuntu)      set -- ubuntu-keyring ;;
-        alpine)      set -- alpine-keys ;;
-        arch)        set -- archlinux-keyring ;;
-        fedora)      set -- fedora-gpg-keys fedora-repos ;;
-        kali)        set -- kali-archive-keyring ;;
-        opensuse|tumbleweed) set -- opensuse-archive-keyring openSUSE-build-key ;;
-        gentoo)      set -- gentoo-keys gentoo-keyring ;;
-        void)        set -- void-linux-keyring void-keyring ;;
-        *)           return 1 ;;
+keyring_host_arch() {
+    local a
+    a=$(uname -m 2>/dev/null || printf unknown)
+    case "$a" in
+        x86_64|amd64) printf '%s\n' x86_64 ;;
+        aarch64|arm64) printf '%s\n' aarch64 ;;
+        armv7l|armhf) printf '%s\n' armv7 ;;
+        i386|i486|i586|i686) printf '%s\n' x86 ;;
+        riscv64) printf '%s\n' riscv64 ;;
+        ppc64le) printf '%s\n' ppc64le ;;
+        *) printf '%s\n' "$a" ;;
     esac
-    for pkg in "$@"; do
-        apt-cache show "$pkg" >/dev/null 2>&1 && { printf '%s\n' "$pkg"; return 0; }
-    done
-    return 1
+}
+
+keyring_fetch_latest() {
+    # keyring_fetch_latest BASE_URL ERE
+    # Prints an absolute URL for the lexicographically newest matching file.
+    local base="$1" pattern="$2" page file
+    page=$(curl -fsSL --retry 3 --connect-timeout 15 "$base") || return 1
+    file=$(printf '%s\n' "$page" \
+        | grep -Eo 'href="[^"]+"' \
+        | cut -d'"' -f2 \
+        | sed 's#^.*/##' \
+        | grep -E "$pattern" \
+        | sort -V \
+        | tail -n 1)
+    [ -n "$file" ] || return 1
+    printf '%s/%s\n' "${base%/}" "$file"
+}
+
+keyring_repo_artifact() {
+    # Prints: format|official repository URL
+    local distro="$1" arch alpine_arch fedora_arch release base url
+    arch=$(keyring_host_arch)
+    case "$distro" in
+        debian)
+            base='https://deb.debian.org/debian/pool/main/d/debian-archive-keyring'
+            url=$(keyring_fetch_latest "$base/" '^debian-archive-keyring_[^/]+_all\.deb$') || return 1
+            printf 'deb|%s\n' "$url" ;;
+        devuan)
+            base='https://pkgmaster.devuan.org/devuan/pool/main/d/devuan-keyring'
+            url=$(keyring_fetch_latest "$base/" '^devuan-keyring_[^/]+_all\.deb$') || return 1
+            printf 'deb|%s\n' "$url" ;;
+        ubuntu)
+            base='https://archive.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring'
+            url=$(keyring_fetch_latest "$base/" '^ubuntu-keyring_[^/]+_all\.deb$') || return 1
+            printf 'deb|%s\n' "$url" ;;
+        kali)
+            printf 'gpg|https://archive.kali.org/archive-keyring.gpg\n' ;;
+        alpine)
+            case "$arch" in
+                x86_64) alpine_arch=x86_64 ;;
+                aarch64) alpine_arch=aarch64 ;;
+                armv7) alpine_arch=armv7 ;;
+                x86) alpine_arch=x86 ;;
+                riscv64) alpine_arch=riscv64 ;;
+                ppc64le) alpine_arch=ppc64le ;;
+                *) return 1 ;;
+            esac
+            base="https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/$alpine_arch"
+            url=$(keyring_fetch_latest "$base/" '^alpine-keys-[^/]+\.apk$') || return 1
+            printf 'tar|%s\n' "$url" ;;
+        arch)
+            # Arch Linux proper publishes x86_64 packages. Other architectures use
+            # separate Arch Linux ARM repositories and are intentionally not mixed.
+            [ "$arch" = x86_64 ] || return 1
+            base='https://geo.mirror.pkgbuild.com/core/os/x86_64'
+            url=$(keyring_fetch_latest "$base/" '^archlinux-keyring-[^/]+-any\.pkg\.tar\.(zst|xz)$') || return 1
+            printf 'tar|%s\n' "$url" ;;
+        fedora)
+            case "$arch" in
+                x86_64) fedora_arch=x86_64 ;;
+                aarch64) fedora_arch=aarch64 ;;
+                ppc64le) fedora_arch=ppc64le ;;
+                riscv64) fedora_arch=riscv64 ;;
+                *) return 1 ;;
+            esac
+            release=$(curl -fsSL 'https://dl.fedoraproject.org/pub/fedora/linux/releases/' \
+                | grep -Eo 'href="[0-9]+/' | tr -dc '0-9\n' | sort -n | tail -n 1)
+            [ -n "$release" ] || return 1
+            base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$release/Everything/$fedora_arch/os/Packages/f"
+            url=$(keyring_fetch_latest "$base/" '^fedora-gpg-keys-[^/]+\.noarch\.rpm$') || return 1
+            printf 'rpm|%s\n' "$url" ;;
+        opensuse)
+            base='https://download.opensuse.org/tumbleweed/repo/oss/noarch'
+            url=$(keyring_fetch_latest "$base/" '^openSUSE-build-key-[^/]+\.noarch\.rpm$') || return 1
+            printf 'rpm|%s\n' "$url" ;;
+        tumbleweed)
+            base='https://download.opensuse.org/tumbleweed/repo/oss/noarch'
+            url=$(keyring_fetch_latest "$base/" '^openSUSE-build-key-[^/]+\.noarch\.rpm$') || return 1
+            printf 'rpm|%s\n' "$url" ;;
+        gentoo)
+            printf 'asc|https://distfiles.gentoo.org/releases/amd64/autobuilds/current-stage3-amd64/openpgp-keys.asc\n' ;;
+        void)
+            case "$arch" in
+                x86_64) base='https://repo-default.voidlinux.org/current' ;;
+                aarch64) base='https://repo-default.voidlinux.org/current/aarch64' ;;
+                armv7) base='https://repo-default.voidlinux.org/current/armv7l' ;;
+                *) return 1 ;;
+            esac
+            url=$(keyring_fetch_latest "$base/" '^void-release-keys-[^/]+\.xbps$') || return 1
+            printf 'tar|%s\n' "$url" ;;
+        *) return 1 ;;
+    esac
+}
+
+keyring_is_installed() {
+    local distro="$1"
+    case "$distro" in
+        debian) [ -s /usr/share/keyrings/debian-archive-keyring.gpg ] ;;
+        devuan) [ -s /usr/share/keyrings/devuan-archive-keyring.gpg ] || [ -s /usr/share/keyrings/devuan-keyring.gpg ] ;;
+        ubuntu) [ -s /usr/share/keyrings/ubuntu-archive-keyring.gpg ] ;;
+        kali) [ -s /usr/share/keyrings/kali-archive-keyring.gpg ] ;;
+        *) find "/usr/share/keyrings/systui-$distro" -type f -size +0c 2>/dev/null | grep -q . ;;
+    esac
+}
+
+keyring_extract_archive() {
+    local fmt="$1" archive="$2" dest="$3"
+    mkdir -p "$dest"
+    case "$fmt" in
+        deb)
+            if command -v dpkg-deb >/dev/null 2>&1; then
+                dpkg-deb -x "$archive" "$dest"
+            elif command -v ar >/dev/null 2>&1; then
+                local data
+                data=$(ar t "$archive" | grep '^data\.tar' | head -n1) || return 1
+                (cd "$dest" && ar p "$archive" "$data" | tar -xf -)
+            else
+                return 1
+            fi ;;
+        rpm)
+            if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
+                (cd "$dest" && rpm2cpio "$archive" | cpio -idm --quiet)
+            elif command -v bsdtar >/dev/null 2>&1; then
+                bsdtar -xf "$archive" -C "$dest"
+            else
+                return 1
+            fi ;;
+        tar)
+            if command -v bsdtar >/dev/null 2>&1; then
+                bsdtar -xf "$archive" -C "$dest"
+            else
+                tar -xf "$archive" -C "$dest"
+            fi ;;
+        *) return 1 ;;
+    esac
+}
+
+install_official_distro_keyring() {
+    local distro="$1" spec fmt url tmp payload extract target count=0 manifest
+    spec=$(keyring_repo_artifact "$distro") || {
+        printf 'No compatible official repository artifact was found for %s on %s.\n' "$distro" "$(keyring_host_arch)" >&2
+        return 1
+    }
+    fmt=${spec%%|*}
+    url=${spec#*|}
+    tmp=$(mktemp -d /tmp/systui-keyring.XXXXXX) || return 1
+    payload="$tmp/${url##*/}"
+    extract="$tmp/root"
+    target="/usr/share/keyrings/systui-$distro"
+    manifest="/usr/share/keyrings/systui-$distro.source"
+
+    printf 'Downloading official %s keyring:\n  %s\n' "$distro" "$url"
+    curl -fL --retry 3 --connect-timeout 20 --proto '=https' --tlsv1.2 "$url" -o "$payload" || {
+        rm -rf "$tmp"; return 1;
+    }
+
+    mkdir -p /usr/share/keyrings
+    case "$fmt" in
+        gpg)
+            install -m 0644 "$payload" "/usr/share/keyrings/${distro}-archive-keyring.gpg"
+            count=1 ;;
+        asc)
+            mkdir -p "$target"
+            if command -v gpg >/dev/null 2>&1; then
+                gpg --batch --yes --dearmor -o "$target/archive-keyring.gpg" "$payload" || {
+                    rm -rf "$tmp"; return 1;
+                }
+            else
+                install -m 0644 "$payload" "$target/archive-keys.asc"
+            fi
+            count=1 ;;
+        deb|rpm|tar)
+            keyring_extract_archive "$fmt" "$payload" "$extract" || {
+                printf 'Could not extract %s. Install dpkg-deb, bsdtar, or rpm2cpio/cpio as appropriate.\n' "$payload" >&2
+                rm -rf "$tmp"; return 1;
+            }
+            # Debian-family packages already contain canonical destinations.
+            if [ "$fmt" = deb ] && find "$extract/usr/share/keyrings" -type f -size +0c 2>/dev/null | grep -q .; then
+                cp -a "$extract/usr/share/keyrings/." /usr/share/keyrings/
+                count=$(find "$extract/usr/share/keyrings" -type f -size +0c | wc -l)
+            else
+                rm -rf "$target"
+                mkdir -p "$target"
+                while IFS= read -r f; do
+                    local rel safe
+                    rel=${f#"$extract"/}
+                    safe=$(printf '%s' "$rel" | tr '/' '_')
+                    install -m 0644 "$f" "$target/$safe"
+                    count=$((count+1))
+                done <<EOF
+$(find "$extract" -type f \( -iname '*.gpg' -o -iname '*.asc' -o -iname '*.key' -o -path '*/etc/pki/rpm-gpg/*' -o -path '*/usr/share/distribution-gpg-keys/*' \) -size +0c 2>/dev/null)
+EOF
+            fi ;;
+    esac
+
+    if [ "$count" -le 0 ]; then
+        printf 'The official artifact contained no recognizable signing-key files.\n' >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    {
+        printf 'distribution=%s\n' "$distro"
+        printf 'source=%s\n' "$url"
+        printf 'downloaded=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if command -v sha256sum >/dev/null 2>&1; then
+            printf 'sha256=%s\n' "$(sha256sum "$payload" | awk '{print $1}')"
+        fi
+    } > "$manifest"
+    chmod 0644 "$manifest"
+    rm -rf "$tmp"
+    printf 'Installed %s signing-key file(s).\n' "$count"
 }
 
 apt_missing_keyrings_menu() {
     [ "$PM" = apt ] || return 0
 
-    local args=() distro label pkg state sel selected install_pkgs="" unavailable=""
+    local args=() distro label state sel selected failed="" installed=""
     local distros="debian devuan ubuntu alpine arch fedora kali opensuse tumbleweed gentoo void"
 
     for distro in $distros; do
@@ -1088,50 +1293,37 @@ apt_missing_keyrings_menu() {
             arch)       label="Arch Linux" ;;
             fedora)     label="Fedora" ;;
             kali)       label="Kali Linux" ;;
-            opensuse)   label="openSUSE Leap" ;;
+            opensuse)   label="openSUSE" ;;
             tumbleweed) label="openSUSE Tumbleweed" ;;
             gentoo)     label="Gentoo Linux" ;;
             void)       label="Void Linux" ;;
         esac
-
-        if pkg=$(apt_keyring_package_for_distro "$distro"); then
-            if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
-                state=on
-                args+=("$distro" "$label — $pkg (installed)" "$state")
-            else
-                state=off
-                args+=("$distro" "$label — install $pkg" "$state")
-            fi
+        if keyring_is_installed "$distro"; then
+            state=on
+            args+=("$distro" "$label — installed (official repository download)" "$state")
         else
-            args+=("$distro" "$label — unavailable in current APT sources" off)
+            args+=("$distro" "$label — download from official repository" off)
         fi
     done
 
-    sel=$(tui_check "Missing Rootfs Keyrings" \
-        "SPACE selects rootfs distributions; ENTER installs available keyrings.\nInstalled keyrings are pre-selected:" \
+    sel=$(tui_check "Rootfs Distribution Keyrings" \
+        "SPACE selects distributions. ENTER downloads keyring artifacts directly from each distribution's official repository.\n\nAPT installation is not used. Existing selections are refreshed when selected:" \
         "${args[@]}") || return 0
     selected=${sel//\"/}
     [ -n "${selected// }" ] || return 0
 
     for distro in $selected; do
-        if pkg=$(apt_keyring_package_for_distro "$distro"); then
-            case " $install_pkgs " in
-                *" $pkg "*) ;;
-                *) install_pkgs="$install_pkgs $pkg" ;;
-            esac
+        if run_cmd "Downloading official $distro keyring" install_official_distro_keyring "$distro"; then
+            installed="$installed $distro"
         else
-            unavailable="$unavailable $distro"
+            failed="$failed $distro"
         fi
     done
 
-    if [ -n "${install_pkgs// }" ]; then
-        run_cmd "Installing selected rootfs keyrings" apt-get install -y $install_pkgs
-    fi
-
-    if [ -n "${unavailable// }" ]; then
-        tui_msg "Unavailable keyrings" \
-            "No APT keyring package was found for:$unavailable\n\nEnable an appropriate host repository, refresh package indexes, and retry."
-    fi
+    [ -n "${installed// }" ] && tui_msg "Keyrings installed" \
+        "Downloaded directly from official distribution repositories:$installed\n\nSource URL and SHA-256 metadata are stored beside each installed keyring."
+    [ -n "${failed// }" ] && tui_msg "Keyring failures" \
+        "Could not install:$failed\n\nReview the log for network, architecture, extraction-tool, or upstream repository errors."
 }
 
 menu_repos() {
@@ -1203,7 +1395,7 @@ menu_repos() {
                 case "$PM" in
                     apt)
                         local ka
-                        ka=$(tui_menu "APT Keys" "Signing-key tools:" missing "Install missing archive keyrings (SPACE-to-select)" import "Import key from URL" list "List installed keyrings" back "Back") || continue
+                        ka=$(tui_menu "APT Keys" "Signing-key tools:" missing "Download distro keyrings from official repositories (SPACE-to-select)" import "Import key from URL" list "List installed keyrings" back "Back") || continue
                         case "$ka" in missing) apt_missing_keyrings_menu; continue;; list) find /etc/apt/keyrings /usr/share/keyrings -maxdepth 1 -type f 2>/dev/null | sort > /tmp/systui.keys; tui_text "APT keyrings" /tmp/systui.keys; continue;; back|"") continue;; esac
                         local url name
                         url=$(tui_input "apt key" "Key URL (.gpg or .asc):" "") || continue
