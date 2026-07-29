@@ -2603,7 +2603,7 @@ menu_shell_plugins() {
         local c sel
         c=$(tui_menu "Shell Plugins" "Cross-shell enhancements:" starship "Starship" fzf "fzf" comp "Completions" zoxide "zoxide" atuin "Atuin" direnv "direnv" carapace "Carapace" syntax "Syntax highlighting" autosuggest "Autosuggestions" back "Back") || return 0
         case "$c" in
-            starship) command -v starship >/dev/null || { pm_install starship 2>/dev/null || run_cmd "Installing Starship" bash -c "curl -fsSL https://starship.rs/install.sh | sh -s -- -y"; };;
+            starship) command -v starship >/dev/null || { pm_install starship 2>/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh"; };;
             fzf) pm_install fzf;;
             comp) sel=$(tui_check "Completions" "SPACE selects:" bash-completion "Bash" on zsh-completions "Zsh" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_install $sel;;
             zoxide) pm_install zoxide;; atuin) pm_install atuin 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; direnv) pm_install direnv;; carapace) pm_install carapace 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; syntax) pm_install zsh-syntax-highlighting;; autosuggest) pm_install zsh-autosuggestions;; back|"") return 0;;

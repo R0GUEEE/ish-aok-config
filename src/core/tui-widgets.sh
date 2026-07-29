@@ -78,7 +78,9 @@ run_cmd() {
     echo "================================================================="
     if "$@" 2>&1 | tee -a "$LOGFILE"; then
         echo "================================================================="
-        read -rp "Done: $desc  (press Enter)" _
+        echo "Done: $desc"
+        # Successful installs return immediately so multi-package and plugin
+        # queues can continue without requiring Enter after every item.
         return 0
     else
         echo "================================================================="
