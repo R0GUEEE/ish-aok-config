@@ -379,11 +379,10 @@ sudo systui
 bash -n src/core/config.sh
 bash -n src/core/tui-widgets.sh
 bash -n src/core/common.sh
+bash -n src/features/rootfs.sh
 
-# Function test
-bash src/core/config.sh
-detect_pm
-echo $PM
+# Rootfs backend tests
+bash tests/test-rootfs-backends.sh
 
 # Full test
 sudo ./install.sh

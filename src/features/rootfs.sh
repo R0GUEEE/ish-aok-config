@@ -62,9 +62,27 @@ rootfs_backend_status() { # <backend>
     rootfs_backend_available "$1" && printf 'available\n' || printf 'missing prerequisites\n'
 }
 
+rootfs_backend_supported() { # <distro> <backend>
+    case "$1:$2" in
+        debian:mmdebstrap|debian:debootstrap|debian:cdebootstrap|debian:qemu-debootstrap|debian:multistrap|\
+        devuan:mmdebstrap|devuan:debootstrap|devuan:cdebootstrap|devuan:qemu-debootstrap|devuan:multistrap|\
+        ubuntu:mmdebstrap|ubuntu:debootstrap|ubuntu:cdebootstrap|ubuntu:qemu-debootstrap|ubuntu:multistrap|\
+        kali:mmdebstrap|kali:debootstrap|kali:cdebootstrap|kali:qemu-debootstrap|kali:multistrap|\
+        alpine:apk-static|arch:pacstrap|arch:arch-bootstrap|fedora:dnf|\
+        opensuse:zypper|tumbleweed:zypper|gentoo:gentoo-stage3|void:void-tarball)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 rootfs_resolve_backend() { # <distro> <selected>
     local distro="$1" selected="${2:-auto}"
-    [ "$selected" = auto ] || { printf '%s\n' "$selected"; return 0; }
+    if [ "$selected" != auto ]; then
+        rootfs_backend_supported "$distro" "$selected" || return 1
+        printf '%s\n' "$selected"
+        return 0
+    fi
     case "$distro" in
         debian|devuan|ubuntu|kali)
             if rootfs_backend_available mmdebstrap; then printf 'mmdebstrap\n'
@@ -342,6 +360,33 @@ rootfs_backend_config_summary() { # <backend>
         *)
             printf 'backend defaults' ;;
     esac
+}
+
+rootfs_multistrap_config_write() { # <file> <arch> <target> <mirror> <release> <components> <packages> <keyring-package>
+    local file="$1" arch="$2" target="$3" mirror="$4" release="$5"
+    local components="$6" packages="$7" keyring_package="$8"
+    local source="$mirror"
+    [ -n "$components" ] && source="$source ${components//,/ }"
+    cat > "$file" <<EOF
+[General]
+arch=$arch
+directory=$target
+cleanup=$ROOTFS_MULTISTRAP_CLEANUP
+noauth=false
+unpack=true
+bootstrap=Base
+aptsources=Base
+markauto=$ROOTFS_MULTISTRAP_MARKAUTO
+addimportant=$ROOTFS_MULTISTRAP_IMPORTANT
+allowrecommends=false
+
+[Base]
+packages=$packages
+source=$source
+suite=$release
+keyring=$keyring_package
+omitdebsrc=true
+EOF
 }
 
 rootfs_backend_reconfigure() { # <target>
@@ -1968,26 +2013,8 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         else
             msconf=$(mktemp "${TMPDIR:-/tmp}/systui-multistrap.XXXXXX.conf") || return 1
             [ -n "$mspkg" ] || mspkg="$keyring_pkg"
-            cat > "$msconf" <<EOF
-[General]
-arch=$arch
-directory=$target
-cleanup=$ROOTFS_MULTISTRAP_CLEANUP
-noauth=false
-unpack=true
-bootstrap=Base
-aptsources=Base
-markauto=$ROOTFS_MULTISTRAP_MARKAUTO
-addimportant=$ROOTFS_MULTISTRAP_IMPORTANT
-allowrecommends=false
-
-[Base]
-packages=$ROOTFS_BACKEND_INCLUDE
-source=$mirror
-suite=$release
-keyring=$mspkg
-omitdebsrc=true
-EOF
+            rootfs_multistrap_config_write "$msconf" "$arch" "$target" "$mirror" "$release" \
+                "$ROOTFS_BACKEND_COMPONENTS" "$ROOTFS_BACKEND_INCLUDE" "$mspkg"
         fi
         rootfs_set_build_stage "$target" bootstrap
         run_cmd "multistrap $distro/$release ($arch)" multistrap -a "$arch" -d "$target" -f "$msconf" || {
