@@ -588,3 +588,11 @@ The RootFS Builder now opens a categorized package catalogue after preset select
 - **Shell config files** — automatically populated targets for `.bashrc`, `.zshrc`, Fish `config.fish`, `.profile`, `.bash_profile`, `.zprofile`, and `.inputrc`. Common settings can be selected with SPACE and written into a removable systui-managed block. The tool also supports custom entries, backups, direct editing, viewing, and syntax validation.
 - **Alias manager** — installs aliases from a catalog, adds or replaces custom aliases, removes aliases, imports existing alias definitions, validates syntax, and generates Fish-compatible aliases. Managed aliases are stored under `~/.config/systui/` and sourced from supported shell files.
 
+
+
+## Expanded system configuration
+
+- Shell plugin catalogue for Bash, Zsh, and Fish GitHub projects with installation, updates, and shell integration.
+- Expanded GitHub add-on catalogues and update/status management for terminal file managers.
+- Full OpenSSH server configuration for authentication, access controls, keys, forwarding, keepalives, SFTP, banners, host keys, logs, and validation.
+- Additional iSH-AOK compatibility, storage, cache, logging, shell, APT, and capability-report tuning.

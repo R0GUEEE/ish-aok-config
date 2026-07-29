@@ -3221,6 +3221,59 @@ menu_plugin_completions() {
     done
 }
 
+
+
+shell_github_catalog() { # tag|description|repo|shells|init
+    cat <<'EOF'
+ble-sh|Bash line editor, autosuggestions and highlighting|akinomyoga/ble.sh|bash|source ~/.local/share/ble-sh/ble.sh
+bash-preexec|preexec/precmd hooks for Bash|rcaloras/bash-preexec|bash|source ~/.local/share/bash-preexec/bash-preexec.sh
+bash-git-prompt|Fast Git-aware Bash prompt|magicmonty/bash-git-prompt|bash|source ~/.local/share/bash-git-prompt/gitprompt.sh
+fzf-tab|Replace Zsh completion menu with fzf|Aloxaf/fzf-tab|zsh|source ~/.local/share/zsh-plugins/fzf-tab/fzf-tab.plugin.zsh
+fast-syntax-highlighting|Feature-rich Zsh syntax highlighting|zdharma-continuum/fast-syntax-highlighting|zsh|source ~/.local/share/zsh-plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
+zsh-autocomplete|Real-time type-ahead completion|marlonrichert/zsh-autocomplete|zsh|source ~/.local/share/zsh-plugins/zsh-autocomplete/zsh-autocomplete.plugin.zsh
+zsh-history-substring-search|History substring navigation|zsh-users/zsh-history-substring-search|zsh|source ~/.local/share/zsh-plugins/zsh-history-substring-search/zsh-history-substring-search.zsh
+zsh-you-should-use|Remind users about configured aliases|MichaelAquilina/zsh-you-should-use|zsh|source ~/.local/share/zsh-plugins/zsh-you-should-use/you-should-use.plugin.zsh
+fish-autopair|Automatic bracket and quote pairing|jorgebucaran/autopair.fish|fish|fisher install jorgebucaran/autopair.fish
+fish-done|Desktop notifications for long commands|franciscolourenco/done|fish|fisher install franciscolourenco/done
+fish-puffer|Text-expansion plugin for Fish|nickeb96/puffer-fish|fish|fisher install nickeb96/puffer-fish
+fish-colored-man|Colored man pages for Fish|decors/fish-colored-man|fish|fisher install decors/fish-colored-man
+EOF
+}
+
+menu_shell_github_plugins() {
+    local u="$1" h="$2" chosen tag desc repo shells init dest rc
+    local args=()
+    while IFS='|' read -r tag desc repo shells init; do
+        case "$shells" in
+            bash) dest="$h/.local/share/${tag/bash-/bash-}" ;;
+            zsh) dest="$h/.local/share/zsh-plugins/$tag" ;;
+            fish) dest="$h/.config/fish/functions" ;;
+        esac
+        args+=("$tag" "$desc — $repo [$shells]" off)
+    done < <(shell_github_catalog)
+    chosen=$(tui_check "GitHub shell plugins — $u" "SPACE selects projects to install/update and integrate:" "${args[@]}") || return 0
+    command -v git >/dev/null 2>&1 || pm_install git
+    for tag in $chosen; do
+        while IFS='|' read -r t desc repo shells init; do
+            [ "$t" = "$tag" ] || continue
+            case "$shells" in
+                bash)
+                    dest="$h/.local/share/$tag"
+                    fm_as_user "$u" "mkdir -p ~/.local/share; if [ -d '$dest/.git' ]; then git -C '$dest' pull --ff-only; else rm -rf '$dest'; git clone --depth 1 https://github.com/$repo.git '$dest'; fi"
+                    rc="$h/.bashrc"; plugin_add_line "$rc" "${init/#\~/$h}" "$u" ;;
+                zsh)
+                    dest="$h/.local/share/zsh-plugins/$tag"
+                    fm_as_user "$u" "mkdir -p ~/.local/share/zsh-plugins; if [ -d '$dest/.git' ]; then git -C '$dest' pull --ff-only; else rm -rf '$dest'; git clone --depth 1 https://github.com/$repo.git '$dest'; fi"
+                    rc="$h/.zshrc"; plugin_add_line "$rc" "${init/#\~/$h}" "$u" ;;
+                fish)
+                    command -v fish >/dev/null 2>&1 || pm_install fish
+                    fm_as_user "$u" "fish -lc 'type -q fisher; or curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source; $init'" ;;
+            esac
+        done < <(shell_github_catalog)
+    done
+    tui_msg "Shell plugins" "Selected GitHub projects were installed or updated for $u."
+}
+
 menu_shell_plugins() {
     local target u home_dir c
     target=$(shell_plugin_target) || return 0
@@ -3236,6 +3289,7 @@ menu_shell_plugins() {
             carapace "Carapace — multi-shell completion initialization" \
             syntax "Zsh syntax highlighting — source and style settings" \
             autosuggest "Zsh autosuggestions — source and style settings" \
+            github "More GitHub plugins — Bash, Zsh and Fish catalogue" \
             user "Change target user" back "Back") || return 0
         case "$c" in
             starship) menu_plugin_starship "$u" "$home_dir" ;;
@@ -3246,6 +3300,7 @@ menu_shell_plugins() {
             direnv) menu_plugin_simple_init "direnv" direnv direnv 'eval "$(direnv hook bash)"' 'eval "$(direnv hook zsh)"' 'direnv hook fish | source' "$u" "$home_dir" "$home_dir/.config/direnv/direnvrc" ;;
             carapace) menu_plugin_simple_init "Carapace" carapace carapace 'source <(carapace _carapace bash)' 'source <(carapace _carapace zsh)' 'carapace _carapace fish | source' "$u" "$home_dir" "$home_dir/.config/carapace/bridges.yaml" ;;
             syntax) menu_plugin_simple_init "Zsh syntax highlighting" zsh-syntax-highlighting zsh-syntax-highlighting '' 'source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh' '' "$u" "$home_dir" "$home_dir/.zshrc" ;;
+            github) menu_shell_github_plugins "$u" "$home_dir" ;;
             autosuggest) menu_plugin_simple_init "Zsh autosuggestions" zsh-autosuggestions zsh-autosuggestions '' 'source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh' '' "$u" "$home_dir" "$home_dir/.zshrc" ;;
             user) target=$(shell_plugin_target) || continue; u=${target%%|*}; home_dir=${target#*|} ;;
             back|"") return 0 ;;
@@ -3663,6 +3718,54 @@ EOF
     done
 }
 
+
+menu_ssh_server() {
+    local a v p f u key
+    while true; do
+        a=$(tui_menu "OpenSSH Server" "Installation, authentication, access and runtime management:" \
+            install "Install, enable and start sshd" status "Service status and listening sockets" \
+            harden "Apply validated hardening drop-in" port "Configure listen port/address" \
+            auth "Authentication methods (password, keys, PAM)" rootlogin "Configure root login policy" \
+            users "AllowUsers / DenyUsers access controls" keys "Manage authorized_keys for a user" \
+            forwarding "X11, TCP and agent forwarding" keepalive "Client keepalive and idle timeout" \
+            sftp "Configure internal-sftp subsystem" banners "Login banner and MOTD settings" \
+            hostkeys "Generate/check SSH host keys" test "Validate configuration with sshd -t" \
+            effective "View effective sshd configuration" logs "View recent SSH logs" \
+            restart "Restart SSH service" back "Back") || return 0
+        case "$a" in
+            install) pm_install "$(local_pkg_map openssh-server)"; ssh-keygen -A 2>/dev/null || true; svc enable sshd 2>/dev/null || svc enable ssh; svc restart sshd 2>/dev/null || svc restart ssh ;;
+            status) { svc status sshd 2>&1 || svc status ssh 2>&1; echo; ss -lntp 2>/dev/null | grep -E 'sshd|:22|:2222|:22000' || true; } > /tmp/systui.ssh; tui_text "SSH status" /tmp/systui.ssh ;;
+            harden) mkdir -p /etc/ssh/sshd_config.d; cat > /etc/ssh/sshd_config.d/90-systui-hardening.conf <<'EOF'
+PermitRootLogin prohibit-password
+MaxAuthTries 3
+LoginGraceTime 30
+PermitEmptyPasswords no
+X11Forwarding no
+AllowTcpForwarding local
+ClientAliveInterval 300
+ClientAliveCountMax 2
+UseDNS no
+EOF
+                if sshd -t 2>/tmp/systui.ssherr; then tui_msg "SSH" "Hardening drop-in installed and validated."; else rm -f /etc/ssh/sshd_config.d/90-systui-hardening.conf; tui_text "Validation failed; changes reverted" /tmp/systui.ssherr; fi ;;
+            port) p=$(tui_input "SSH port" "Listen port (1-65535):" "22") || continue; case "$p" in ''|*[!0-9]*) tui_msg "Invalid" "Port must be numeric."; continue;; esac; [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { tui_msg "Invalid" "Port must be 1-65535."; continue; }; mkdir -p /etc/ssh/sshd_config.d; printf 'Port %s\n' "$p" > /etc/ssh/sshd_config.d/20-systui-listen.conf; sshd -t && tui_msg "SSH" "Port set to $p. Restart to apply." ;;
+            auth) v=$(tui_check "SSH authentication" "SPACE selects enabled methods:" password "PasswordAuthentication" on pubkey "PubkeyAuthentication" on pam "UsePAM" on keyboard "KbdInteractiveAuthentication" off) || continue; mkdir -p /etc/ssh/sshd_config.d; { for f in password pubkey pam keyboard; do case " $v " in *" $f "*) x=yes;; *) x=no;; esac; case "$f" in password) echo "PasswordAuthentication $x";; pubkey) echo "PubkeyAuthentication $x";; pam) echo "UsePAM $x";; keyboard) echo "KbdInteractiveAuthentication $x";; esac; done; } > /etc/ssh/sshd_config.d/30-systui-auth.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/30-systui-auth.conf ;;
+            rootlogin) v=$(tui_radio "Root login" "Select policy:" no "Disable root SSH login" on prohibit-password "Allow root with keys only" off yes "Allow root with password" off forced-commands-only "Only forced commands" off) || continue; mkdir -p /etc/ssh/sshd_config.d; echo "PermitRootLogin $v" > /etc/ssh/sshd_config.d/31-systui-root.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/31-systui-root.conf ;;
+            users) v=$(tui_input "SSH access control" "AllowUsers list (blank removes managed rule):" "") || continue; mkdir -p /etc/ssh/sshd_config.d; [ -n "$v" ] && echo "AllowUsers $v" > /etc/ssh/sshd_config.d/40-systui-users.conf || rm -f /etc/ssh/sshd_config.d/40-systui-users.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/40-systui-users.conf ;;
+            keys) u=$(tui_input "SSH keys" "User:" "${SUDO_USER:-root}") || continue; h=$(user_home "$u"); [ -n "$h" ] || continue; mkdir -p "$h/.ssh"; touch "$h/.ssh/authorized_keys"; chmod 700 "$h/.ssh"; chmod 600 "$h/.ssh/authorized_keys"; chown -R "$u":"$(id -gn "$u")" "$h/.ssh"; "${EDITOR:-nano}" "$h/.ssh/authorized_keys" ;;
+            forwarding) v=$(tui_check "SSH forwarding" "SPACE selects enabled forwarding:" x11 "X11Forwarding" off tcp "AllowTcpForwarding" on agent "AllowAgentForwarding" on gateway "GatewayPorts" off) || continue; mkdir -p /etc/ssh/sshd_config.d; { for f in x11 tcp agent gateway; do case " $v " in *" $f "*) x=yes;; *) x=no;; esac; case "$f" in x11) echo "X11Forwarding $x";; tcp) echo "AllowTcpForwarding $x";; agent) echo "AllowAgentForwarding $x";; gateway) echo "GatewayPorts $x";; esac; done; } > /etc/ssh/sshd_config.d/50-systui-forwarding.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/50-systui-forwarding.conf ;;
+            keepalive) p=$(tui_input "Keepalive" "ClientAliveInterval seconds:" "300") || continue; v=$(tui_input "Keepalive" "ClientAliveCountMax:" "2") || continue; mkdir -p /etc/ssh/sshd_config.d; printf 'ClientAliveInterval %s\nClientAliveCountMax %s\nTCPKeepAlive yes\n' "$p" "$v" > /etc/ssh/sshd_config.d/60-systui-keepalive.conf ;;
+            sftp) mkdir -p /etc/ssh/sshd_config.d; echo 'Subsystem sftp internal-sftp' > /etc/ssh/sshd_config.d/70-systui-sftp.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/70-systui-sftp.conf ;;
+            banners) f=$(tui_input "SSH banner" "Banner file (blank disables):" "/etc/issue.net") || continue; mkdir -p /etc/ssh/sshd_config.d; if [ -n "$f" ]; then touch "$f"; "${EDITOR:-nano}" "$f"; echo "Banner $f" > /etc/ssh/sshd_config.d/80-systui-banner.conf; else rm -f /etc/ssh/sshd_config.d/80-systui-banner.conf; fi ;;
+            hostkeys) ssh-keygen -A; ls -l /etc/ssh/ssh_host_* > /tmp/systui.ssh 2>&1; tui_text "SSH host keys" /tmp/systui.ssh ;;
+            test) sshd -t > /tmp/systui.ssh 2>&1 && echo "Configuration valid." > /tmp/systui.ssh; tui_text "sshd validation" /tmp/systui.ssh ;;
+            effective) sshd -T 2>/dev/null | sort > /tmp/systui.ssh; tui_text "Effective sshd configuration" /tmp/systui.ssh ;;
+            logs) { journalctl -u ssh -u sshd -n 150 --no-pager 2>/dev/null || tail -n 150 /var/log/auth.log 2>/dev/null || tail -n 150 /var/log/secure 2>/dev/null; } > /tmp/systui.ssh; tui_text "SSH logs" /tmp/systui.ssh ;;
+            restart) sshd -t && { svc restart sshd 2>/dev/null || svc restart ssh; } ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
 # ---- 2.4 Network -----------------------------------------------------------
 menu_network() {
     while true; do
@@ -3683,78 +3786,7 @@ menu_network() {
             advanced "Advanced (IPv6, MTU, Wake-on-LAN, forwarding)" \
             back     "Back") || return 0
         case "$c" in
-            ssh)
-                local a
-                a=$(tui_menu "OpenSSH" "Action:" \
-                    install "Install & enable sshd" \
-                    harden  "Apply hardening preset (drop-in)" \
-                    port    "Change listen port" \
-                    rootlogin "Toggle PermitRootLogin" \
-                    passauth "Toggle PasswordAuthentication" \
-                    view    "View effective sshd settings" \
-                    restart "Restart sshd" ) || continue
-                case "$a" in
-                    install)
-                        local sshpkg; sshpkg=$(local_pkg_map openssh-server)
-                        pm_install $sshpkg
-                        svc enable sshd 2>/dev/null || svc enable ssh
-                        svc start  sshd 2>/dev/null || svc start ssh ;;
-                    harden)
-                        tui_yesno "SSH hardening" \
-"Apply this preset?
-
-  PermitRootLogin prohibit-password
-  PasswordAuthentication yes   (change separately once keys work)
-  MaxAuthTries 3
-  LoginGraceTime 30
-  X11Forwarding no
-  ClientAliveInterval 300
-  ClientAliveCountMax 2
-  PermitEmptyPasswords no
-
-Written as a drop-in so the main config stays untouched." || continue
-                        if [ -d /etc/ssh/sshd_config.d ]; then
-                            cat > /etc/ssh/sshd_config.d/90-systui-hardening.conf <<'EOF'
-# systui SSH hardening preset
-PermitRootLogin prohibit-password
-MaxAuthTries 3
-LoginGraceTime 30
-X11Forwarding no
-ClientAliveInterval 300
-ClientAliveCountMax 2
-PermitEmptyPasswords no
-EOF
-                            sshd -t 2>>"$LOGFILE" \
-                                && tui_msg "Done" "Drop-in written and validated (sshd -t).\nRestart sshd to apply." \
-                                || { rm -f /etc/ssh/sshd_config.d/90-systui-hardening.conf
-                                     tui_msg "Reverted" "sshd -t failed — drop-in removed."; }
-                        else
-                            tui_msg "N/A" "This sshd has no sshd_config.d support.\nApply the individual toggles instead."
-                        fi ;;
-                    port)
-                        local p; p=$(tui_input "SSH port" "New port:" "22") || continue
-                        sed -i -E "s/^#?Port .*/Port $p/" /etc/ssh/sshd_config
-                        tui_msg "SSH" "Port set to $p. Restart sshd to apply.\n(If ufw is enabled, allow the new port first!)" ;;
-                    rootlogin)
-                        local v; v=$(tui_radio "PermitRootLogin" "Value (SPACE to select):" \
-                            prohibit-password "Keys only (default)" on \
-                            yes "Allow with password" off \
-                            no  "Deny entirely" off) || continue
-                        [ -z "$v" ] && continue
-                        sed -i -E "s/^#?PermitRootLogin .*/PermitRootLogin $v/" /etc/ssh/sshd_config
-                        tui_msg "SSH" "PermitRootLogin = $v. Restart sshd to apply." ;;
-                    passauth)
-                        local v; v=$(tui_radio "PasswordAuthentication" "Value (SPACE to select):" \
-                            yes "Allow passwords" on \
-                            no  "Keys only (recommended once keys work)" off) || continue
-                        [ -z "$v" ] && continue
-                        sed -i -E "s/^#?PasswordAuthentication .*/PasswordAuthentication $v/" /etc/ssh/sshd_config
-                        tui_msg "SSH" "PasswordAuthentication = $v. Restart sshd to apply." ;;
-                    view)
-                        sshd -T 2>/dev/null | sort > /tmp/systui.net || echo "sshd -T failed (is sshd installed?)" > /tmp/systui.net
-                        tui_text "Effective sshd settings" /tmp/systui.net ;;
-                    restart) svc restart sshd 2>/dev/null || svc restart ssh ;;
-                esac ;;
+            ssh) menu_ssh_server ;;
             fail2ban)
                 local a
                 a=$(tui_menu "fail2ban" "Action:" \
@@ -4346,18 +4378,32 @@ menu_storage() {
 }
 
 perf_ish_aok() {
-    local opts
-    opts=$(tui_check "iSH-AOK tuning" "Safe compatibility-oriented options (SPACE toggles):" \
-        proc "Ensure /proc is mounted" on sys "Ensure /sys is mounted when supported" off \
-        tmp "Clean stale temporary files" on dns "Refresh resolv.conf fallback" off \
-        shell "Reduce shell history/write overhead" off) || return 0
+    local opts h
+    opts=$(tui_check "iSH-AOK tuning" "Compatibility and low-overhead options (SPACE toggles):" \
+        proc "Ensure /proc is mounted" on sys "Mount /sys when supported" off devpts "Ensure /dev/pts is mounted" on \
+        tmp "Clean stale temporary/cache files" on dns "Repair empty resolv.conf" off shell "Reduce shell history write overhead" off \
+        apt "Reduce APT cache/list footprint" on logs "Trim oversized logs" on core "Disable core dumps" on \
+        python "Disable Python bytecode writes globally" off git "Enable shallow/partial Git defaults" off \
+        status "Generate iSH-AOK capability report" off) || return 0
     opts=${opts//\"/}
     case " $opts " in *" proc "*) mountpoint -q /proc 2>/dev/null || mount -t proc proc /proc 2>/dev/null || true ;; esac
     case " $opts " in *" sys "*) mountpoint -q /sys 2>/dev/null || mount -t sysfs sysfs /sys 2>/dev/null || true ;; esac
-    case " $opts " in *" tmp "*) find /tmp -mindepth 1 -mtime +3 -delete 2>/dev/null || true ;; esac
-    case " $opts " in *" dns "*) [ -s /etc/resolv.conf ] || printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf ;; esac
-    case " $opts " in *" shell "*) printf 'export HISTCONTROL=ignoreboth\nexport HISTSIZE=1000\nexport HISTFILESIZE=2000\n' > /etc/profile.d/90-systui-shell-performance.sh ;; esac
-    tui_msg "Done" "Selected iSH-AOK tuning options were applied."
+    case " $opts " in *" devpts "*) mkdir -p /dev/pts; mountpoint -q /dev/pts 2>/dev/null || mount -t devpts devpts /dev/pts 2>/dev/null || true ;; esac
+    case " $opts " in *" tmp "*) find /tmp /var/tmp -mindepth 1 -mtime +3 -delete 2>/dev/null || true; rm -rf /root/.cache/thumbnails 2>/dev/null || true ;; esac
+    case " $opts " in *" dns "*) [ -s /etc/resolv.conf ] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf ;; esac
+    case " $opts " in *" shell "*) printf 'export HISTCONTROL=ignoreboth\nexport HISTSIZE=500\nexport HISTFILESIZE=1000\nexport PROMPT_COMMAND=${PROMPT_COMMAND:+$PROMPT_COMMAND;}history -a\n' > /etc/profile.d/90-systui-shell-performance.sh ;; esac
+    case " $opts " in *" apt "*) mkdir -p /etc/apt/apt.conf.d; cat > /etc/apt/apt.conf.d/90-systui-ish-aok <<'EOF'
+APT::Keep-Downloaded-Packages "false";
+Acquire::Languages "none";
+Binary::apt::APT::Keep-Downloaded-Packages "false";
+EOF
+        apt-get clean 2>/dev/null || true ;; esac
+    case " $opts " in *" logs "*) find /var/log -type f -size +2M -exec sh -c ': > "$1"' _ {} \; 2>/dev/null || true ;; esac
+    case " $opts " in *" core "*) printf '* soft core 0\n* hard core 0\n' > /etc/security/limits.d/91-systui-no-core.conf 2>/dev/null || true ;; esac
+    case " $opts " in *" python "*) echo 'export PYTHONDONTWRITEBYTECODE=1' > /etc/profile.d/91-systui-python.sh ;; esac
+    case " $opts " in *" git "*) git config --system fetch.prune true 2>/dev/null || true; git config --system fetch.writeCommitGraph false 2>/dev/null || true ;; esac
+    case " $opts " in *" status "*) { uname -a; echo; cat /etc/os-release 2>/dev/null; echo; mount; echo; df -h; echo; free -h 2>/dev/null || true; echo; command -v ip >/dev/null && ip addr 2>&1 || true; } > /tmp/systui.ishaok; tui_text "iSH-AOK capability report" /tmp/systui.ishaok ;; esac
+    tui_msg "Done" "Selected iSH-AOK tuning options were applied. Unsupported kernel features were skipped safely."
 }
 
 perf_tmpfs() {
@@ -5561,11 +5607,15 @@ fm_plugin_catalog() { # tag|description|repo|destination-relative
 lf-sixel|Sixel image preview helper|horriblename/lf-sixel|.config/lf/plugins/lf-sixel
 lf-gadgets|Preview and utility scripts|dylanaraps/lf|.config/lf/plugins/lf-upstream
 lf-icons|Nerd Font icon configuration|gokcehan/lf|.config/lf/plugins/lf-icons-source
+lf-preview|Preview scripts and cleaner integration|gokcehan/lf|.config/lf/plugins/preview
+lfcd|Shell directory-change integration|gokcehan/lf|.config/lf/plugins/lfcd
 EOF
             ;;
         tere)
             cat <<'EOF'
 tere-fzf|fzf-oriented shell integration examples|mgunyho/tere|.config/tere/addons/tere-upstream
+tere-zoxide|zoxide workflow integration examples|ajeetdsouza/zoxide|.config/tere/addons/zoxide
+tere-starship|Prompt integration examples|starship/starship|.config/tere/addons/starship
 EOF
             ;;
         yazi)
@@ -5576,6 +5626,10 @@ chmod|Interactive chmod plugin|yazi-rs/plugins|.config/yazi/plugins/chmod.yazi
 max-preview|Maximize preview pane|yazi-rs/plugins|.config/yazi/plugins/max-preview.yazi
 jump-to-char|Jump to item by character|yazi-rs/plugins|.config/yazi/plugins/jump-to-char.yazi
 starship|Starship prompt integration|Rolv-Apneseth/starship.yazi|.config/yazi/plugins/starship.yazi
+git|Git status and actions|yazi-rs/plugins|.config/yazi/plugins/git.yazi
+mount|Mount removable filesystems|yazi-rs/plugins|.config/yazi/plugins/mount.yazi
+ouch|Create files and directories|yazi-rs/plugins|.config/yazi/plugins/ouch.yazi
+lazygit|Open repositories in lazygit|Lil-Dank/lazygit.yazi|.config/yazi/plugins/lazygit.yazi
 EOF
             ;;
         ranger)
@@ -5584,12 +5638,18 @@ ranger-devicons|Nerd Font file icons|alexanderjeurissen/ranger_devicons|.config/
 ranger-fzf|fzf integration commands|MuXiu1997/ranger-fzf-filter|.config/ranger/plugins/ranger-fzf-filter
 ranger-zoxide|zoxide directory jumping|jchook/ranger-zoxide|.config/ranger/plugins/ranger-zoxide
 ranger-archives|Archive extraction helpers|maximtrp/ranger-archives|.config/ranger/plugins/ranger-archives
+ranger-git|Git status integration|ranger/ranger|.config/ranger/plugins/ranger-git
+ranger-trash|Trash-cli integration|ranger/ranger|.config/ranger/plugins/ranger-trash
+ranger-autojump|Directory jumping integration|ranger/ranger|.config/ranger/plugins/ranger-autojump
 EOF
             ;;
         nnn)
             cat <<'EOF'
 plugins|Official nnn plugin collection|jarun/nnn|.config/nnn/plugins-source
 icons|Nerd Font icon support|jarun/nnn|.config/nnn/icons-source
+preview-tui|Official preview-tui plugin assets|jarun/nnn|.config/nnn/preview-tui-source
+fzopen|Official fzf opener plugin|jarun/nnn|.config/nnn/fzopen-source
+autofifo|Official FIFO preview helper|jarun/nnn|.config/nnn/autofifo-source
 EOF
             ;;
         vifm)
@@ -5609,6 +5669,9 @@ zoxide|zoxide integration|sayanarijit/zoxide.xplr|.config/xplr/plugins/zoxide
 fzf|fzf integration|sayanarijit/fzf.xplr|.config/xplr/plugins/fzf
 icons|Nerd Font icons|sayanarijit/dua-cli.xplr|.config/xplr/plugins/dua-cli
 trash-cli|Safe trash integration|sayanarijit/trash-cli.xplr|.config/xplr/plugins/trash-cli
+map|Interactive directory map|sayanarijit/map.xplr|.config/xplr/plugins/map
+dual-pane|Dual-pane layout|sayanarijit/dual-pane.xplr|.config/xplr/plugins/dual-pane
+command-mode|Command palette workflows|sayanarijit/command-mode.xplr|.config/xplr/plugins/command-mode
 EOF
             ;;
     esac
@@ -5669,8 +5732,10 @@ menu_fm_plugins() {
             install "Install/update curated add-ons" \
             remove  "Remove managed add-ons" \
             custom  "Install custom Git repository" \
+            update  "Update all managed Git repositories" \
+            status  "Show installed managed add-ons" \
             back    "Back") || return 0
-        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; back) return 0;; esac
+        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; update) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git -print0 2>/dev/null | while IFS= read -r -d "" g; do fm_as_user "$u" "git -C '${g%/.git}' pull --ff-only"; done; tui_msg "Updated" "Managed repositories were updated.";; status) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git 2>/dev/null | sed 's#/.git$##' > /tmp/systui.fmplugins; [ -s /tmp/systui.fmplugins ] || echo "(none)" > /tmp/systui.fmplugins; tui_text "$fm managed add-ons" /tmp/systui.fmplugins;; back) return 0;; esac
     done
 }
 
