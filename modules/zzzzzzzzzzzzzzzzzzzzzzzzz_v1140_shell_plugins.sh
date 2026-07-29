@@ -27,6 +27,69 @@ v1140_shell_rc(){
 
 v1140_status(){ command -v "$1" >/dev/null 2>&1 && printf installed || printf 'not installed'; }
 
+# Starship is configured per shell, so the shell is already known here and is
+# never asked for a second time.
+v1140_starship_enabled(){
+  case $1 in
+    bash) grep -q 'ish-aok-config: starship' "$CURRENT_HOME/.bashrc" 2>/dev/null;;
+    zsh) grep -q 'ish-aok-config: starship' "$CURRENT_HOME/.zshrc" 2>/dev/null;;
+    fish) [ -f "$CURRENT_HOME/.config/fish/conf.d/starship.fish" ];;
+    *) return 1;;
+  esac
+}
+
+v1140_starship_enable(){
+  case $1 in
+    bash) replace_block "$CURRENT_HOME/.bashrc" starship 'command -v starship >/dev/null 2>&1 && eval "$(starship init bash)"';;
+    zsh) replace_block "$CURRENT_HOME/.zshrc" starship 'command -v starship >/dev/null 2>&1 && eval "$(starship init zsh)"';;
+    fish) mkdir -p "$CURRENT_HOME/.config/fish/conf.d"; write_file "$CURRENT_HOME/.config/fish/conf.d/starship.fish" 644 'command -q starship; and starship init fish | source';;
+  esac
+}
+
+v1140_starship_disable(){
+  case $1 in
+    bash) remove_managed_block "$CURRENT_HOME/.bashrc" starship;;
+    zsh) remove_managed_block "$CURRENT_HOME/.zshrc" starship;;
+    fish) rm -f "$CURRENT_HOME/.config/fish/conf.d/starship.fish";;
+  esac
+}
+
+v1140_prompt_menu(){
+  _shell=$1
+  while :; do
+    _state=$(v1140_starship_enabled "$_shell" && printf enabled || printf disabled)
+    _c=$(ui_menu "$(v1140_shell_label "$_shell") Prompt" \
+      "$(printf 'Starship: %s\nFor %s: %s' "$(v1140_status starship)" "$(v1140_shell_label "$_shell")" "$_state")" \
+      install 'Install Starship' \
+      enable "Enable Starship for $(v1140_shell_label "$_shell")" \
+      disable "Disable Starship for $(v1140_shell_label "$_shell")" \
+      config 'Edit the Starship configuration' \
+      back 'Back') || { _r=$?; [ "$_r" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_r"; }
+    case $_c in
+      install)
+        if command -v starship >/dev/null 2>&1; then
+          ui_msg Starship 'Starship is already installed.'
+        else
+          run_capture 'Installing Starship' pkg_install starship
+        fi
+        ;;
+      enable)
+        v1140_starship_enable "$_shell"
+        ui_msg Starship "Enabled for $(v1140_shell_label "$_shell"). Start a new shell to see the prompt."
+        ;;
+      disable)
+        v1140_starship_disable "$_shell"
+        ui_msg Starship "Disabled for $(v1140_shell_label "$_shell")."
+        ;;
+      config)
+        ensure_template starship "$CURRENT_HOME/.config/starship.toml"
+        edit_file "$CURRENT_HOME/.config/starship.toml"
+        ;;
+      back) return 0;;
+    esac
+  done
+}
+
 # Catalog rows for one shell and kind: "id|name"
 v1140_catalog_rows(){
   _shell=$1 _kind=$2
@@ -109,6 +172,31 @@ EOF_INST
   done
 }
 
+# Level 2: configuration frameworks for one shell.
+# A framework is an opinionated configuration bundle (Oh My Zsh, Bash-it), as
+# opposed to a plugin manager, which only fetches and loads plugins.
+v1140_frameworks_menu(){
+  _shell=$1
+  while :; do
+    set --
+    while IFS='|' read -r _id _name; do
+      [ -n "$_id" ] || continue
+      set -- "$@" "$_id" "$_name $(v1140_mark "$_id")"
+    done <<EOF_ROWS
+$(v1140_catalog_rows "$_shell" framework)
+EOF_ROWS
+    [ "$#" -gt 0 ] || { ui_msg 'Frameworks' "No frameworks are catalogued for $(v1140_shell_label "$_shell")."; return 0; }
+    set -- "$@" back 'Back'
+    _c=$(ui_menu "$(v1140_shell_label "$_shell") Frameworks" \
+      'A framework replaces the shell configuration with an opinionated setup. Installing more than one at a time is not recommended.' "$@") \
+      || { _rc=$?; [ "$_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_rc"; }
+    case $_c in
+      back) return 0;;
+      *) v1140_item_menu "$_c";;
+    esac
+  done
+}
+
 # Level 2: plugin managers, addons and the route down to plugins.
 v1140_managers_menu(){
   _shell=$1
@@ -122,7 +210,7 @@ $(v1140_catalog_rows "$_shell" manager)
 EOF_ROWS
     set -- "$@" plugins "Plugins for $(v1140_shell_label "$_shell") >" update 'Update all installed plugins' back 'Back'
     _c=$(ui_menu "$(v1140_shell_label "$_shell") Plugin Managers and Addons" \
-      'A plugin manager is optional: catalogued plugins install and load without one.' "$@") \
+      'A plugin manager is optional: catalogued plugins install and load without one. Frameworks are managed separately.' "$@") \
       || { _rc=$?; [ "$_rc" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_rc"; }
     case $_c in
       back) return 0;;
@@ -141,7 +229,9 @@ v1140_shell_menu(){
     _c=$(ui_menu "$(v1140_shell_label "$_shell")" \
       "$(printf 'Status: %s\nConfiguration: %s' "$(v1140_status "$_shell")" "$_rc_file")" \
       install "Install $(v1140_shell_label "$_shell")" \
+      frameworks 'Configuration frameworks >' \
       managers 'Plugin managers and addons >' \
+      prompt 'Starship prompt >' \
       config 'Edit the shell configuration file' \
       default 'Make this the login shell' \
       back 'Back') || { _r=$?; [ "$_r" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_r"; }
@@ -153,7 +243,9 @@ v1140_shell_menu(){
           run_capture "Installing $_shell" pkg_install "$_shell"
         fi
         ;;
+      frameworks) v1140_frameworks_menu "$_shell";;
       managers) v1140_managers_menu "$_shell";;
+      prompt) v1140_prompt_menu "$_shell";;
       config) mkdir -p "$(dirname "$_rc_file")" 2>/dev/null || true; edit_file "$_rc_file";;
       default)
         _p=$(command -v "$_shell" 2>/dev/null) || { ui_msg 'Login shell' "$_shell is not installed yet."; continue; }
@@ -173,15 +265,13 @@ v1140_shell_configuration_menu(){
     for _s in $V1140_SHELLS; do
       set -- "$@" "$_s" "$(v1140_shell_label "$_s") ($(v1140_status "$_s")) >"
     done
-    set -- "$@" starship 'Starship prompt (cross-shell)' \
-      aliases 'Shared aliases' \
+    set -- "$@" aliases 'Shared aliases' \
       scan 'Show installed shells' \
       back 'Back'
     _c=$(ui_menu 'Shell Configuration' 'Choose a shell, then its plugin managers, then its plugins.' "$@") \
       || { _r=$?; [ "$_r" -eq "${UI_MENU_BACK_RC:-90}" ] && return 0; return "$_r"; }
     case $_c in
       bash|zsh|fish) v1140_shell_menu "$_c";;
-      starship) starship_menu;;
       aliases) ensure_template aliases "$CURRENT_HOME/.aliases";;
       scan) ui_text 'Installed shells' "$(grep -v '^#' /etc/shells 2>/dev/null; for _x in sh ash bash zsh fish dash mksh ksh nu; do command -v "$_x" 2>/dev/null; done | sort -u)";;
       back) return 0;;

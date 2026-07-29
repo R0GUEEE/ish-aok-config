@@ -32,6 +32,7 @@ v1130_workspace_suite.sh                         PASS
 v1131_software_catalog.sh                        PASS
 v1132_project_audit.sh                           PASS
 v1140_shell_plugins.sh                           PASS
+v1150_mini_builder.sh                            PASS
 v71_workflows.sh                                 PASS
 v72_engineering.sh                               PASS
 v74_workflow_engine.sh                           PASS
@@ -68,4 +69,4 @@ v970_navigation_registry.sh                      PASS
 v980_navigation_history.sh                       PASS
 v990_navigation_search.sh                        PASS
 
-Passed: 69 Failed: 0 Timed out: 0
+Passed: 70 Failed: 0 Timed out: 0

@@ -30,7 +30,8 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 is_root(){ [ "$(id -u)" -eq 0 ]; }
 as_root(){ run_root "$@"; }
 need_root(){ is_root || have doas || have sudo || { ui_msg Error 'This action needs root, sudo, or doas.'; return 1; }; }
-backup_file(){ f=$1; [ -e "$f" ] || return 0; s=$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now); n=$(printf %s "$f"|sed 's#^/##;s#/#_#g'); cp -p "$f" "$BACKUP_DIR/$n.$s" 2>/dev/null || as_root cp -p "$f" "$BACKUP_DIR/$n.$s"; }
+# Namespaced locals: POSIX sh has no scoping, and plain s/n leaked into callers.
+backup_file(){ _bk_f=$1; [ -e "$_bk_f" ] || return 0; _bk_s=$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now); _bk_n=$(printf %s "$_bk_f"|sed 's#^/##;s#/#_#g'); cp -p "$_bk_f" "$BACKUP_DIR/$_bk_n.$_bk_s" 2>/dev/null || as_root cp -p "$_bk_f" "$BACKUP_DIR/$_bk_n.$_bk_s"; }
 write_file(){ f=$1; mode=${2:-644}; data=$3; d=$(dirname "$f"); [ -d "$d" ] || { mkdir -p "$d" 2>/dev/null || as_root mkdir -p "$d"; }; backup_file "$f"; t=$TMP_DIR/write; printf '%b\n' "$data" >"$t"; if [ -w "$d" ] || [ -w "$f" ]; then cp "$t" "$f" && chmod "$mode" "$f"; else as_root cp "$t" "$f" && as_root chmod "$mode" "$f"; fi; }
 append_unique(){ f=$1; line=$2; [ -e "$f" ] || write_file "$f" 644 ''; grep -Fqx "$line" "$f" 2>/dev/null && return; backup_file "$f"; if [ -w "$f" ]; then printf '%s\n' "$line" >>"$f"; else printf '%s\n' "$line"|as_root tee -a "$f" >/dev/null; fi; }
 replace_block(){ f=$1; name=$2; body=$3; b="# >>> ish-aok-config: $name >>>"; e="# <<< ish-aok-config: $name <<<"; t=$TMP_DIR/block; [ -f "$f" ] && awk -v b="$b" -v e="$e" '$0==b{s=1;next}$0==e{s=0;next}!s{print}' "$f" >"$t" || : >"$t"; { cat "$t"; printf '\n%s\n%b\n%s\n' "$b" "$body" "$e"; } >"$t.new"; write_file "$f" 644 "$(cat "$t.new")"; }

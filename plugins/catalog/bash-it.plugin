@@ -1,6 +1,6 @@
 name=Bash-it
 tool=bash
-kind=manager
+kind=framework
 url=https://github.com/Bash-it/bash-it.git
 dest=$CURRENT_HOME/.bash_it
 adapter=framework

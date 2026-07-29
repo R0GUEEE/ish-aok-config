@@ -1,6 +1,6 @@
 name=Oh My Zsh
 tool=zsh
-kind=manager
+kind=framework
 url=https://github.com/ohmyzsh/ohmyzsh.git
 dest=$CURRENT_HOME/.oh-my-zsh
 adapter=framework
