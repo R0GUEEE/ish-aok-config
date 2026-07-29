@@ -3200,13 +3200,95 @@ omb_pick_array() {
     show_warnings
 }
 
+# Compatibility-focused Oh My Bash installer. It avoids the upstream installer,
+# preserves the existing .bashrc, and validates the result before committing it.
+omb_install_compatible() {
+    local u="$1" home_dir="$2" mode="${3:-install}"
+    local osh="$home_dir/.oh-my-bash" rc="$home_dir/.bashrc"
+    local stamp backup
+    stamp=$(date +%Y%m%d-%H%M%S)
+    backup="$home_dir/.bashrc.systui-omb-$stamp.bak"
+
+    command -v bash >/dev/null 2>&1 || { tui_msg "Missing" "Bash must be installed first."; return 1; }
+    command -v git >/dev/null 2>&1 || pm_install git || return 1
+    [ -f "$rc" ] || : > "$rc"
+    cp -p "$rc" "$backup" || return 1
+    chown "$u" "$backup" 2>/dev/null || true
+
+    if [ -d "$osh/.git" ]; then
+        if [ "$mode" = repair ]; then
+            run_cmd "Repairing Oh My Bash" su - "$u" -c "git -C '$osh' reset --hard HEAD && git -C '$osh' clean -fd && git -C '$osh' pull --ff-only" || return 1
+        else
+            run_cmd "Updating Oh My Bash" su - "$u" -c "git -C '$osh' pull --ff-only" || true
+        fi
+    else
+        [ ! -e "$osh" ] || mv "$osh" "$osh.pre-systui-$stamp"
+        run_cmd "Installing Oh My Bash for $u" su - "$u" -c "git clone --depth 1 https://github.com/ohmybash/oh-my-bash.git '$osh'" || return 1
+    fi
+
+    python3 - "$rc" "$osh" <<'PYOMB'
+from pathlib import Path
+import re, sys
+rc=Path(sys.argv[1]); osh=sys.argv[2]
+text=rc.read_text(errors='replace') if rc.exists() else ''
+text=re.sub(r'\n?# >>> systui oh-my-bash >>>.*?# <<< systui oh-my-bash <<<\n?', '\n', text, flags=re.S)
+lines=[]
+for line in text.splitlines():
+    if re.match(r'^\s*(export\s+OSH=|OSH_THEME=|plugins=\(|completions=\(|aliases=\(|(?:source|\.)\s+.*oh-my-bash\.sh)', line) and not line.lstrip().startswith('#'):
+        line='# disabled by systui: '+line
+    lines.append(line)
+block = '''# >>> systui oh-my-bash >>>
+# Uses syntax supported by legacy and current Bash releases.
+export OSH="__OSH__"
+OSH_THEME="font"
+plugins=(git bashmarks)
+completions=(git ssh)
+aliases=(general)
+if [ -n "${BASH_VERSION-}" ] && [ -r "$OSH/oh-my-bash.sh" ]; then
+    . "$OSH/oh-my-bash.sh"
+fi
+# <<< systui oh-my-bash <<<
+'''.replace('__OSH__', osh)
+rc.write_text('\n'.join(lines).rstrip()+'\n'+block)
+PYOMB
+    chown "$u" "$rc" 2>/dev/null || true
+
+    if su - "$u" -c "HOME='$home_dir' bash --noprofile --rcfile '$rc' -i -c exit" >/tmp/systui-omb-check.$$ 2>&1; then
+        rm -f /tmp/systui-omb-check.$$
+        tui_msg "Installed" "Oh My Bash is configured for $u.\n\nExisting config backup: $backup\nThe generated loader supports legacy and current Bash syntax."
+        return 0
+    fi
+
+    local validation
+    validation=$(tail -20 /tmp/systui-omb-check.$$ 2>/dev/null)
+    rm -f /tmp/systui-omb-check.$$
+    cp -p "$backup" "$rc"
+    chown "$u" "$rc" 2>/dev/null || true
+    tui_msg "Validation failed" "The previous .bashrc was restored.\n\n$validation"
+    return 1
+}
+
+omb_remove_compatible_block() {
+    python3 - "$1" <<'PYOMB'
+from pathlib import Path
+import re, sys
+p=Path(sys.argv[1])
+if p.exists():
+    s=p.read_text(errors='replace')
+    s=re.sub(r'\n?# >>> systui oh-my-bash >>>.*?# <<< systui oh-my-bash <<<\n?', '\n', s, flags=re.S)
+    s=re.sub(r'^# disabled by systui: ', '', s, flags=re.M)
+    p.write_text(s.lstrip('\n'))
+PYOMB
+}
+
 menu_omb() { # menu_omb <user> <home_dir>
     local u="$1" home_dir="$2"
     local osh="$home_dir/.oh-my-bash"
     while true; do
         local c
         c=$(tui_menu "oh-my-bash — $u" "Install & manage oh-my-bash $(stp "$osh"):" \
-            install "Install oh-my-bash" \
+            install "Install/reinstall (all supported Bash versions)" \
+            repair  "Repair installation and rebuild safe config" \
             update  "Update oh-my-bash to the latest version" \
             theme   "Choose a theme" \
             plugins "Manage plugins (checklist from installed set)" \
@@ -3218,9 +3300,8 @@ menu_omb() { # menu_omb <user> <home_dir>
             uninstall "Uninstall oh-my-bash" \
             back    "Back") || return 0
         case "$c" in
-            install)
-                run_cmd "Installing oh-my-bash for $u" su - "$u" -c \
-                    "curl -fsSL https://raw.githubusercontent.com/ohmybash/oh-my-bash/master/tools/install.sh | sh -s -- --unattended" ;;
+            install) omb_install_compatible "$u" "$home_dir" install ;;
+            repair)  omb_install_compatible "$u" "$home_dir" repair ;;
             uninstall)
                 [ -d "$osh" ] || { tui_msg "Missing" "oh-my-bash is not installed for $u."; continue; }
                 tui_yesno "Uninstall oh-my-bash" \
@@ -3229,14 +3310,9 @@ menu_omb() { # menu_omb <user> <home_dir>
 If the installer's backup (~/.bashrc.omb-backup) exists it will be
 restored; otherwise the OMB lines in .bashrc are commented out." || continue
                 rm -rf "$osh"
-                if [ -f "$home_dir/.bashrc.omb-backup" ]; then
-                    mv "$home_dir/.bashrc.omb-backup" "$home_dir/.bashrc"
-                    chown "$u" "$home_dir/.bashrc" 2>/dev/null
-                    tui_msg "Removed" "oh-my-bash deleted; original .bashrc restored from backup."
-                else
-                    sed -i -E 's|^(export OSH=)|#\1|; s|^(OSH_THEME=)|#\1|; s|^(source .*oh-my-bash.sh)|#\1|' "$home_dir/.bashrc" 2>/dev/null
-                    tui_msg "Removed" "oh-my-bash deleted; its .bashrc lines were commented out\n(no installer backup was found)."
-                fi ;;
+                omb_remove_compatible_block "$home_dir/.bashrc"
+                chown "$u" "$home_dir/.bashrc" 2>/dev/null || true
+                tui_msg "Removed" "Oh My Bash was removed. Existing .bashrc content and timestamped backups were preserved." ;;
             update)
                 [ -d "$osh" ] || { tui_msg "Missing" "oh-my-bash is not installed for $u."; continue; }
                 run_cmd "Updating oh-my-bash" su - "$u" -c \
