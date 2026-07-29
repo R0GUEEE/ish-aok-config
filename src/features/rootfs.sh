@@ -1,0 +1,1179 @@
+# ROOTFS BUILDER — expanded
+#
+# Distros: Debian/Devuan/Ubuntu (debootstrap), Alpine (apk.static),
+#          Arch (pacstrap/tarball), Fedora (dnf --installroot + repofrompath),
+#          Void (official ROOTFS tarball).
+# Extras : build presets, foreign-arch builds via qemu-user-static + binfmt,
+#          in-rootfs post-config (users, DNS, hosts, timezone, sshd),
+#          build manifest, multi-format compression, and a management menu
+#          (enter chroot, inspect, compress, delete).
+###############################################################################
+
+ROOTFS_BASE="/opt/rootfs"
+
+# Host arch in deb terms, for foreign-arch detection.
+host_debarch() {
+    case "$(uname -m)" in
+        x86_64)        echo amd64 ;;
+        aarch64)       echo arm64 ;;
+        armv7l|armv6l) echo armhf ;;
+        i686|i386)     echo i386 ;;
+        *)             uname -m ;;
+    esac
+}
+
+qemu_bin_for() { # deb arch -> qemu-user-static binary name
+    case "$1" in
+        amd64) echo qemu-x86_64-static ;;
+        arm64) echo qemu-aarch64-static ;;
+        armhf) echo qemu-arm-static ;;
+        i386)  echo qemu-i386-static ;;
+        *)     echo "" ;;
+    esac
+}
+
+# Returns 0 if <target debarch> needs qemu on this host.
+needs_qemu() {
+    local t="$1" h; h=$(host_debarch)
+    [ "$t" = "$h" ] && return 1
+    # 32-bit x86 runs natively on x86_64
+    [ "$h" = amd64 ] && [ "$t" = i386 ] && return 1
+    return 0
+}
+
+# Copy the qemu-user-static binary into the rootfs so chroots work.
+setup_qemu_chroot() { # setup_qemu_chroot <target> <debarch>
+    local target="$1" qbin
+    qbin=$(qemu_bin_for "$2")
+    [ -z "$qbin" ] && { warn "No qemu mapping for arch $2 — chroot steps will fail."; return 1; }
+    if ! command -v "$qbin" >/dev/null; then
+        warn "$qbin not found on host. Install qemu-user-static (+ binfmt-support) for foreign-arch chroots."
+        return 1
+    fi
+    mkdir -p "$target/usr/bin"
+    cp "$(command -v "$qbin")" "$target/usr/bin/" || return 1
+    log "qemu: copied $qbin into $target"
+    [ -d /proc/sys/fs/binfmt_misc ] || warn "binfmt_misc not mounted — foreign chroot may not exec."
+    return 0
+}
+
+# Run a command inside the rootfs, best effort. Usage: in_chroot <target> <cmd...>
+in_chroot() {
+    local target="$1"; shift
+    chroot "$target" "$@" 2>>"$LOGFILE"
+}
+
+# Discover releases directly from distribution repositories. Falls back to
+# maintained defaults when a mirror is unavailable or directory indexing is off.
+rootfs_release_candidates() { # <distro> <arch>
+    local distro="$1" arch="$2" url="" html="" names=""
+    case "$distro" in
+        debian) url="http://deb.debian.org/debian/dists/" ;;
+        devuan) url="http://deb.devuan.org/merged/dists/" ;;
+        ubuntu)
+            case "$arch" in arm64|armhf) url="http://ports.ubuntu.com/ubuntu-ports/dists/" ;; *) url="http://archive.ubuntu.com/ubuntu/dists/" ;; esac ;;
+        alpine) url="https://dl-cdn.alpinelinux.org/alpine/" ;;
+        fedora) url="https://download.fedoraproject.org/pub/fedora/linux/releases/" ;;
+        kali) printf '%s\n' kali-rolling kali-last-snapshot; return 0 ;;
+        opensuse) url="https://download.opensuse.org/distribution/leap/" ;;
+        tumbleweed) printf '%s\n' current; return 0 ;;
+        gentoo) printf '%s\n' openrc systemd; return 0 ;;
+        arch) printf '%s\n' rolling; return 0 ;;
+        void) printf '%s\n' current; return 0 ;;
+    esac
+    if command -v curl >/dev/null 2>&1; then
+        html=$(curl -LfsS --connect-timeout 4 --max-time 10 "$url" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+        html=$(wget -qO- -T 10 "$url" 2>/dev/null || true)
+    fi
+    names=$(printf '%s' "$html" | sed -nE 's/.*href="([^"/]+)\/?".*/\1/p' | sed 's:/$::' | sort -Vu)
+    case "$distro" in
+        debian) printf '%s\n' "$names" | grep -E '^(stable|testing|unstable|oldstable|bookworm|trixie|forky|sid)$' ;;
+        devuan) printf '%s\n' "$names" | grep -E '^(daedalus|excalibur|freia|ceres|stable|testing|unstable)$' ;;
+        ubuntu) printf '%s\n' "$names" | grep -E '^[a-z]+$' | grep -Ev '(backports|updates|security|proposed)$' ;;
+        alpine) printf '%s\n' "$names" | grep -E '^(v[0-9]+\.[0-9]+|edge)$' ;;
+        fedora) printf '%s\n' "$names" | grep -E '^[0-9]+$' ;;
+        opensuse) printf '%s\n' "$names" | grep -E '^[0-9]+\.[0-9]+$' ;;
+    esac
+}
+
+rootfs_release_menu() { # <distro> <arch>
+    local distro="$1" arch="$2" candidates="" tags=() r def state
+    candidates=$(rootfs_release_candidates "$distro" "$arch" | tail -n 12)
+    case "$distro" in
+        debian) def=trixie; [ -n "$candidates" ] || candidates=$'bookworm\ntrixie\nforky\nsid' ;;
+        devuan) def=excalibur; [ -n "$candidates" ] || candidates=$'daedalus\nexcalibur\nfreia\nceres' ;;
+        ubuntu) def=noble; [ -n "$candidates" ] || candidates=$'jammy\nnoble\noracular\nplucky\nquesting' ;;
+        alpine) def=v3.20; [ -n "$candidates" ] || candidates=$'v3.19\nv3.20\nv3.21\nedge' ;;
+        fedora) def=42; [ -n "$candidates" ] || candidates=$'41\n42\n43' ;;
+        kali) def=kali-rolling; candidates=$'kali-rolling\nkali-last-snapshot' ;;
+        opensuse) def=15.6; [ -n "$candidates" ] || candidates=$'15.5\n15.6' ;;
+        tumbleweed) def=current; candidates=current ;;
+        gentoo) def=openrc; candidates=$'openrc\nsystemd' ;;
+        arch) def=rolling; candidates=rolling ;;
+        void) def=current; candidates=current ;;
+    esac
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        state=off; [ "$r" = "$def" ] && state=on
+        tags+=("$r" "$distro $r" "$state")
+    done <<< "$candidates"
+    tags+=(custom "Enter a release manually" off)
+    r=$(tui_radio "Rootfs Builder 2/12" "Release from the $distro repository (SPACE selects):" "${tags[@]}") || return 1
+    if [ "$r" = custom ]; then
+        r=$(tui_input "Custom release" "Release/branch name:" "$def") || return 1
+    fi
+    [ -n "$r" ] || return 1
+    printf '%s\n' "$r"
+}
+
+menu_rootfs() {
+    while true; do
+        local c
+        # Safely capture menu result and handle cancellation (ESC/Cancel)
+        if ! c=$(tui_menu "Rootfs" "Mini root filesystems:" \
+            build  "Build a new rootfs (guided, 12 stages)" \
+            manage "Manage existing rootfs (chroot, inspect, delete...)" \
+            back   "Back"); then
+            # User pressed ESC/Cancel - gracefully return to parent menu
+            return 0
+        fi
+        
+        # Safety check for empty result
+        [ -z "$c" ] && return 0
+        
+        case "$c" in
+            build)  rootfs_builder || true ;;
+            manage) rootfs_manage || true ;;
+            back)   return 0 ;;
+            *)      tui_msg "Error" "Unknown option: $c"; continue ;;
+        esac
+    done
+}
+
+rootfs_builder() {
+    local distro release arch mirror target pkgs hostname_v rootpw
+    local init_choice init_pkgs="" preset use_qemu=0
+
+    # ---- 1: distro (SPACE selects) ----
+    distro=$(tui_radio "Rootfs Builder 1/12" "Distribution (SPACE to select, ENTER to confirm):" \
+        debian "Debian (debootstrap)" on \
+        devuan "Devuan (debootstrap, no systemd)" off \
+        ubuntu "Ubuntu (debootstrap)" off \
+        alpine "Alpine Linux (apk.static)" off \
+        arch   "Arch Linux (pacstrap / bootstrap tarball)" off \
+        fedora "Fedora (dnf --installroot)" off \
+        kali   "Kali Linux (debootstrap, rolling)" off \
+        opensuse "openSUSE Leap (zypper --root)" off \
+        tumbleweed "openSUSE Tumbleweed (zypper --root)" off \
+        gentoo "Gentoo Linux (official stage3)" off \
+        void   "Void Linux (official ROOTFS tarball)" off) || return 0
+    [ -z "$distro" ] && return
+
+    # ---- 2: release (repository-backed, SPACE selects) ----
+    # Use host architecture to choose the correct Ubuntu repository endpoint.
+    release=$(rootfs_release_menu "$distro" "$(host_debarch)") || return 0
+
+    # ---- 3: architecture ----
+    if [ "$distro" = "arch" ]; then
+        arch="amd64"
+        tui_msg "Architecture" "Arch Linux official repos are x86_64 only.\n(For ARM, see Arch Linux ARM — not covered here.)"
+    else
+        arch=$(tui_radio "Rootfs Builder 3/12" "Target architecture (SPACE to select):" \
+            amd64 "x86_64 / amd64" on \
+            arm64 "aarch64 / arm64" off \
+            armhf "ARM 32-bit hard-float" off \
+            i386  "x86 32-bit" off) || return 0
+        [ -z "$arch" ] && return
+    fi
+    # Per-distro arch labels
+    local alpine_arch fedora_arch void_arch
+    case "$arch" in
+        amd64) alpine_arch="x86_64";  fedora_arch="x86_64";  void_arch="x86_64" ;;
+        arm64) alpine_arch="aarch64"; fedora_arch="aarch64"; void_arch="aarch64" ;;
+        armhf) alpine_arch="armv7";   fedora_arch="armhfp";  void_arch="armv7l" ;;
+        i386)  alpine_arch="x86";     fedora_arch="i386";    void_arch="i686" ;;
+    esac
+    if needs_qemu "$arch"; then
+        use_qemu=1
+        tui_msg "Foreign architecture" \
+"Target arch ($arch) differs from the host ($(host_debarch)).
+
+The build will use qemu-user-static + binfmt for any steps that
+must run inside the rootfs (debootstrap second stage, passwords,
+user creation). Install on the host first if you haven't:
+
+  qemu-user-static  binfmt-support (Debian names)"
+    fi
+
+    # ---- 4: init system ----
+    case "$distro" in
+        debian|ubuntu|kali)
+            init_choice=$(tui_radio "Rootfs Builder 4/12" \
+                "Init system (SPACE to select).\nsystemd is the distro default; alternatives are swapped in via --include:" \
+                systemd  "systemd (distro default)" on \
+                sysvinit "SysVinit (sysvinit-core)" off \
+                openrc   "OpenRC" off) || return 0
+            case "$init_choice" in
+                sysvinit)
+                    init_pkgs="sysvinit-core sysvinit-utils"
+                    [ "$distro" = ubuntu ] && warn "sysvinit-core on Ubuntu is community-maintained and may be missing in some releases."
+                    ;;
+                openrc)
+                    init_pkgs="openrc"
+                    warn "OpenRC on $distro still uses sysv-rc scripts underneath; review /etc/rc.conf after first boot."
+                    ;;
+            esac ;;
+        devuan)
+            init_choice=$(tui_radio "Rootfs Builder 4/12" \
+                "Init system for Devuan (SPACE to select; systemd is not an option here):" \
+                sysvinit "SysVinit (Devuan default)" on \
+                openrc   "OpenRC" off \
+                runit    "runit" off) || return 0
+            case "$init_choice" in
+                openrc) init_pkgs="openrc" ;;
+                runit)  init_pkgs="runit-init" ;;
+            esac ;;
+        alpine) init_choice="openrc"
+                tui_msg "Init system" "Alpine uses OpenRC (included in alpine-base)." ;;
+        arch)   init_choice="systemd"
+                tui_msg "Init system" "Official Arch Linux is systemd-only.\n(For alternatives on an Arch-like base, see Artix.)" ;;
+        fedora|opensuse|tumbleweed) init_choice="systemd"
+                tui_msg "Init system" "$distro uses systemd." ;;
+        kali)  init_choice="systemd" ;;
+        gentoo) init_choice="$release"
+                tui_msg "Init system" "Gentoo stage3 flavor selected: $release." ;;
+        void)   init_choice="runit"
+                tui_msg "Init system" "Void Linux uses runit (included in the base)." ;;
+    esac
+
+    # ---- 5: preset and package profiles ----
+    preset=$(tui_radio "Rootfs Builder 5/12" "Build preset (SPACE to select):" \
+        minimal    "Minimal — base system only" off \
+        standard   "Standard — shell, editor, certificates, network tools" on \
+        workstation "CLI workstation — standard + productivity and diagnostics" off \
+        developer  "Developer — compilers, build systems, Git, Python, debugging" off \
+        server     "Server — SSH, sudo, logging, cron, time sync, firewall" off \
+        web        "Web server — server + nginx, PHP/Python tools, database clients" off \
+        security   "Security/diagnostics — network inspection and audit utilities" off \
+        custom     "Custom — select package profiles and individual packages" off) || return 0
+    [ -z "$preset" ] && return 0
+    case "$preset" in
+        minimal) pkgs="" ;;
+        standard) pkgs="bash bash-completion nano vim curl wget ca-certificates less file procps iproute2 iputils-ping" ;;
+        workstation) pkgs="bash bash-completion nano vim curl wget ca-certificates less file procps iproute2 iputils-ping git tmux screen htop btop rsync unzip zip xz-utils jq tree ncdu" ;;
+        developer) pkgs="bash bash-completion nano vim curl wget ca-certificates less file procps iproute2 git build-essential cmake ninja-build meson pkg-config gdb strace python3 python3-pip python3-venv nodejs npm tmux jq" ;;
+        server) pkgs="bash nano curl wget ca-certificates less procps iproute2 iputils-ping openssh-server sudo rsyslog cron chrony logrotate htop rsync nftables" ;;
+        web) pkgs="bash nano curl wget ca-certificates less procps iproute2 openssh-server sudo rsyslog cron chrony logrotate nginx git python3 python3-pip sqlite3 mariadb-client postgresql-client" ;;
+        security) pkgs="bash nano curl wget ca-certificates less procps iproute2 iputils-ping openssh-client nmap tcpdump traceroute mtr-tiny netcat-openbsd socat dnsutils whois gnupg openssl lynis" ;;
+        custom)
+            local profiles sel
+            profiles=$(tui_check "Rootfs package profiles" "Profiles (SPACE toggles):" \
+                core "Core CLI utilities" on \
+                editors "Editors: nano, vim, neovim" on \
+                dev "Build toolchain and debuggers" off \
+                languages "Python, Node.js, Go, Rust" off \
+                network "Network and DNS utilities" off \
+                server "SSH, sudo, cron, logging, time sync" off \
+                web "nginx and database clients" off \
+                security "Audit and packet diagnostics" off \
+                storage "Filesystem, archive and sync tools" off \
+                terminal "tmux, htop, btop, jq, tree, ncdu" off) || return 0
+            profiles=${profiles//\"/}
+            pkgs=""
+            case " $profiles " in *" core "*) pkgs+=" bash bash-completion curl wget ca-certificates less file procps iproute2 iputils-ping" ;; esac
+            case " $profiles " in *" editors "*) pkgs+=" nano vim neovim" ;; esac
+            case " $profiles " in *" dev "*) pkgs+=" git build-essential cmake ninja-build meson pkg-config gdb strace" ;; esac
+            case " $profiles " in *" languages "*) pkgs+=" python3 python3-pip python3-venv nodejs npm golang rustc cargo" ;; esac
+            case " $profiles " in *" network "*) pkgs+=" nmap tcpdump traceroute mtr-tiny netcat-openbsd socat dnsutils whois" ;; esac
+            case " $profiles " in *" server "*) pkgs+=" openssh-server sudo rsyslog cron chrony logrotate nftables" ;; esac
+            case " $profiles " in *" web "*) pkgs+=" nginx sqlite3 mariadb-client postgresql-client" ;; esac
+            case " $profiles " in *" security "*) pkgs+=" gnupg openssl lynis tcpdump nmap" ;; esac
+            case " $profiles " in *" storage "*) pkgs+=" rsync rclone unzip zip xz-utils zstd tar parted e2fsprogs dosfstools" ;; esac
+            case " $profiles " in *" terminal "*) pkgs+=" tmux screen htop btop jq tree ncdu" ;; esac
+            sel=$(tui_check "Individual packages" "Additional common packages (SPACE toggles):" \
+                zsh "Zsh" off fish "Fish" off micro "Micro editor" off \
+                git-lfs "Git LFS" off openssh-server "OpenSSH server" off sudo "sudo" off \
+                fail2ban "Fail2ban" off avahi-daemon "Avahi/mDNS" off samba "Samba" off \
+                ffmpeg "FFmpeg" off imagemagick "ImageMagick" off man-db "Manual pages" off \
+                locales "Locales" off tzdata "Timezone database" off) || return 0
+            pkgs+=" ${sel//\"/}" ;;
+    esac
+    local extra
+    extra=$(tui_input "Additional packages" "Extra native or Debian-style package names (optional):" "") || extra=""
+    pkgs="$pkgs $extra $init_pkgs"
+
+    # ---- 6: mirror ----
+    local def_mirror
+    case "$distro" in
+        debian) def_mirror="http://deb.debian.org/debian" ;;
+        devuan) def_mirror="http://deb.devuan.org/merged" ;;
+        ubuntu)
+            if [ "$arch" = "arm64" ] || [ "$arch" = "armhf" ]; then
+                def_mirror="http://ports.ubuntu.com/ubuntu-ports"
+            else
+                def_mirror="http://archive.ubuntu.com/ubuntu"
+            fi ;;
+        alpine) def_mirror="http://dl-cdn.alpinelinux.org/alpine" ;;
+        arch)   def_mirror="https://geo.mirror.pkgbuild.com" ;;
+        fedora) def_mirror="https://dl.fedoraproject.org/pub/fedora/linux" ;;
+        kali) def_mirror="http://http.kali.org/kali" ;;
+        opensuse) def_mirror="https://download.opensuse.org/distribution/leap" ;;
+        tumbleweed) def_mirror="https://download.opensuse.org/tumbleweed/repo/oss" ;;
+        gentoo) def_mirror="https://distfiles.gentoo.org/releases" ;;
+        void)   def_mirror="https://repo-default.voidlinux.org" ;;
+    esac
+    mirror=$(tui_input "Rootfs Builder 6/12" "Mirror URL:" "$def_mirror") || return 0
+
+    # ---- 7: target directory ----
+    target=$(tui_input "Rootfs Builder 7/12" "Target directory for the rootfs:" \
+        "$ROOTFS_BASE/${distro}-${release}-${arch}") || return 0
+    if [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+        tui_yesno "Target exists" "$target exists and is not empty.\nContinue anyway (may mix contents)?" || return 0
+    fi
+    mkdir -p "$target"
+
+    # ---- 8: identity ----
+    hostname_v=$(tui_input "Rootfs Builder 8/12" "Hostname for the rootfs:" "${distro}-mini") || return 0
+    rootpw=$(tui_password "Root password" "Root password (blank = locked account):") || return 0
+
+    # ---- 9: optional user account ----
+    local mkuser="" userpw="" usersudo=0
+    if tui_yesno "Rootfs Builder 9/12" "Create a regular user account inside the rootfs?"; then
+        mkuser=$(tui_input "User" "Username:" "user") || mkuser=""
+        if [ -n "$mkuser" ]; then
+            userpw=$(tui_password "User" "Password for $mkuser (blank = locked):") || userpw=""
+            tui_yesno "sudo" "Give $mkuser sudo rights?\n(adds to sudo/wheel group; requires 'sudo' in the package list)" && usersudo=1
+            [ $usersudo = 1 ] && case " $pkgs " in *" sudo "*) ;; *) pkgs="$pkgs sudo" ;; esac
+        fi
+    fi
+
+    # ---- 10: expanded in-rootfs configuration ----
+    local postcfg tz="" locale_v="C.UTF-8" shell_v="bash" editor_v="nano" ssh_port="22"
+    postcfg=$(tui_check "Rootfs Builder 10/12" "In-rootfs configuration (SPACE toggles):" \
+        dns       "Write DNS resolvers" on \
+        hosts     "Write hostname and /etc/hosts" on \
+        tz        "Set timezone" on \
+        locale    "Generate/configure locale" off \
+        shell     "Set default shell for root and created user" off \
+        editor    "Set default system editor" off \
+        sshcfg    "Configure SSH port/authentication" off \
+        sshdon    "Enable SSH server at boot" off \
+        services  "Enable cron, logging and time synchronization when installed" off \
+        mounts    "Create /proc, /sys, /dev and /run mount helper" on \
+        machineid "Initialize machine-id when supported" off \
+        pkgupdate "Refresh package indexes after build" off \
+        upgrade   "Upgrade packages after build" off \
+        cleanup   "Clean package caches after build" on \
+        manifest  "Write build manifest (/etc/systui-build.conf)" on) || return 0
+    postcfg=${postcfg//\"/}
+    case " $postcfg " in *" tz "*) tz=$(tui_input "Timezone" "IANA timezone:" "UTC") || tz="UTC" ;; esac
+    case " $postcfg " in *" locale "*) locale_v=$(tui_input "Locale" "Locale to generate/configure:" "C.UTF-8") || locale_v="C.UTF-8" ;; esac
+    case " $postcfg " in *" shell "*) shell_v=$(tui_radio "Default shell" "Shell (SPACE selects):" bash Bash on zsh Zsh off fish Fish off) || shell_v=bash ;; esac
+    case " $postcfg " in *" editor "*) editor_v=$(tui_radio "Default editor" "Editor (SPACE selects):" nano Nano on vim Vim off neovim Neovim off micro Micro off) || editor_v=nano ;; esac
+    case " $postcfg " in *" sshcfg "*) ssh_port=$(tui_input "SSH port" "sshd listening port:" "22") || ssh_port=22 ;; esac
+
+    # ---- 11: compression (tar.gz is the default) ----
+    local comp
+    comp=$(tui_radio "Rootfs Builder 11/12" "Compression format (SPACE to select):" \
+        gz   "tar.gz — maximum compatibility (default)" on \
+        zst  "tar.zst — faster and usually smaller" off \
+        xz   "tar.xz — smallest, slowest" off \
+        none "No archive — directory only" off) || return 0
+
+    # ---- 12: confirm ----
+    tui_yesno "Rootfs Builder 12/12" \
+"Ready to build:
+
+  Distro   : $distro $release ($arch$( [ $use_qemu = 1 ] && echo ', foreign via qemu'))
+  Init     : $init_choice
+  Preset   : $preset
+  Mirror   : $mirror
+  Target   : $target
+  Packages : ${pkgs:-<none>}
+  Hostname : $hostname_v
+  User     : ${mkuser:-<none>}$( [ $usersudo = 1 ] && echo ' (sudo)')
+  Post     : ${postcfg:-<none>} ${tz:+tz=$tz}
+  Archive  : $comp
+
+Proceed?" || return 0
+
+    case "$distro" in
+        debian|devuan|ubuntu|kali) build_debfamily "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" "$use_qemu" ;;
+        alpine)               build_alpine "$release" "$alpine_arch" "$mirror" "$target" "$pkgs" ;;
+        arch)                 build_arch "$mirror" "$target" "$pkgs" ;;
+        fedora)               build_fedora "$release" "$fedora_arch" "$mirror" "$target" "$pkgs" ;;
+        opensuse|tumbleweed)  build_opensuse "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" ;;
+        gentoo)               build_gentoo "$release" "$arch" "$mirror" "$target" "$pkgs" ;;
+        void)                 build_void "$void_arch" "$mirror" "$target" "$pkgs" "$use_qemu" ;;
+    esac || { tui_msg "Build failed" "Bootstrap step failed. See $LOGFILE."; show_warnings; return 0; }
+
+    rootfs_postconfig "$target" "$distro" "$release" "$arch" "$init_choice" "$preset" \
+        "$hostname_v" "$rootpw" "$mkuser" "$userpw" "$usersudo" "$postcfg" "$tz" "$pkgs" "$use_qemu" \
+        "$locale_v" "$shell_v" "$editor_v" "$ssh_port" \
+        || warn "One or more post-build configuration steps failed."
+
+    show_warnings
+
+    # ---- archive ----
+    if [ "$comp" != none ]; then
+        local ext tool
+        case "$comp" in
+            zst) ext="tar.zst"; tool="zstd -T0 -f -o" ;;
+            gz)  ext="tar.gz";  tool="gzip -c >" ;;
+            xz)  ext="tar.xz";  tool="xz -T0 -c >" ;;
+        esac
+        local archive="${target%/}.$ext"
+        if [ "$comp" = zst ] && ! command -v zstd >/dev/null; then
+            warn "zstd not installed — skipping compression."
+            show_warnings
+        else
+            run_cmd "Compressing rootfs -> $archive" bash -c \
+                "tar -C '$target' --numeric-owner -c . | $tool '$archive'" \
+                && tui_msg "Done" "Archive written:\n$archive"
+        fi
+    fi
+
+    tui_msg "Rootfs complete" "Rootfs built at:\n$target\nInit: $init_choice\n\nEnter it via Rootfs -> Manage (mounts /proc,/sys,/dev),\nor manually: chroot $target /bin/sh"
+}
+
+# ---- Post-build configuration inside the rootfs -----------------------------
+rootfs_postconfig() {
+    local target="$1" distro="$2" release="$3" arch="$4" init_choice="$5" preset="$6"
+    local hostname_v="$7" rootpw="$8" mkuser="$9" userpw="${10}" usersudo="${11}"
+    local postcfg="${12}" tz="${13}" pkgs="${14}" use_qemu="${15}"
+    local locale_v="${16:-C.UTF-8}" shell_v="${17:-bash}" editor_v="${18:-nano}" ssh_port="${19:-22}"
+
+    echo "$hostname_v" > "$target/etc/hostname"
+
+    [ "$use_qemu" = 1 ] && setup_qemu_chroot "$target" "$arch"
+
+    local can_chroot=1
+    [ -x "$target/bin/sh" ] || can_chroot=0
+    if [ "$use_qemu" = 1 ] && ! [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] \
+        && ! [ -e /proc/sys/fs/binfmt_misc/qemu-arm ]; then
+        # binfmt entries vary by distro registration; only warn, still try.
+        warn "qemu binfmt registration not detected — chroot steps may fail."
+    fi
+
+    # root password
+    if [ -n "$rootpw" ] && [ $can_chroot = 1 ]; then
+        echo "root:$rootpw" | in_chroot "$target" chpasswd \
+            || warn "Could not set root password in chroot."
+    fi
+
+    # user account
+    if [ -n "$mkuser" ] && [ $can_chroot = 1 ]; then
+        if in_chroot "$target" sh -c "command -v useradd" >/dev/null; then
+            in_chroot "$target" useradd -m -s /bin/sh "$mkuser" || warn "useradd $mkuser failed in chroot."
+        else
+            in_chroot "$target" adduser -D "$mkuser" || warn "adduser $mkuser failed in chroot."
+        fi
+        [ -n "$userpw" ] && { echo "$mkuser:$userpw" | in_chroot "$target" chpasswd \
+            || warn "Could not set password for $mkuser."; }
+        if [ "$usersudo" = 1 ]; then
+            in_chroot "$target" sh -c "getent group sudo >/dev/null && adduser $mkuser sudo 2>/dev/null || usermod -aG sudo $mkuser 2>/dev/null || addgroup $mkuser wheel 2>/dev/null || usermod -aG wheel $mkuser 2>/dev/null" \
+                || warn "Could not add $mkuser to sudo/wheel group."
+        fi
+    fi
+
+    # post-config checklist items
+    case " $postcfg " in *" dns "*)
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$target/etc/resolv.conf" ;;
+    esac
+    case " $postcfg " in *" hosts "*)
+        printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost ip6-localhost\n' "$hostname_v" \
+            > "$target/etc/hosts" ;;
+    esac
+    if [ -n "$tz" ]; then
+        if [ -f "$target/usr/share/zoneinfo/$tz" ]; then
+            ln -sf "/usr/share/zoneinfo/$tz" "$target/etc/localtime"
+            echo "$tz" > "$target/etc/timezone" 2>/dev/null
+        else
+            warn "Timezone data for '$tz' not present in rootfs (install tzdata inside it)."
+        fi
+    fi
+    case " $postcfg " in *" sshdon "*)
+        case " $pkgs " in
+            *" openssh-server "*|*" openssh "*)
+                case "$init_choice" in
+                    systemd)
+                        in_chroot "$target" systemctl enable ssh 2>/dev/null \
+                            || in_chroot "$target" systemctl enable sshd 2>/dev/null \
+                            || warn "Could not enable sshd via systemctl in rootfs." ;;
+                    openrc)
+                        in_chroot "$target" rc-update add sshd default 2>/dev/null \
+                            || warn "Could not rc-update sshd in rootfs." ;;
+                    runit)
+                        mkdir -p "$target/etc/runit/runsvdir/default" 2>/dev/null
+                        if [ -d "$target/etc/sv/sshd" ]; then
+                            ln -sf /etc/sv/sshd "$target/etc/runit/runsvdir/default/" 2>/dev/null
+                        else
+                            warn "No runit sshd service dir in rootfs — enable manually."
+                        fi ;;
+                    sysvinit)
+                        in_chroot "$target" update-rc.d ssh defaults 2>/dev/null \
+                            || warn "Could not update-rc.d ssh in rootfs." ;;
+                esac ;;
+            *) warn "sshd enable requested but openssh-server wasn't in the package list." ;;
+        esac ;;
+    esac
+    case " $postcfg " in *" manifest "*)
+        cat > "$target/etc/systui-build.conf" <<EOF
+# Generated by systui $VERSION
+BUILD_DATE="$(date '+%F %T')"
+DISTRO="$distro"
+RELEASE="$release"
+ARCH="$arch"
+INIT="$init_choice"
+PRESET="$preset"
+PACKAGES="$pkgs"
+HOSTNAME="$hostname_v"
+EOF
+        ;;
+    esac
+
+    # Expanded post-build policies. All commands are best-effort for portability.
+    local pmcmd=""
+    case "$distro" in debian|devuan|ubuntu|kali) pmcmd=apt ;; alpine) pmcmd=apk ;; arch) pmcmd=pacman ;; fedora) pmcmd=dnf ;; opensuse|tumbleweed) pmcmd=zypper ;; gentoo) pmcmd=emerge ;; void) pmcmd=xbps ;; esac
+    case " $postcfg " in *" locale "*)
+        case "$pmcmd" in
+            apt) [ -f "$target/etc/locale.gen" ] && { grep -qF "$locale_v UTF-8" "$target/etc/locale.gen" || echo "$locale_v UTF-8" >> "$target/etc/locale.gen"; }; in_chroot "$target" sh -c "command -v locale-gen >/dev/null && locale-gen || true" ;;
+            apk) printf 'LANG=%s\n' "$locale_v" > "$target/etc/profile.d/locale.sh" ;;
+            *) printf 'LANG=%s\n' "$locale_v" > "$target/etc/locale.conf" ;;
+        esac ;; esac
+    case " $postcfg " in *" shell "*)
+        local shell_path="/bin/$shell_v"; [ "$shell_v" = fish ] && shell_path=/usr/bin/fish
+        [ -x "$target$shell_path" ] && { in_chroot "$target" chsh -s "$shell_path" root || true; [ -n "$mkuser" ] && in_chroot "$target" chsh -s "$shell_path" "$mkuser" || true; } ;; esac
+    case " $postcfg " in *" editor "*)
+        printf 'export EDITOR=%s\nexport VISUAL=%s\n' "$editor_v" "$editor_v" > "$target/etc/profile.d/editor.sh"
+        chmod 644 "$target/etc/profile.d/editor.sh" ;; esac
+    case " $postcfg " in *" sshcfg "*)
+        if [ -f "$target/etc/ssh/sshd_config" ]; then
+            sed -i -E "s/^#?Port .*/Port $ssh_port/; s/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/; s/^#?PasswordAuthentication .*/PasswordAuthentication yes/" "$target/etc/ssh/sshd_config"
+        fi ;; esac
+    case " $postcfg " in *" mounts "*)
+        mkdir -p "$target/usr/local/sbin"
+        cat > "$target/usr/local/sbin/mount-rootfs-virtualfs" <<'EOF'
+#!/bin/sh
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /dev || mount --rbind /dev /dev
+mkdir -p /run /dev/pts
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
+EOF
+        chmod +x "$target/usr/local/sbin/mount-rootfs-virtualfs" ;; esac
+    case " $postcfg " in *" machineid "*)
+        : > "$target/etc/machine-id"; in_chroot "$target" sh -c 'command -v systemd-machine-id-setup >/dev/null && systemd-machine-id-setup || true' ;; esac
+    case " $postcfg " in *" pkgupdate "*)
+        case "$pmcmd" in apt) in_chroot "$target" apt-get update ;; apk) in_chroot "$target" apk update ;; pacman) in_chroot "$target" pacman -Sy --noconfirm ;; dnf) in_chroot "$target" dnf makecache ;; zypper) in_chroot "$target" zypper --non-interactive refresh ;; emerge) in_chroot "$target" emerge --sync ;; xbps) in_chroot "$target" xbps-install -S ;; esac || true ;; esac
+    case " $postcfg " in *" upgrade "*)
+        case "$pmcmd" in apt) in_chroot "$target" apt-get upgrade -y ;; apk) in_chroot "$target" apk upgrade ;; pacman) in_chroot "$target" pacman -Syu --noconfirm ;; dnf) in_chroot "$target" dnf upgrade -y ;; zypper) in_chroot "$target" zypper --non-interactive update ;; emerge) in_chroot "$target" emerge -uDN @world ;; xbps) in_chroot "$target" xbps-install -yu ;; esac || true ;; esac
+    case " $postcfg " in *" cleanup "*)
+        case "$pmcmd" in apt) in_chroot "$target" sh -c 'apt-get clean; rm -rf /var/lib/apt/lists/*' ;; apk) rm -rf "$target/var/cache/apk"/* ;; pacman) rm -rf "$target/var/cache/pacman/pkg"/* ;; dnf) in_chroot "$target" dnf clean all ;; zypper) in_chroot "$target" zypper clean --all ;; emerge) rm -rf "$target/var/cache/distfiles"/* ;; xbps) rm -rf "$target/var/cache/xbps"/* ;; esac || true ;; esac
+
+}
+
+# ---- Per-distro bootstrap backends ------------------------------------------
+
+build_debfamily() { # distro release arch mirror target pkgs use_qemu
+    local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6" use_qemu="$7"
+    if ! command -v debootstrap >/dev/null 2>&1; then
+        tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
+        return 1
+    fi
+
+    # Use the matching archive keyring when available. This is especially
+    # important when building Ubuntu from a Debian/Devuan host.
+    local keyring="" keyring_pkg=""
+    case "$distro" in
+        debian)
+            keyring_pkg="debian-archive-keyring"
+            [ -r /usr/share/keyrings/debian-archive-keyring.gpg ] && keyring=/usr/share/keyrings/debian-archive-keyring.gpg
+            ;;
+        devuan)
+            keyring_pkg="devuan-keyring"
+            for k in /usr/share/keyrings/devuan-archive-keyring.gpg /usr/share/keyrings/devuan-keyring.gpg; do
+                [ -r "$k" ] && { keyring="$k"; break; }
+            done
+            ;;
+        ubuntu)
+            keyring_pkg="ubuntu-keyring"
+            [ -r /usr/share/keyrings/ubuntu-archive-keyring.gpg ] && keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+            ;;
+        kali)
+            keyring_pkg="kali-archive-keyring"
+            [ -r /usr/share/keyrings/kali-archive-keyring.gpg ] && keyring=/usr/share/keyrings/kali-archive-keyring.gpg
+            ;;
+    esac
+
+    if [ -z "$keyring" ] && [ -n "$keyring_pkg" ] && command -v apt-get >/dev/null 2>&1; then
+        log "rootfs: attempting to install missing keyring package $keyring_pkg"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$keyring_pkg" >>"$LOGFILE" 2>&1 || true
+        case "$distro" in
+            debian) [ -r /usr/share/keyrings/debian-archive-keyring.gpg ] && keyring=/usr/share/keyrings/debian-archive-keyring.gpg ;;
+            devuan)
+                for k in /usr/share/keyrings/devuan-archive-keyring.gpg /usr/share/keyrings/devuan-keyring.gpg; do
+                    [ -r "$k" ] && { keyring="$k"; break; }
+                done ;;
+            ubuntu) [ -r /usr/share/keyrings/ubuntu-archive-keyring.gpg ] && keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg ;;
+            kali) [ -r /usr/share/keyrings/kali-archive-keyring.gpg ] && keyring=/usr/share/keyrings/kali-archive-keyring.gpg ;;
+        esac
+    fi
+
+    local opts=(--arch="$arch")
+    [ -n "$keyring" ] && opts+=(--keyring="$keyring")
+
+    local include=""
+    # Normalize repeated whitespace and produce a valid comma-separated list.
+    if [ -n "${pkgs//[[:space:]]/}" ]; then
+        include=$(printf '%s\n' "$pkgs" | xargs | tr ' ' ',')
+        [ -n "$include" ] && opts+=(--include="$include")
+    fi
+
+    if [ "$use_qemu" = 1 ]; then
+        opts+=(--foreign)
+        run_cmd "debootstrap --foreign $distro/$release ($arch)" \
+            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
+
+        # iSH-AOK may execute supported foreign architectures directly. Try
+        # that first; only require qemu-user-static when direct execution fails.
+        if chroot "$target" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
+            log "debootstrap: second stage completed using native/iSH-AOK execution"
+            return 0
+        fi
+
+        setup_qemu_chroot "$target" "$arch" || return 1
+        run_cmd "debootstrap second stage ($arch)" \
+            chroot "$target" /debootstrap/debootstrap --second-stage || return 1
+    else
+        run_cmd "debootstrap $distro/$release" \
+            debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
+    fi
+    return 0
+}
+
+build_alpine() { # release arch mirror target pkgs
+    local release="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
+    local mapped; mapped=$(map_packages alpine $pkgs)
+    local workdir; workdir=$(mktemp -d)
+    # apk.static must match the HOST arch; --arch selects the TARGET arch.
+    local host_apk_arch
+    case "$(uname -m)" in
+        x86_64) host_apk_arch="x86_64" ;;
+        aarch64) host_apk_arch="aarch64" ;;
+        *) host_apk_arch="$arch" ;;
+    esac
+    local apkdir="$mirror/$release/main/$host_apk_arch"
+
+    log "Fetching apk.static index from $apkdir"
+    local tools_apk
+    tools_apk=$(wget -qO- "$apkdir/" | grep -o 'apk-tools-static-[^"]*\.apk' | head -n1)
+    if [ -z "$tools_apk" ]; then
+        warn "Could not locate apk-tools-static at $apkdir"
+        rm -rf "$workdir"; return 1
+    fi
+    wget -qO "$workdir/apk-tools.apk" "$apkdir/$tools_apk" || { rm -rf "$workdir"; return 1; }
+    tar -xzf "$workdir/apk-tools.apk" -C "$workdir" 2>/dev/null
+
+    run_cmd "apk.static bootstrap (alpine $release/$arch)" \
+        "$workdir/sbin/apk.static" \
+            -X "$mirror/$release/main" -U --allow-untrusted --arch "$arch" \
+            --root "$target" --initdb add alpine-base $mapped
+    local rc=$?
+    printf '%s/%s/main\n%s/%s/community\n' "$mirror" "$release" "$mirror" "$release" \
+        > "$target/etc/apk/repositories"
+    rm -rf "$workdir"
+    return $rc
+}
+
+build_arch() { # mirror target pkgs
+    local mirror="$1" target="$2" pkgs="$3"
+    local mapped; mapped=$(map_packages arch $pkgs)
+    if command -v pacstrap >/dev/null; then
+        run_cmd "pacstrap (Arch)" pacstrap -c "$target" base $mapped
+    else
+        tui_msg "pacstrap unavailable" \
+"pacstrap not found — falling back to the official bootstrap tarball.
+Note: packages beyond 'base' must be installed after chrooting."
+        local tarball="archlinux-bootstrap-x86_64.tar.zst"
+        run_cmd "Downloading Arch bootstrap tarball" \
+            wget -O "/tmp/$tarball" "$mirror/iso/latest/$tarball" || return 1
+        run_cmd "Extracting bootstrap tarball" \
+            tar -C "$target" --strip-components=1 --numeric-owner \
+                -xf "/tmp/$tarball" || return 1
+        [ -n "${mapped// }" ] && warn "Install these inside the chroot: pacman -S $mapped"
+    fi
+}
+
+build_fedora() { # release arch mirror target pkgs
+    local release="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
+    if ! command -v dnf >/dev/null; then
+        tui_msg "Missing tool" \
+"Fedora bootstrapping needs 'dnf' on the host.
+Debian/Ubuntu: apt install dnf    Arch: pacman -S dnf
+Then retry."
+        return 1
+    fi
+    local mapped; mapped=$(map_packages fedora $pkgs)
+    local repo="$mirror/releases/$release/Everything/$arch/os/"
+    # --repofrompath makes this work on non-Fedora hosts (no fedora repo files).
+    run_cmd "dnf --installroot (fedora $release/$arch)" \
+        dnf -y --installroot="$target" --releasever="$release" \
+            --repofrompath="systui-fedora,$repo" \
+            --disablerepo='*' --enablerepo=systui-fedora --nogpgcheck \
+            --setopt=install_weak_deps=False \
+            install fedora-release dnf bash $mapped
+}
+
+
+build_opensuse() { # distro release debarch mirror target pkgs
+    local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6"
+    command -v zypper >/dev/null 2>&1 || {
+        tui_msg "Missing tool" "openSUSE bootstrapping requires zypper on the host."; return 1; }
+    local suse_arch repo
+    case "$arch" in amd64) suse_arch=x86_64 ;; arm64) suse_arch=aarch64 ;; armhf) suse_arch=armv7hl ;; i386) suse_arch=i586 ;; esac
+    if [ "$distro" = tumbleweed ]; then
+        repo="$mirror"
+    else
+        repo="$mirror/$release/repo/oss/"
+    fi
+    run_cmd "zypper --root ($distro $release/$suse_arch)" \
+        zypper --root "$target" --non-interactive ar -f "$repo" systui-oss || return 1
+    run_cmd "Installing openSUSE base" \
+        zypper --root "$target" --non-interactive --gpg-auto-import-keys install \
+        filesystem bash coreutils rpm zypper ca-certificates iproute2 $pkgs
+}
+
+build_gentoo() { # flavor debarch mirror target pkgs
+    local flavor="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
+    local garch stage url meta tarball
+    case "$arch" in
+        amd64) garch=amd64; stage="stage3-amd64-$flavor" ;;
+        arm64) garch=arm64; stage="stage3-arm64-$flavor" ;;
+        armhf) garch=arm; stage="stage3-armv7a-$flavor" ;;
+        i386) garch=x86; stage="stage3-i686-$flavor" ;;
+        *) warn "Unsupported Gentoo architecture: $arch"; return 1 ;;
+    esac
+    url="$mirror/$garch/autobuilds/current-$stage"
+    meta="latest-$stage.txt"
+    tarball=$(wget -qO- "$url/$meta" 2>>"$LOGFILE" | awk '!/^#/ && /tar\.(xz|bz2)/ {print $1; exit}')
+    [ -n "$tarball" ] || { warn "Could not discover Gentoo stage3 at $url/$meta"; return 1; }
+    run_cmd "Downloading Gentoo stage3" wget -O "/tmp/$(basename "$tarball")" "$mirror/$garch/autobuilds/$tarball" || return 1
+    run_cmd "Extracting Gentoo stage3" tar -C "$target" --numeric-owner -xpf "/tmp/$(basename "$tarball")" || return 1
+    printf 'GENTOO_MIRRORS="%s"\n' "$mirror" >> "$target/etc/portage/make.conf"
+    [ -n "${pkgs// }" ] && warn "Gentoo extras were not installed automatically. Inside the rootfs run: emerge --sync && emerge $pkgs"
+}
+
+build_void() { # arch mirror target pkgs use_qemu
+    local arch="$1" mirror="$2" target="$3" pkgs="$4" use_qemu="$5"
+    local mapped; mapped=$(map_packages void $pkgs)
+    local listing tarball
+    listing=$(wget -qO- "$mirror/live/current/" 2>>"$LOGFILE")
+    tarball=$(grep -o "void-${arch}-ROOTFS-[0-9]*\.tar\.xz" <<<"$listing" | sort -u | tail -n1)
+    if [ -z "$tarball" ]; then
+        warn "Could not find a void-${arch}-ROOTFS tarball at $mirror/live/current/"
+        return 1
+    fi
+    run_cmd "Downloading Void rootfs ($tarball)" \
+        wget -O "/tmp/$tarball" "$mirror/live/current/$tarball" || return 1
+    run_cmd "Extracting Void rootfs" \
+        tar -C "$target" --numeric-owner -xJf "/tmp/$tarball" || return 1
+    if [ -n "${mapped// }" ]; then
+        # Try installing extra packages via xbps inside the (possibly qemu) chroot.
+        if [ "$use_qemu" = 1 ]; then
+            local void_debarch=""
+            case "$arch" in
+                aarch64) void_debarch="arm64" ;;
+                armv7l)  void_debarch="armhf" ;;
+                x86_64)  void_debarch="amd64" ;;
+                i686)    void_debarch="i386" ;;
+            esac
+            [ -n "$void_debarch" ] && setup_qemu_chroot "$target" "$void_debarch" >/dev/null 2>&1 || true
+        fi
+        printf 'nameserver 1.1.1.1\n' > "$target/etc/resolv.conf"
+        if in_chroot "$target" sh -c "xbps-install -Syu xbps && xbps-install -y $mapped"; then
+            log "void: extra packages installed in chroot"
+        else
+            warn "Could not install extras in the Void chroot. Inside it, run: xbps-install -Syu && xbps-install $mapped"
+        fi
+    fi
+}
+
+# ---- Rootfs management -------------------------------------------------------
+enter_chroot() { # enter_chroot <target>
+    local t="$1"
+    [ -x "$t/bin/sh" ] || { tui_msg "Error" "$t does not look like a rootfs (no /bin/sh)."; return 1; }
+    clear
+    mount -t proc  proc "$t/proc" 2>/dev/null
+    mount -t sysfs sys  "$t/sys"  2>/dev/null
+    mount --bind /dev     "$t/dev"     2>/dev/null
+    mount --bind /dev/pts "$t/dev/pts" 2>/dev/null
+    cp -L /etc/resolv.conf "$t/etc/resolv.conf" 2>/dev/null
+    echo "==============================================================="
+    echo " Entering chroot: $t"
+    echo " /proc /sys /dev are mounted; type 'exit' to leave."
+    echo "==============================================================="
+    chroot "$t" /bin/sh -l
+    umount -l "$t/dev/pts" "$t/dev" "$t/sys" "$t/proc" 2>/dev/null
+    echo "Left chroot; bind mounts detached."
+    read -rp "(press Enter)" _
+}
+
+# ---- Rootfs chroot helpers ---------------------------------------------------
+rootfs_detect_pm() { # <target> -> apt|apk|pacman|dnf|xbps|unknown
+    local t="$1"
+    if   [ -f "$t/etc/apk/repositories" ]; then echo apk
+    elif [ -f "$t/etc/debian_version" ];   then echo apt
+    elif [ -f "$t/etc/pacman.conf" ];      then echo pacman
+    elif [ -f "$t/etc/fedora-release" ];   then echo dnf
+    elif [ -x "$t/usr/bin/zypper" ];        then echo zypper
+    elif [ -x "$t/usr/bin/emerge" ];        then echo emerge
+    elif [ -x "$t/usr/bin/xbps-install" ] || [ -d "$t/etc/xbps.d" ]; then echo xbps
+    else echo unknown; fi
+}
+
+rootfs_detect_init() { # <target> -> from manifest, else filesystem heuristics
+    local t="$1" i=""
+    [ -f "$t/etc/systui-build.conf" ] && i=$(grep -m1 '^INIT=' "$t/etc/systui-build.conf" | cut -d= -f2 | tr -d '"')
+    if [ -z "$i" ]; then
+        if   [ -d "$t/lib/systemd/system" ] || [ -d "$t/usr/lib/systemd/system" ]; then i=systemd
+        elif [ -d "$t/etc/runit" ] || [ -d "$t/etc/sv" ]; then i=runit
+        elif [ -f "$t/sbin/openrc" ] || [ -d "$t/etc/runlevels" ]; then i=openrc
+        elif [ -f "$t/etc/inittab" ]; then i=sysvinit
+        else i=unknown; fi
+    fi
+    echo "$i"
+}
+
+# Run a command inside the rootfs with /proc,/sys,/dev mounted and DNS set,
+# then tear the mounts down. Output goes to the terminal via run_cmd.
+rootfs_chroot_exec() { # <target> <description> <sh -c command string>
+    local t="$1" desc="$2" cmd="$3"
+    mount -t proc  proc "$t/proc" 2>/dev/null
+    mount -t sysfs sys  "$t/sys"  2>/dev/null
+    mount --bind /dev     "$t/dev"     2>/dev/null
+    mount --bind /dev/pts "$t/dev/pts" 2>/dev/null
+    cp -L /etc/resolv.conf "$t/etc/resolv.conf" 2>/dev/null
+    run_cmd "$desc" chroot "$t" /bin/sh -c "$cmd"
+    local rc=$?
+    umount -l "$t/dev/pts" "$t/dev" "$t/sys" "$t/proc" 2>/dev/null
+    return $rc
+}
+
+# In-rootfs package management with the rootfs's own package manager.
+rootfs_pkg_menu() { # <target>
+    local t="$1" rpm_
+    rpm_=$(rootfs_detect_pm "$t")
+    [ "$rpm_" = unknown ] && { tui_msg "Unknown" "Could not detect a package manager inside\n$t"; return 0; }
+    while true; do
+        local c
+        # Safely capture menu result and handle cancellation
+        if ! c=$(tui_menu "Rootfs packages  [$rpm_]" "Package management inside $(basename "$t"):" \
+            install "Install packages" \
+            remove  "Remove packages" \
+            upgrade "Update indexes & upgrade everything" \
+            list    "List installed packages" \
+            back    "Back"); then
+            # User pressed ESC/Cancel - gracefully return to parent menu
+            return 0
+        fi
+        [ -z "$c" ] && return 0
+        [ "$c" = back ] && return 0
+        local p=""
+        case "$c" in install|remove)
+            p=$(tui_input "$c" "Package names (space-separated, native $rpm_ names):" "") || continue
+            [ -z "$p" ] && continue ;;
+        esac
+        case "$rpm_:$c" in
+            apt:install)    rootfs_chroot_exec "$t" "apt install $p" "apt-get update && apt-get install -y $p" ;;
+            apt:remove)     rootfs_chroot_exec "$t" "apt remove $p" "apt-get remove -y $p" ;;
+            apt:upgrade)    rootfs_chroot_exec "$t" "apt upgrade" "apt-get update && apt-get upgrade -y" ;;
+            apt:list)       chroot "$t" dpkg-query -W -f='${Package} ${Version}\n' > /tmp/systui.rfs 2>&1 ;;
+            apk:install)    rootfs_chroot_exec "$t" "apk add $p" "apk update && apk add $p" ;;
+            apk:remove)     rootfs_chroot_exec "$t" "apk del $p" "apk del $p" ;;
+            apk:upgrade)    rootfs_chroot_exec "$t" "apk upgrade" "apk update && apk upgrade" ;;
+            apk:list)       chroot "$t" apk info -v > /tmp/systui.rfs 2>&1 ;;
+            pacman:install) rootfs_chroot_exec "$t" "pacman -S $p" "pacman -Sy --noconfirm --needed $p" ;;
+            pacman:remove)  rootfs_chroot_exec "$t" "pacman -R $p" "pacman -Rns --noconfirm $p" ;;
+            pacman:upgrade) rootfs_chroot_exec "$t" "pacman -Syu" "pacman -Syu --noconfirm" ;;
+            pacman:list)    chroot "$t" pacman -Q > /tmp/systui.rfs 2>&1 ;;
+            dnf:install)    rootfs_chroot_exec "$t" "dnf install $p" "dnf install -y $p" ;;
+            dnf:remove)     rootfs_chroot_exec "$t" "dnf remove $p" "dnf remove -y $p" ;;
+            dnf:upgrade)    rootfs_chroot_exec "$t" "dnf upgrade" "dnf upgrade -y" ;;
+            dnf:list)       chroot "$t" rpm -qa > /tmp/systui.rfs 2>&1 ;;
+            xbps:install)   rootfs_chroot_exec "$t" "xbps-install $p" "xbps-install -Sy $p" ;;
+            xbps:remove)    rootfs_chroot_exec "$t" "xbps-remove $p" "xbps-remove -y $p" ;;
+            xbps:upgrade)   rootfs_chroot_exec "$t" "xbps upgrade" "xbps-install -Syu" ;;
+            xbps:list)      chroot "$t" xbps-query -l > /tmp/systui.rfs 2>&1 ;;
+        esac
+        [ "$c" = list ] && tui_text "Installed in $(basename "$t") ($rpm_)" /tmp/systui.rfs
+    done
+}
+
+# In-rootfs system configuration (users, hostname, DNS, services).
+rootfs_cfg_menu() { # <target>
+    local t="$1" rinit
+    rinit=$(rootfs_detect_init "$t")
+    while true; do
+        local c
+        # Safely capture menu result and handle cancellation
+        if ! c=$(tui_menu "Rootfs config  [init: $rinit]" "Configure $(basename "$t"):" \
+            hostname "Set hostname (current: $(cat "$t/etc/hostname" 2>/dev/null))" \
+            rootpw   "Set root password" \
+            adduser  "Add a user account" \
+            dns      "Set DNS resolvers" \
+            timezone "Set timezone" \
+            locale   "Configure locale" \
+            shell    "Set default shell" \
+            editor   "Set default editor" \
+            ssh      "Configure SSH server" \
+            services "Enable/disable a service at boot" \
+            pkgupdate "Refresh package indexes" \
+            upgrade  "Upgrade installed packages" \
+            cleanup  "Clean package caches" \
+            mounts   "Install virtual-filesystem mount helper" \
+            manifest "Edit/show build manifest" \
+            osinfo   "Show OS info (os-release)" \
+            back     "Back"); then
+            # User pressed ESC/Cancel - gracefully return to parent menu
+            return 0
+        fi
+        [ -z "$c" ] && return 0
+        [ "$c" = back ] && return 0
+        case "$c" in
+            hostname)
+                local h; h=$(tui_input "Hostname" "New hostname:" "$(cat "$t/etc/hostname" 2>/dev/null)") || continue
+                [ -z "$h" ] && continue
+                echo "$h" > "$t/etc/hostname"
+                grep -q '127.0.1.1' "$t/etc/hosts" 2>/dev/null \
+                    && sed -i "s/^127.0.1.1.*/127.0.1.1\t$h/" "$t/etc/hosts" \
+                    || printf '127.0.1.1\t%s\n' "$h" >> "$t/etc/hosts"
+                tui_msg "Done" "Hostname set to $h (with matching hosts entry)." ;;
+            rootpw)
+                local p; p=$(tui_password "Root password" "New root password for this rootfs:") || continue
+                [ -z "$p" ] && continue
+                echo "root:$p" | chroot "$t" chpasswd 2>>"$LOGFILE" \
+                    && tui_msg "Done" "Root password updated." \
+                    || tui_msg "Failed" "chpasswd failed in chroot (foreign arch without qemu?)." ;;
+            adduser)
+                local u p
+                u=$(tui_input "New user" "Username:" "") || continue; [ -z "$u" ] && continue
+                if chroot "$t" sh -c "command -v useradd" >/dev/null 2>&1; then
+                    chroot "$t" useradd -m -s /bin/sh "$u" 2>>"$LOGFILE"
+                else
+                    chroot "$t" adduser -D "$u" 2>>"$LOGFILE"
+                fi
+                p=$(tui_password "Password" "Password for $u (blank = locked):")
+                [ -n "$p" ] && echo "$u:$p" | chroot "$t" chpasswd 2>>"$LOGFILE"
+                tui_msg "Done" "User $u created in the rootfs." ;;
+            dns)
+                local d
+                d=$(tui_radio "DNS" "Resolvers for the rootfs (SPACE to select):" \
+                    cloudflare "1.1.1.1 / 1.0.0.1" on \
+                    google     "8.8.8.8 / 8.8.4.4" off \
+                    quad9      "9.9.9.9 / 149.112.112.112" off) || continue
+                case "$d" in
+                    cloudflare) printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > "$t/etc/resolv.conf" ;;
+                    google)     printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > "$t/etc/resolv.conf" ;;
+                    quad9)      printf 'nameserver 9.9.9.9\nnameserver 149.112.112.112\n' > "$t/etc/resolv.conf" ;;
+                    *) continue ;;
+                esac
+                tui_msg "Done" "resolv.conf written in the rootfs." ;;
+            timezone)
+                local z; z=$(tui_input "Timezone" "IANA timezone:" "UTC") || continue
+                [ -e "$t/usr/share/zoneinfo/$z" ] && { ln -sf "/usr/share/zoneinfo/$z" "$t/etc/localtime"; echo "$z" > "$t/etc/timezone"; tui_msg "Done" "Timezone set to $z."; } || tui_msg "Missing" "Timezone data is not installed." ;;
+            locale)
+                local l; l=$(tui_input "Locale" "Locale:" "C.UTF-8") || continue
+                mkdir -p "$t/etc/profile.d"; printf 'export LANG=%s\nexport LC_ALL=%s\n' "$l" "$l" > "$t/etc/profile.d/locale.sh"
+                [ -f "$t/etc/locale.gen" ] && { grep -qF "$l UTF-8" "$t/etc/locale.gen" || echo "$l UTF-8" >> "$t/etc/locale.gen"; rootfs_chroot_exec "$t" "Generate locale" "locale-gen || true"; }
+                tui_msg "Done" "Locale configured as $l." ;;
+            shell)
+                local shv u; shv=$(tui_radio "Default shell" "Shell:" bash Bash on zsh Zsh off fish Fish off) || continue
+                u=$(tui_input "Account" "Account to update:" "root") || continue
+                rootfs_chroot_exec "$t" "Set shell for $u" "chsh -s $( [ "$shv" = fish ] && echo /usr/bin/fish || echo /bin/$shv ) $u" ;;
+            editor)
+                local ed; ed=$(tui_radio "Default editor" "Editor:" nano Nano on vim Vim off neovim Neovim off micro Micro off) || continue
+                mkdir -p "$t/etc/profile.d"; printf 'export EDITOR=%s\nexport VISUAL=%s\n' "$ed" "$ed" > "$t/etc/profile.d/editor.sh"
+                tui_msg "Done" "Default editor set to $ed." ;;
+            ssh)
+                local port rootlogin passauth
+                port=$(tui_input "SSH" "Port:" "22") || continue
+                rootlogin=$(tui_radio "SSH root login" "Policy:" no "Prohibit root password login" on yes "Allow root login" off) || continue
+                passauth=$(tui_radio "SSH passwords" "Password authentication:" yes Enabled on no Disabled off) || continue
+                [ -f "$t/etc/ssh/sshd_config" ] || { tui_msg "Missing" "OpenSSH server is not installed."; continue; }
+                sed -i -E "s/^#?Port .*/Port $port/; s/^#?PermitRootLogin .*/PermitRootLogin $([ "$rootlogin" = yes ] && echo yes || echo prohibit-password)/; s/^#?PasswordAuthentication .*/PasswordAuthentication $passauth/" "$t/etc/ssh/sshd_config"
+                rootfs_chroot_exec "$t" "Validate sshd configuration" "sshd -t" || true ;;
+            pkgupdate)
+                case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt update" "apt-get update" ;; apk) rootfs_chroot_exec "$t" "apk update" "apk update" ;; pacman) rootfs_chroot_exec "$t" "pacman sync" "pacman -Sy --noconfirm" ;; dnf) rootfs_chroot_exec "$t" "dnf cache" "dnf makecache" ;; xbps) rootfs_chroot_exec "$t" "xbps sync" "xbps-install -S" ;; esac ;;
+            upgrade)
+                case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt upgrade" "apt-get upgrade -y" ;; apk) rootfs_chroot_exec "$t" "apk upgrade" "apk upgrade" ;; pacman) rootfs_chroot_exec "$t" "pacman upgrade" "pacman -Syu --noconfirm" ;; dnf) rootfs_chroot_exec "$t" "dnf upgrade" "dnf upgrade -y" ;; xbps) rootfs_chroot_exec "$t" "xbps upgrade" "xbps-install -yu" ;; esac ;;
+            cleanup)
+                case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt clean" "apt-get autoremove -y; apt-get clean" ;; apk) rm -rf "$t/var/cache/apk"/* ;; pacman) rm -rf "$t/var/cache/pacman/pkg"/* ;; dnf) rootfs_chroot_exec "$t" "dnf clean" "dnf clean all" ;; xbps) rm -rf "$t/var/cache/xbps"/* ;; esac
+                tui_msg "Done" "Package caches cleaned." ;;
+            mounts)
+                mkdir -p "$t/usr/local/sbin"; cat > "$t/usr/local/sbin/mount-rootfs-virtualfs" <<'EOF'
+#!/bin/sh
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mkdir -p /run /dev/pts
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
+EOF
+                chmod +x "$t/usr/local/sbin/mount-rootfs-virtualfs"; tui_msg "Done" "Mount helper installed." ;;
+            manifest)
+                if [ -f "$t/etc/systui-build.conf" ]; then ${EDITOR:-nano} "$t/etc/systui-build.conf" </dev/tty >/dev/tty 2>/dev/tty || tui_text "Manifest" "$t/etc/systui-build.conf"; else tui_msg "Missing" "No build manifest exists."; fi ;;
+            services)
+                local s a
+                a=$(tui_radio "Service" "Action (SPACE to select):" \
+                    enable  "Enable at boot" on \
+                    disable "Disable at boot" off) || continue
+                s=$(tui_input "Service" "Service name (as the rootfs's init knows it):" "") || continue
+                [ -z "$s" ] && continue
+                case "$rinit" in
+                    systemd)
+                        rootfs_chroot_exec "$t" "systemctl $a $s" "systemctl $a $s" ;;
+                    openrc)
+                        if [ "$a" = enable ]; then
+                            rootfs_chroot_exec "$t" "rc-update add $s" "rc-update add $s default"
+                        else
+                            rootfs_chroot_exec "$t" "rc-update del $s" "rc-update del $s default"
+                        fi ;;
+                    runit)
+                        mkdir -p "$t/etc/runit/runsvdir/default"
+                        if [ "$a" = enable ]; then
+                            [ -d "$t/etc/sv/$s" ] && ln -sf "/etc/sv/$s" "$t/etc/runit/runsvdir/default/" \
+                                && tui_msg "Done" "$s linked into the default runlevel." \
+                                || tui_msg "Missing" "No /etc/sv/$s in the rootfs."
+                        else
+                            rm -f "$t/etc/runit/runsvdir/default/$s"
+                            tui_msg "Done" "$s unlinked from the default runlevel."
+                        fi ;;
+                    sysvinit)
+                        if [ "$a" = enable ]; then
+                            rootfs_chroot_exec "$t" "update-rc.d $s defaults" "update-rc.d $s defaults"
+                        else
+                            rootfs_chroot_exec "$t" "update-rc.d $s remove" "update-rc.d $s remove"
+                        fi ;;
+                    *) tui_msg "Unknown" "Init system of the rootfs is unknown —\nmanage services manually inside the chroot." ;;
+                esac ;;
+            osinfo)
+                { cat "$t/etc/os-release" 2>/dev/null || echo "(no os-release)"
+                  echo
+                  echo "Detected PM  : $(rootfs_detect_pm "$t")"
+                  echo "Detected init: $rinit"
+                } > /tmp/systui.rfs
+                tui_text "OS info: $(basename "$t")" /tmp/systui.rfs ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+rootfs_manage() {
+    local base
+    # Safely capture input result and handle cancellation
+    if ! base=$(tui_input "Manage rootfs" "Base directory containing rootfs builds:" "$ROOTFS_BASE"); then
+        # User pressed ESC/Cancel - gracefully return
+        return 0
+    fi
+    [ -z "$base" ] && return 0
+    [ -d "$base" ] || { tui_msg "Not found" "$base does not exist."; return 0; }
+
+    while true; do
+        # Build the selection menu from directories present.
+        local d tags=() n=0
+        for d in "$base"/*/; do
+            [ -d "$d" ] || continue
+            d=${d%/}
+            tags+=("$d" "$(du -sh "$d" 2>/dev/null | cut -f1) $( [ -f "$d/etc/systui-build.conf" ] && echo '[systui]')")
+            n=$((n+1))
+        done
+        [ $n = 0 ] && { tui_msg "Empty" "No rootfs directories found in $base."; return 0; }
+        local sel
+        # Safely capture menu result and handle cancellation
+        if ! sel=$(tui_menu "Rootfs in $base" "Select a rootfs:" "${tags[@]}" __back "Back"); then
+            # User pressed ESC/Cancel - gracefully return
+            return 0
+        fi
+        [ -z "$sel" ] && return 0
+        [ "$sel" = __back ] && return 0
+
+        local c
+        # Safely capture submenu result and handle cancellation
+        if ! c=$(tui_menu "$(basename "$sel")" \
+            "PM: $(rootfs_detect_pm "$sel")  init: $(rootfs_detect_init "$sel")" \
+            enter    "Enter chroot (interactive shell)" \
+            cmd      "Run a single command in the chroot" \
+            pkg      "Package management (inside the rootfs)" \
+            config   "In-rootfs configuration (identity, locale, SSH, services...)" \
+            manifest "Show build manifest" \
+            size     "Show size breakdown" \
+            compress "Compress to an archive" \
+            clone    "Clone to a new directory" \
+            rename   "Rename this rootfs" \
+            delete   "DELETE this rootfs" \
+            back     "Back"); then
+            # User pressed ESC/Cancel - return to rootfs selection
+            continue
+        fi
+        [ -z "$c" ] && continue
+        case "$c" in
+            enter) enter_chroot "$sel" ;;
+            cmd)
+                local rcmd
+                rcmd=$(tui_input "Chroot command" "Command to run inside $(basename "$sel"):" "") || continue
+                [ -n "$rcmd" ] && rootfs_chroot_exec "$sel" "chroot: $rcmd" "$rcmd" ;;
+            pkg)    rootfs_pkg_menu "$sel" ;;
+            config) rootfs_cfg_menu "$sel" ;;
+            clone)
+                local dst
+                dst=$(tui_input "Clone" "New directory for the copy:" "${sel}-copy") || continue
+                [ -z "$dst" ] && continue
+                [ -e "$dst" ] && { tui_msg "Exists" "$dst already exists."; continue; }
+                run_cmd "Cloning rootfs -> $dst" cp -a "$sel" "$dst" ;;
+            rename)
+                local dst
+                dst=$(tui_input "Rename" "New name (directory under $base):" "$(basename "$sel")") || continue
+                [ -z "$dst" ] || [ "$dst" = "$(basename "$sel")" ] && continue
+                [ -e "$base/$dst" ] && { tui_msg "Exists" "$base/$dst already exists."; continue; }
+                mv "$sel" "$base/$dst" && tui_msg "Done" "Renamed to $base/$dst" ;;
+            manifest)
+                if [ -f "$sel/etc/systui-build.conf" ]; then
+                    tui_text "Manifest" "$sel/etc/systui-build.conf"
+                else
+                    tui_msg "No manifest" "No /etc/systui-build.conf in this rootfs\n(built by hand or with the manifest option off)."
+                fi ;;
+            size)
+                du -xh --max-depth=1 "$sel" 2>/dev/null | sort -hr | head -25 > /tmp/systui.rfs
+                tui_text "Size: $(basename "$sel")" /tmp/systui.rfs ;;
+            compress)
+                local comp
+                comp=$(tui_radio "Compress" "Format (SPACE to select):" \
+                    gz  "tar.gz (default, compatible)" on \
+                    zst "tar.zst (fast)" off \
+                    xz  "tar.xz" off) || continue
+                [ -z "$comp" ] && continue
+                local ext tool
+                case "$comp" in
+                    zst) ext="tar.zst"; tool="zstd -T0 -f -o" ;;
+                    gz)  ext="tar.gz";  tool="gzip -c >" ;;
+                    xz)  ext="tar.xz";  tool="xz -T0 -c >" ;;
+                esac
+                run_cmd "Compressing -> $sel.$ext" bash -c \
+                    "tar -C '$sel' --numeric-owner -c . | $tool '$sel.$ext'" ;;
+            delete)
+                local typed
+                tui_yesno "DELETE" "Recursively delete:\n$sel\n\nThis cannot be undone. Continue?" || continue
+                typed=$(tui_input "Type to confirm" "Type the directory name ($(basename "$sel")) to confirm:" "") || continue
+                [ "$typed" != "$(basename "$sel")" ] && { tui_msg "Aborted" "Confirmation did not match."; continue; }
+                run_cmd "Deleting $sel" rm -rf --one-file-system "$sel" ;;
+            back) : ;;
+        esac
+    done
+}
+
+
+###############################################################################
+# PART 2 — SYSTEM CONFIGURATION (current system)
+###############################################################################
+
+# ---- Environment detection -------------------------------------------------

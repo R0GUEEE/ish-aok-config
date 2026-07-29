@@ -1,8 +1,0 @@
-name=Bass (run bash utilities in fish)
-tool=fish
-kind=plugin
-manager=any
-url=https://github.com/edc/bass.git
-dest=$CURRENT_HOME/.local/share/fish/plugins/bass
-adapter=fish_plugin
-init=

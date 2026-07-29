@@ -1,8 +1,0 @@
-ID=standard
-LABEL=Standard
-DESCRIPTION=Interactive command-line RootFS suitable for general iSH-AOK use.
-INCLUDES=minimal
-PACKAGES_COMMON=bash-completion curl wget git nano less file procps openssh-client
-PACKAGES_ALPINE=bash-completion curl wget git nano less file procps openssh-client
-PACKAGES_FEDORA=bash-completion curl wget git nano less file procps-ng openssh-clients
-PACKAGES_VOID=bash-completion curl wget git nano less file procps-ng openssh

@@ -1,8 +1,0 @@
-theme = "default"
-[editor]
-line-number = "absolute"
-mouse = true
-bufferline = "multiple"
-auto-save = false
-[editor.indent-guides]
-render = true

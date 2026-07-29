@@ -1,7 +1,0 @@
-name=znap (zsh-snap)
-tool=zsh
-kind=manager
-url=https://github.com/marlonrichert/zsh-snap.git
-dest=$CURRENT_HOME/.local/share/zsh/znap
-adapter=zsh_source
-init=source "$HOME/.local/share/zsh/znap/znap.zsh"

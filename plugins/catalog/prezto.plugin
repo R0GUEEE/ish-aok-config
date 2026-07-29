@@ -1,7 +1,0 @@
-name=Prezto
-tool=zsh
-kind=framework
-url=https://github.com/sorin-ionescu/prezto.git
-dest=$CURRENT_HOME/.zprezto
-adapter=zsh_source
-init=source "$HOME/.zprezto/init.zsh"

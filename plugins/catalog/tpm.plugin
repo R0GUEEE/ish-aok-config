@@ -1,7 +1,0 @@
-name=Tmux Plugin Manager
-tool=tmux
-kind=app
-url=https://github.com/tmux-plugins/tpm.git
-dest=$CURRENT_HOME/.tmux/plugins/tpm
-adapter=tmux_tpm
-repo=tmux-plugins/tpm

@@ -1,6 +1,0 @@
-# id|label|description|packages
-minimal|Minimal|Small base filesystem with package management and certificates|ca-certificates,tar,gzip
-standard|Standard|General-purpose interactive RootFS|bash,bash-completion,curl,wget,git,nano,openssh-client
-developer|Developer|Compiler and scripting environment|build-essential,cmake,git,python3,python3-pip,neovim
-server|Server|Remote administration and scheduled maintenance|openssh-server,sudo,cron,logrotate,rsync
-recovery|Recovery|Diagnostics and filesystem repair utilities|file,less,procps,util-linux,rsync,tar,xz-utils

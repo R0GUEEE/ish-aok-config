@@ -1,8 +1,0 @@
-#id|label|description|handler|flags
-minimal|Minimal system|Runtime dependencies and conservative defaults|apply_system_profile|minimal
-ssh|SSH server|OpenSSH, admin tools, logging and low overhead|apply_system_profile|ssh
-developer|Developer workstation|Compilers, editors, shells and build tools|apply_system_profile|developer
-lowmem|Ultra-low memory|Single-job builds, small history and trimmed services|apply_system_profile|lowmem
-secure|Security hardened|Safer sudo, SSH and permission defaults|apply_system_profile|secure
-portable|Portable rootfs|Small transferable rootfs-oriented environment|apply_system_profile|portable
-ci|CI builder|Noninteractive compiler and reproducible-build tooling|apply_system_profile|ci

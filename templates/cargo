@@ -1,6 +1,0 @@
-[build]
-jobs = 2
-incremental = true
-[net]
-retry = 3
-git-fetch-with-cli = true

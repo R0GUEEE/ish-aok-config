@@ -1,8 +1,0 @@
-ID=developer
-LABEL=Developer Tools
-DESCRIPTION=Compiler, debugger, build systems, version control, and Python tooling.
-INCLUDES=standard
-PACKAGES_COMMON=build-essential cmake ninja-build meson pkg-config git gdb strace python3 python3-pip python3-venv neovim
-PACKAGES_ALPINE=build-base cmake ninja meson pkgconf git gdb strace python3 py3-pip neovim
-PACKAGES_ARCH=base-devel cmake ninja meson pkgconf git gdb strace python python-pip neovim
-PACKAGES_FEDORA=gcc gcc-c++ make cmake ninja-build meson pkgconf-pkg-config git gdb strace python3 python3-pip neovim

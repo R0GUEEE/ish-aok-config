@@ -1,318 +1,541 @@
-# iSH-AOK Config 10.4.2
+# systui — Modular Linux System Administration TUI
 
-A POSIX-shell RootFS builder and running-system configuration utility designed for iSH-AOK and compatible filesystems including Devuan, Debian, Alpine, Arch Linux, Gentoo, Void Linux, Fedora and Ubuntu.
+**Version:** 1.0.0  
+**Status:** Production Ready  
+**License:** Free and open for modification
 
-## Strict scope separation
+## Overview
 
-Version 10.4 separates the application into two independent areas:
+systui is a comprehensive Linux system administration tool with:
+- **Modular architecture** — Clean separation of concerns
+- **Dialog-based TUI** — Terminal UI for easy navigation
+- **Multi-distro support** — Alpine, Arch, Debian, Devuan
+- **Easy installation** — Single `install.sh` script
+- **Extensible design** — Add features by creating modules
 
-- **RootFS Builder** creates, imports, edits, validates, enters, clones and packages filesystem trees that are separate from the running system.
-- **System Configuration** changes only the currently running iSH-AOK system at `/`.
+## Quick Start
 
-System Configuration temporarily switches the configuration scope to `/`, runs the requested tool, and restores the previously selected RootFS afterward. RootFS Builder refuses to use `/` as an editable RootFS target.
+### Installation
 
-## Main menu
+```bash
+# Clone or download the project
+git clone https://github.com/... systui
+cd systui
 
-```text
-iSH-AOK Config 10.4.2
+# Run installation (requires root)
+sudo ./install.sh
 
-├── RootFS Builder
-├── System Configuration
-├── Settings
-├── Search
-├── About
-└── Exit
+# Use systui
+sudo systui
 ```
 
-## Streamlined RootFS Builder
+### First Run
 
-```text
-RootFS Builder
-
-├── Create a New RootFS
-├── Edit an Existing RootFS
-├── Current Build
-├── Manage RootFS Filesystems
-├── More Build Options
-├── Builder Help
-└── Back
+```bash
+sudo systui
+→ Main Menu
+→ Ultimate Provision
+→ Configure (set timezone, username, hostname, sudo preference)
+→ Run (provisioning starts automatically)
+→ Re-login to activate changes
 ```
 
-### Create a New RootFS
+## Project Structure
 
-The guided builder asks only for the information needed to produce a filesystem:
-
-1. Distribution
-2. Architecture
-3. Minimal, Standard, Developer, Server, Build, Recovery or Custom profile
-4. Source
-5. Destination
-6. Optional RootFS identity and boot settings
-7. Validation
-8. Confirmation and execution
-
-### Edit an Existing RootFS
-
-A RootFS must be selected before configuration options are shown. The target path remains visible on the screen. Available operations include:
-
-- Hostname, locale and timezone
-- Users, passwords and sudo
-- Shells and prompts inside the RootFS
-- Editors inside the RootFS
-- Packages and repositories inside the RootFS
-- Services and boot configuration inside the RootFS
-- Networking, DNS and SSH inside the RootFS
-- Validation, repair and chroot access
-
-### More Build Options
-
-Advanced build navigation is limited to:
-
-- Reusable build profiles
-- Direct bootstrap backends
-- Optional batch and multiple-target builds
-- Build status, logs and recovery
-
-Old project, workspace, dashboard and studio landing screens are not part of the normal interface.
-
-## System Configuration
-
-```text
-System Configuration
-
-├── Packages and Repositories
-├── Services and Startup
-├── Users, Passwords and Sudo
-├── Shells, Prompts and Terminal
-├── Editors and Editor Configuration
-├── Networking, DNS and SSH
-├── Storage, Mounts and Backups
-├── Performance and Maintenance
-├── System Health and Diagnostics
-├── Advanced System Tools
-└── Back
+```
+systui-project/
+│
+├── install.sh                # Installation script (dependencies + setup)
+├── README.md                 # This file
+│
+├── src/                      # Source code (modules)
+│   ├── core/                 # Core utilities and framework
+│   │   ├── config.sh         # System detection and config
+│   │   ├── tui-widgets.sh    # TUI widget functions
+│   │   └── common.sh         # Common utilities & package mapping
+│   │
+│   ├── provision/            # Provisioning functions (one per distro)
+│   │   ├── alpine.sh         # Alpine 3.23+ (OpenRC)
+│   │   ├── arch.sh           # Arch Linux (systemd)
+│   │   ├── debian.sh         # Debian 12+ (systemd)
+│   │   └── devuan.sh         # Devuan 6+ (sysvinit)
+│   │
+│   └── features/             # Feature modules (optional/future)
+│       ├── shells.sh         # Shell management
+│       ├── repos.sh          # Repository management
+│       └── rootfs.sh         # Rootfs building
+│
+├── share/                    # Non-code resources
+│   └── config/               # Configuration templates
+│       └── shell-niceties.sh # Shell environment template
+│
+├── bin/                      # Executable wrappers (generated)
+│   └── systui                # Main executable
+│
+├── docs/                     # Documentation
+│   ├── ARCHITECTURE.md       # System design
+│   ├── GETTING_STARTED.md    # User guide
+│   ├── DEVELOPER_GUIDE.md    # Developer documentation
+│   └── API.md                # Module API reference
+│
+└── tests/                    # Test suite (optional)
+    └── test-*.sh             # Test files
 ```
 
-Every action in this menu targets the running system at `/`. A selected RootFS is displayed separately and is not modified.
+## Module System
 
-## Safety and navigation
+### Core Modules
 
-- Back and Cancel return to the previous menu.
-- The build does not start until validation and final confirmation succeed.
-- Destructive operations can require typed confirmation.
-- The selected RootFS is restored after host-system configuration.
-- RootFS editing rejects `/` to prevent accidental host modification.
-- The implementation remains compatible with POSIX `sh`, dialog, whiptail and text interfaces.
+#### `src/core/config.sh`
+- System detection (PM, init, distro)
+- Logging and error handling
+- Configuration management
 
-## Dependency-aware installer
-
-`install.sh` now scans the running system before copying the application. It detects the distribution, architecture and native package manager, checks the commands used by the interface and RootFS utilities, and installs only missing package groups.
-
-Supported package managers:
-
-- APT on Devuan, Debian and Ubuntu
-- APK on Alpine
-- pacman on Arch Linux
-- DNF on Fedora-compatible systems
-- XBPS on Void Linux
-- Portage on Gentoo
-
-Useful installer modes:
-
-```sh
-# Report missing dependencies without changing the system
-sh install.sh --check
-
-# Preview package and file operations
-sh install.sh --dry-run
-
-# Include the native builder package when available
-sh install.sh --with-builders
-
-# Install files without dependency handling
-sh install.sh --skip-deps
-
-# Allow interactive package-manager confirmation
-sh install.sh --interactive
+**Key Functions:**
+```bash
+detect_pm()           # Detect package manager
+detect_init()         # Detect init system
+detect_distro()       # Detect Linux distribution
+require_root()        # Ensure root access
+log <message>         # Log to /tmp/systui.log
+warn <message>        # Log warning
+die <message>         # Fatal error and exit
 ```
 
-When `DESTDIR` is set for package creation, dependency installation is skipped automatically. Environment overrides are available through `PREFIX`, `DESTDIR`, `ISH_AOK_SKIP_DEPENDENCIES`, `ISH_AOK_ASSUME_YES` and `ISH_AOK_INSTALL_BUILDERS`.
+#### `src/core/tui-widgets.sh`
+- Dialog wrapper functions
+- TUI components (menu, input, checkbox, etc.)
+- Command execution with output
 
-## Validation
-
-Run the full test suite:
-
-```sh
-sh tests/run-all.sh
+**Key Functions:**
+```bash
+tui_msg <title> <message>              # Message dialog
+tui_yesno <title> <question>           # Yes/no dialog
+tui_input <title> <prompt> [default]   # Input dialog
+tui_menu <title> <text> <tag> <desc>   # Menu selection
+tui_check <title> <text> <tag> <desc>  # Checkbox list
+tui_radio <title> <text> <tag> <desc>  # Radio list
+tui_text <title> <file>                # Text viewer
+run_cmd <description> <cmd...>         # Run command with output
 ```
 
-Run menu validation:
+#### `src/core/common.sh`
+- Package mapping (Debian → Alpine/Arch/Fedora/Void)
+- Package manager operations
+- Common utilities
 
-```sh
-./ish-aok-config --validate-menus
+**Key Functions:**
+```bash
+map_packages <family> <pkgs...>  # Map package names
+pm_install <pkgs...>            # Install packages
+pm_remove <pkgs...>             # Remove packages
+pm_update                        # Update package lists
+cmd_exists <command>            # Check if command exists
 ```
 
-Version 10.4.2 validation result: **50 passed, 0 failed**.
+### Provisioning Modules
 
-## Install
+Each distro has its own provisioning module:
 
-```sh
-tar -xzf ish-aok-config-project-v10.4.2.tar.gz
-cd ish-aok-config-project-v10.4.2
-sh install.sh
+#### `src/provision/alpine.sh`
+- Alpine 3.23+ with OpenRC
+- Installs 60+ packages
+- Configures services (sshd, syslog-ng, cronie, chronyd)
+
+#### `src/provision/arch.sh`
+- Arch Linux with systemd
+- Special handling: uid-501 repair, /dev/fd symlinks
+- Handles alarm user rename
+
+#### `src/provision/debian.sh`
+- Debian 12+ (bookworm, trixie, sid)
+- APT-based provisioning
+- Services: ssh, rsyslog, cron, chrony
+
+#### `src/provision/devuan.sh`
+- Devuan 6+ (Excalibur)
+- Legacy sysvinit support
+- Services: sshd, rsyslog, cron, chrony
+
+**Provisioning Function Signature:**
+```bash
+provision_alpine <timezone> <username> <hostname> <nopass_flag>
+provision_arch <timezone> <username> <hostname> <nopass_flag>
+provision_debian <timezone> <username> <hostname> <nopass_flag>
+provision_devuan <timezone> <username> <hostname> <nopass_flag>
 ```
 
-Run directly without installation:
+Each function:
+1. Installs 60+ packages
+2. Sets timezone and locale
+3. Creates user account
+4. Configures sudo access
+5. Enables services
+6. Creates MOTD and shell environment
 
-```sh
-./ish-aok-config
+## Installation Details
+
+### What `install.sh` Does
+
+1. **Detects package manager** (apt, apk, pacman, dnf)
+2. **Installs dependencies:**
+   - bash
+   - dialog
+   - Standard utilities (grep, sed, awk, etc.)
+   - Network tools (openssh, curl, wget)
+   - Essential files (ca-certificates, tzdata)
+
+3. **Installs project files** to `/usr/local/lib/systui/`
+4. **Creates executable** at `/usr/local/bin/systui`
+5. **Creates man page** for documentation
+6. **Verifies installation**
+
+### Dependencies
+
+**Minimum required:**
+- bash 4.0+
+- dialog
+- grep, sed, awk, cut, tr (standard utilities)
+- openssl (for cryptography)
+- curl or wget (for network operations)
+
+**Optional:**
+- man-db (for documentation)
+- git (for cloning)
+- tzdata (for timezone support)
+
+## Usage Examples
+
+### Basic Usage
+
+```bash
+# Run systui
+sudo systui
+
+# Navigate with arrow keys, Enter to select
+Main Menu
+  → Ultimate Provision
+    → Review (see what gets installed)
+    → Configure (set options)
+    → Run (start provisioning)
+    → Info (detailed reference)
 ```
 
+### Provisioning a Fresh System
 
-## v10.4.2 fixes
+```bash
+# On Alpine 3.23+
+sudo systui
+→ Ultimate Provision → Configure
+→ Timezone: UTC
+→ Username: admin
+→ Hostname: myserver
+→ Sudo: password required (or passwordless)
+→ Run
 
-- The installer refreshes repository metadata, checks every mapped dependency package, and skips package names that are unavailable in the enabled repositories.
-- Missing or failed optional dependency packages no longer abort installation of iSH-AOK Config.
-- **System Configuration → Packages and repositories → Package repositories** now opens the host repository manager.
-- Repository actions remain scoped to the running system and do not modify the selected RootFS.
-
-## v10.5.2 — Host Software Installation
-
-System Configuration now includes a host-only package installation center. It never modifies the selected RootFS.
-
-### System Packages
-
-- Quick Install: iSH-AOK Essentials
-- Install additional native packages
-- Curated package groups
-- Remove and search packages
-- Package repositories
-- Refresh, upgrade, and clean operations
-
-### Curated groups
-
-- iSH-AOK Essentials
-- Developer and build tools
-- Networking tools
-- Editors
-- Shells and prompts
-- Terminal applications
-- Compression and archive tools
-- Filesystem tools
-- Monitoring and diagnostics
-- Database clients
-- Scripting languages
-- RootFS builder prerequisites
-
-Every installation checks whether packages are already installed and whether they exist in enabled repositories. Unavailable package names are shown and skipped. Editor and shell groups can launch their configuration tools after installation.
-
-## v10.5.2 contextual installation
-
-System Configuration menus now include installation where the software is configured. Shells can install Bash, Zsh, Fish, Starship and completions; Editors can install Nano, Vim, Neovim, Micro, Helix and Emacs; networking and development screens include curated batch installers. Missing packages are filtered through repository availability checks and all selected packages are installed in one package-manager transaction.
-
-## v10.7.0 package-manager configuration
-
-System Configuration now includes **Packages and repositories → Package managers and configuration**.
-
-The package-manager hub detects and configures APT, apt-fast, Nala, APK, Pacman, DNF/YUM, XBPS, Portage, Zypper, Scoop, Homebrew, Pipx, Cargo and NPM. Compatible optional managers can be selected with Space and installed together in one batch. Native managers belonging to another distribution are shown for reference but are never installed automatically.
-
-APT-family systems gain direct apt-fast and Nala installation/configuration. Scoop is explicitly treated as an external Windows manager and is never installed inside iSH-AOK. All package-manager actions retain the host-only scope guard and cannot modify the selected RootFS.
-
-## v10.7.0 multi-select package actions
-
-Every System Configuration screen containing a package collection now uses the same checklist workflow:
-
-- Space toggles multiple packages.
-- Installed packages are preselected and labelled.
-- Enter opens one action menu: Install selected, Remove selected, or Update selected.
-- Each action uses one native package-manager transaction and one confirmation.
-- Editors, shells, terminal tools, networking, storage, archives, monitoring, languages, databases, builder prerequisites, and optional package managers share this behavior.
-
-## v10.8.0 repository and package-source management
-
-System Configuration now includes a distribution-aware Repository & Package Sources center. It manages native repository files, APT source lists, official Flathub setup, repository backups and health checks, plus PyPI, npm and Cargo registries. Cross-distribution repositories are never added automatically, and Scoop remains external to iSH-AOK.
-
-## v10.10.0 repository keyring management
-
-Repository Management now includes a distribution-aware **Install Missing Keyrings** workflow. It can multi-select and batch-install or reinstall official archive-key packages, scan APT `signed-by=` references for missing files, initialize Pacman keys, repair Alpine keys, list installed keyrings, import local APT keyring files, and refresh package indexes after repairs.
-
-## v10.10.0 additions
-
-- RootFS Builder preflights and installs target-distribution archive keyrings before Debian, Devuan, Ubuntu, Kali, Raspbian, Alpine, Arch, Fedora, Void, or Gentoo workflows.
-- Debian-family debootstrap builds pass the detected official archive keyring with `--keyring`, including Ubuntu builds from a Devuan host.
-- APT official repository components use a Space-to-select checklist and are written/refreshed as one operation.
-- Repository Management includes a multi-select target-distribution keyring installer.
-- Privileged configuration files are edited through a safe temporary copy, preventing Nano/Vim from dropping back to the opening menu.
-
-## v10.11.0 target-distribution keyring bootstrap cache
-
-RootFS builds no longer depend on foreign keyring packages being available in the host's repositories. For Ubuntu builds on Debian or Devuan, the builder downloads the official `ubuntu-keyring` package metadata and package from the selected Ubuntu archive, verifies the package SHA-256 against the archive metadata, extracts `ubuntu-archive-keyring.gpg` without installing the Ubuntu package on the host, caches it under the application state directory, and supplies it to `debootstrap` with `--keyring=`. The same cache mechanism is available for Debian and Devuan targets.
-
-## v10.12.0 menu optimization and integrated bug audit
-
-- Reorganized System Configuration around the most common workflows.
-- Added **Diagnostics & Bug Check** with complete, route, repository, keyring, RootFS-keyring, and editor tests.
-- Added automated syntax scanning for all shell entry points and modules.
-- Added declarative menu callback, submenu, Back-route, and duplicate-ID validation.
-- Added critical-handler checks for package checklists, repository sources, keyrings, scope isolation, and RootFS bootstrap support.
-- Improved the shared editor launcher to restore terminal state and return to the originating menu after editing privileged files.
-- Corrected obsolete regression tests that incorrectly required historical version numbers.
-
-## v11.0.1 RootFS Builder Framework
-
-The RootFS Builder now includes reusable profiles, distribution-aware package sets, an isolated download cache, build queue metadata, preflight validation, post-build validation, and reproducibility manifests. See `docs/v11/BUILDER_FRAMEWORK.md`.
-
-## v11.1.0 Build Pipeline
-
-Adds resumable stage checkpoints, isolated workspaces, backend abstraction, distribution metadata, lifecycle hooks, persistent history, structured logs, and dry-run pipeline validation. See `docs/v11/BUILD_PIPELINE.md`.
-
-## v11.2.0 — Plugin SDK and Distribution SDK
-
-This release adds a stable POSIX-shell extension layer, local plugin manager, manifest and dependency metadata, plugin/distribution generators, SDK validators, catalog format, lifecycle declarations, developer tools, and documentation. User plugins are stored outside the application core.
-
-Command-line generators:
-
-```sh
-./sdk/new_plugin.sh example-plugin /root/example-plugin "Example Plugin" author
-./sdk/distribution/new_distribution.sh mylinux /root/mylinux apk apk arm64,amd64
+# Provisioning starts automatically
+# Takes 5-15 minutes depending on internet speed
+# Services automatically enabled and started
 ```
 
-Run the SDK regression:
+### Manual Provisioning (Without TUI)
 
-```sh
-sh tests/v1120_plugin_sdk.sh
+For automation/CI-CD:
+
+```bash
+# Direct provision script calls (with TUI built-in)
+sudo bash /usr/local/lib/systui/src/provision/debian.sh
+
+# Pre-set environment variables for non-interactive mode
+TZ_NAME=UTC \
+TARGET_USER=admin \
+NEW_HOSTNAME=prod-server \
+SUDO_NOPASSWD=0 \
+sudo bash /usr/local/lib/systui/src/provision/debian.sh
 ```
 
-## v11.3.0 — RootFS & Workspace Edition
+## Configuration
 
-This release implements the portable RootFS lifecycle layer designed for iSH-AOK:
+### User Configuration
 
-- Central RootFS library with scan, register, inspect, rename, tag, clone, export, validation, and guarded deletion.
-- Workspace manager with minimal, C/C++, Rust, Python, Go, Node.js, Swift, embedded, server, and recovery templates.
-- Generated workspace launchers supporting environment files, bind-mount declarations, startup commands, and selected shells.
-- Portable snapshot manager using compressed archives, metadata, SHA-256 verification, restore, export, compare, and deletion.
-- Cross-RootFS package operations for APT, APK, Pacman, DNF, and XBPS targets.
-- RootFS comparison reports in text, Markdown, and HTML.
-- Image/artifact library with checksum registration and verification.
-- Validation scorecards and storage/performance reporting.
-- Staged builder integration that registers successful builds and can create initial snapshots.
-- Twenty-two SDK-compliant official plugins covering development tools, editors, shells, terminal utilities, networking, and container tooling.
+Configuration stored in `~/.systui/config`:
 
-All new implementation uses POSIX `sh` and portable text metadata suitable for Devuan, Debian, Alpine, Arch Linux, Fedora, Void, Gentoo, Ubuntu, and other filesystems used within iSH-AOK.
+```bash
+# Set timezone preference
+systui-config-set "timezone" "America/New_York"
 
-## v11.3.1 Software Catalog repair
+# Set preferred shell
+systui-config-set "shell" "bash"
+```
 
-- Replaced stale catalog handlers with current editor, shell, terminal, development, language, networking, and storage routes.
-- Repaired the Package Groups route to use the active multi-select package group manager.
-- Added category browsing and per-item configuration screens.
-- Added route validation and graceful handling of unavailable catalog actions.
-- Added `--software-catalog-audit` and a dedicated regression test.
+### System-Wide Configuration
 
-## v11.3.2 Project-wide maintenance audit
+Location: `/etc/systui/config`
 
-- Corrected the reported application version.
-- Fixed literal `\\n` rendering in the active main-menu status text.
-- Added complete CLI help for v11 report and audit commands.
-- Added `--version`, `--sdk-self-test`, and `--diagnostics-audit` dispatch.
-- Unknown options and unexpected positional arguments now fail with exit status 2 instead of opening the interactive interface.
-- Added a maintenance regression test covering version, help, dispatch, catalog integrity, and menu rendering.
+```bash
+# Default distro preferences
+default_timezone=America/Los_Angeles
+enable_services=true
+install_docs=true
+```
+
+## Adding Features
+
+### Create a New Feature Module
+
+1. Create file: `src/features/myfeature.sh`
+2. Define functions:
+
+```bash
+#!/bin/bash
+# systui — My Feature
+
+menu_myfeature() {
+    local choice
+    choice=$(tui_menu "My Feature" "Description:" \
+        option1 "First option" \
+        option2 "Second option" \
+        back    "Back") || return
+    
+    case "$choice" in
+        option1) do_something_1 ;;
+        option2) do_something_2 ;;
+        back)    return ;;
+    esac
+}
+
+export -f menu_myfeature
+```
+
+3. Add to main menu in `bin/systui`:
+
+```bash
+. "$LIBDIR/src/features/myfeature.sh"
+
+# In main_menu():
+myfeature) menu_myfeature ;;
+```
+
+### Adding a New Distro
+
+1. Create: `src/provision/newdistro.sh`
+2. Define: `provision_newdistro()`
+3. Update `detect_distro()` in `src/core/config.sh`
+4. Source in `bin/systui`
+
+## Troubleshooting
+
+### "Command not found: dialog"
+
+```bash
+# Install dialog
+sudo apt install dialog        # Debian
+sudo apk add dialog            # Alpine
+sudo pacman -S dialog          # Arch
+sudo dnf install dialog        # Fedora
+```
+
+### "Must run as root"
+
+```bash
+# Run with sudo
+sudo systui
+```
+
+### "Package not found"
+
+- Check `/tmp/systui.log` for details
+- Package mapping in `src/core/common.sh` may need updates
+- Some packages have distro-specific names
+
+### Provisioning failed
+
+1. Check log file: `cat /tmp/systui.log`
+2. Check internet connectivity
+3. Verify distro is supported
+4. Try again (scripts are idempotent)
+
+## Development
+
+### Project Structure Rationale
+
+- **Modular design** → Easy to test, extend, maintain
+- **Function-based** → No class complexity, pure bash
+- **Logging everywhere** → Debug issues easily
+- **Consistent patterns** → Similar code style throughout
+
+### Code Style
+
+- Use `#!/bin/bash` (bash-specific features OK)
+- Export functions: `export -f function_name`
+- Log important operations: `log "message"`
+- Validate input in functions
+- Use `set -e` to catch errors
+- Comment complex logic
+
+### Testing
+
+```bash
+# Syntax check
+bash -n src/core/config.sh
+bash -n src/core/tui-widgets.sh
+bash -n src/core/common.sh
+
+# Function test
+bash src/core/config.sh
+detect_pm
+echo $PM
+
+# Full test
+sudo ./install.sh
+sudo systui
+# Test menu navigation and features
+```
+
+## Performance
+
+- **Startup:** < 1 second
+- **Menu navigation:** Instant
+- **Provisioning:** 5-15 minutes (depends on distro and internet)
+- **Memory:** < 10 MB
+- **Disk:** < 5 MB (project files)
+
+## Supported Distributions
+
+| Distro | Version | Init | PM | Status |
+|--------|---------|------|----|----|
+| Alpine | 3.23+ | OpenRC | apk | ✓ Supported |
+| Arch | Current | systemd | pacman | ✓ Supported |
+| Debian | 12+ | systemd | apt | ✓ Supported |
+| Devuan | 6+ | sysvinit | apt | ✓ Supported |
+| Ubuntu | 22.04+ | systemd | apt | ✓ Compatible |
+| Fedora | 38+ | systemd | dnf | ✓ Partial |
+
+## Known Limitations
+
+1. **Feature modules not yet implemented** — Shells, repos, rootfs planned
+2. **Offline provisioning** — Requires internet for package downloads
+3. **Non-interactive provisioning** — TUI always shown (but scriptable via env vars)
+4. **Limited customization** — Edit scripts for fine-grained control
+
+## Future Enhancements
+
+- [ ] Feature modules (shells, repos, rootfs)
+- [ ] Fedora/RHEL/CentOS support
+- [ ] Configuration file support
+- [ ] Package version pinning
+- [ ] Automated testing suite
+- [ ] Plugin system
+- [ ] Cloud-init integration
+- [ ] Backup/restore functionality
+
+## License
+
+Free and open for use, modification, and distribution.
+
+## Support
+
+- **Documentation:** See `/usr/local/lib/systui/docs/`
+- **Log file:** `/tmp/systui.log`
+- **Man page:** `man systui`
+
+## Version History
+
+- **1.0.0** (2026-07-29) — Initial release
+  - Modular architecture
+  - Multi-distro provisioning
+  - TUI framework
+  - Alpine, Arch, Debian, Devuan support
+
+---
+
+**Happy provisioning!** 🚀
+
+For detailed architecture, see `docs/ARCHITECTURE.md`  
+For developers, see `docs/DEVELOPER_GUIDE.md`
+
+## Expanded Software Catalogue
+
+The package catalogue now includes:
+
+- 17 software categories covering terminal tools, development, networking,
+  security, monitoring, servers, containers, backups, multimedia and more.
+- Curated one-click collections for iSH-AOK essentials, development stacks,
+  servers, networking, security and backup environments.
+- Bulk package-list export/import and bulk removal.
+- Package health checks, orphan detection, cache cleanup and integrity checks.
+- Rich package pages with install, remove, reinstall, metadata, installed-file,
+  version-hold and package-integrity actions.
+- Package-name translation for APT, APK, Pacman and DNF environments.
+
+## Expanded Ultimate Provision Configuration
+
+The Ultimate Provision menu now includes grouped configuration for:
+
+- Identity, hostname, timezone, locale, and sudo policy
+- Default shell and editor
+- Selectable package profiles: core, development, terminal, networking,
+  server, security, multimedia, backup, and containers
+- Service startup selection for SSH, cron, time synchronization, logging,
+  mDNS, and web services
+- SSH port, root-login policy, and password-authentication policy
+- Optional firewall and conservative filesystem/SSH hardening
+- iSH-AOK compatibility, balanced, and performance profiles
+- Optional 512 MiB swap file and post-install package cleanup
+- Full review screen before provisioning and reset-to-default support
+
+The compatibility profile is recommended for constrained iSH-AOK filesystems.
+Kernel-dependent features are skipped safely when unavailable.
+
+
+## Expanded rootfs and package management
+
+- Repository-backed, SPACE-selectable release discovery with offline fallbacks.
+- Expanded minimal, workstation, development, server, web, and security presets.
+- Profile-based custom package installation and additional individual packages.
+- In-rootfs locale, timezone, shell, editor, SSH, services, package update/upgrade, cleanup, machine-id, and mount-helper configuration.
+- Rootfs management exposes the same post-build configuration controls.
+- `tar.gz` is the default build and management compression format.
+- System Configuration → Packages begins with Package Managers, followed by Repositories and Catalogue.
+- Package-manager configuration covers APT, apt-fast, Nala, pip, pipx, Flatpak, Snap, Cargo, npm, pnpm, and Yarn.
+- Additional iSH-AOK, memory, writeback, tmpfs, and DNS-cache performance controls.
+- `install.sh` installs rootfs-building, archive, keyring, QEMU, and scripting prerequisites where packaged.
+- Menu cancellation paths return to their parent menu instead of propagating a fatal status.
+
+## Additional rootfs distributions
+
+Kali Linux, openSUSE Leap, openSUSE Tumbleweed, and Gentoo stage3 are available from the Rootfs Builder.
+
+## Distribution Provision Templates
+
+Ultimate Provision now includes two distribution-oriented tools:
+
+- **List Distribution Provision Templates** shows built-in and generated templates for Alpine, Arch Linux, Debian, Devuan, Ubuntu, Kali, Fedora, Void, openSUSE Leap, openSUSE Tumbleweed, and Gentoo.
+- **Generate Provision Scripts** uses a SPACE-to-select checklist and creates standalone scripts for selected distributions when a template is missing. Existing generated scripts require explicit overwrite confirmation.
+
+Generated scripts are stored in `share/generated-provision/` inside the systui installation and support minimal, standard, developer, and server package profiles through the `INSTALL_PROFILE` environment variable.
+
+
+## System Health
+
+The main-menu **System Health** section replaces the former log viewer and provides:
+
+- Quick health dashboard
+- Full exportable health reports
+- Package integrity and dependency checks
+- Storage, filesystem, inode, and mount checks
+- Failed/crashed service detection
+- Network, route, resolver, and listening-port checks
+- Security configuration audit
+- CPU, memory, process, zombie, and kernel-warning checks
+- Conservative package repair, cleanup, SSH validation, and fstab validation
+
+The internal operation log remains available at `/tmp/systui.log` for command diagnostics.
+
+## Package and shell menu organization
+
+System Configuration > Packages now contains Package Managers, Repos, Catalogue, Packages, and Advanced. Native install, remove, search, information, installed-package listing, hold, update, and cleanup actions are grouped under the Packages submenu.
+
+APT repository management includes both `/etc/apt/sources.list` and `/etc/apt/sources.list.d/`. The signing-key menu can install available Debian, Ubuntu, Devuan, and Kali archive keyrings using a SPACE-to-select checklist.
+
+System Configuration > Shells separates Managers from Plugins. Each Bash, Zsh, and Fish manager includes installation, removal, and its framework/plugin-manager configuration. Cross-shell plugins include Starship, fzf, completion packages, zoxide, Atuin, direnv, Carapace, syntax highlighting, and autosuggestions.

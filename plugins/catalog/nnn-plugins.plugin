@@ -1,6 +1,0 @@
-name=nnn plugins collection
-tool=nnn
-kind=app
-url=https://github.com/jarun/nnn.git
-dest=$CURRENT_HOME/.local/share/ish-aok-config/plugins/nnn-source
-adapter=nnn_plugin

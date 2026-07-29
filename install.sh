@@ -1,457 +1,879 @@
-#!/bin/sh
-# iSH-AOK Config installer and dependency scanner.
-set -eu
+#!/bin/bash
+###############################################################################
+# systui Installation Script
+# Installs dependencies and sets up systui as an executable
+###############################################################################
 
-PREFIX=${PREFIX:-/usr/local}
-DEST=${DESTDIR:-}$PREFIX/lib/ish-aok-config
-BINDIR=${DESTDIR:-}$PREFIX/bin
-SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+set -e
 
-DRY_RUN=0
-CHECK_ONLY=0
-SKIP_DEPS=${ISH_AOK_SKIP_DEPENDENCIES:-0}
-ASSUME_YES=${ISH_AOK_ASSUME_YES:-1}
-WITH_BUILDERS=${ISH_AOK_INSTALL_BUILDERS:-0}
-PM=''
-OS_ID='unknown'
-OS_LIKE=''
-MISSING=''
-PACKAGES=''
-AVAILABLE_PACKAGES=''
-SKIPPED_PACKAGES=''
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
+BIN_DIR="$INSTALL_PREFIX/bin"
+LIB_DIR="$INSTALL_PREFIX/lib/systui"
 
-usage() {
-    cat <<'USAGE'
-Usage: ./install.sh [options]
+###############################################################################
+# Colors
+###############################################################################
 
-Scans the current system, installs missing runtime dependencies, and installs
-ish-aok-config.
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-Options:
-  --check             Report missing dependencies without installing anything
-  --dry-run           Show package-manager and file-install commands
-  --skip-deps         Do not scan or install packages
-  --with-builders     Also install available native RootFS builder utilities
-  --interactive       Let the package manager ask for confirmation
-  --prefix PATH       Installation prefix (default: /usr/local)
-  -h, --help          Show this help
+###############################################################################
+# Helper Functions
+###############################################################################
 
-Environment overrides:
-  PREFIX, DESTDIR, ISH_AOK_SKIP_DEPENDENCIES,
-  ISH_AOK_ASSUME_YES, ISH_AOK_INSTALL_BUILDERS
-USAGE
+info() {
+    echo -e "${BLUE}[INFO]${NC} $*"
 }
 
-say() { printf '%s\n' "$*"; }
-warn() { printf 'Warning: %s\n' "$*" >&2; }
-have() { command -v "$1" >/dev/null 2>&1; }
+success() {
+    echo -e "${GREEN}[OK]${NC} $*"
+}
 
-append_word() {
-    _aw_var=$1 _aw_word=$2
-    eval "_aw_current=\${$_aw_var:-}"
-    case " $_aw_current " in
-        *" $_aw_word "*) return 0 ;;
-    esac
-    if [ -n "$_aw_current" ]; then
-        eval "$_aw_var=\$_aw_current\ \$_aw_word"
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $*"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $*" >&2
+    exit 1
+}
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        error "This script must be run as root. Try: sudo $0"
+    fi
+}
+
+detect_pm() {
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "apk"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
     else
-        eval "$_aw_var=\$_aw_word"
+        echo ""
     fi
 }
 
-run() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        printf '+ '
-        printf '%s ' "$@"
-        printf '\n'
-        return 0
-    fi
-    "$@"
-}
-
-as_root() {
-    if [ "$(id -u 2>/dev/null || printf 1)" -eq 0 ]; then
-        run "$@"
-    elif have doas; then
-        run doas "$@"
-    elif have sudo; then
-        run sudo "$@"
-    else
-        warn "Root privileges are required to install packages or files."
-        return 1
-    fi
-}
-
-detect_system() {
-    if [ -r /etc/os-release ]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release
-        OS_ID=${ID:-unknown}
-        OS_LIKE=${ID_LIKE:-}
-    fi
-
-    if have apt-get; then PM=apt
-    elif have apk; then PM=apk
-    elif have pacman; then PM=pacman
-    elif have dnf; then PM=dnf
-    elif have xbps-install; then PM=xbps
-    elif have emerge; then PM=emerge
-    else PM=unknown
-    fi
-}
-
-package_for() {
-    _pf_feature=$1
-    case "$PM:$_pf_feature" in
-        apt:dialog) printf '%s' dialog ;;
-        apt:coreutils) printf '%s' coreutils ;;
-        apt:findutils) printf '%s' findutils ;;
-        apt:grep) printf '%s' grep ;;
-        apt:sed) printf '%s' sed ;;
-        apt:awk) printf '%s' gawk ;;
-        apt:tar) printf '%s' tar ;;
-        apt:gzip) printf '%s' gzip ;;
-        apt:xz) printf '%s' xz-utils ;;
-        apt:util-linux) printf '%s' util-linux ;;
-        apt:rsync) printf '%s' rsync ;;
-        apt:curl) printf '%s' curl ;;
-        apt:certs) printf '%s' ca-certificates ;;
-        apt:openssl) printf '%s' openssl ;;
-        apt:procps) printf '%s' procps ;;
-        apt:file) printf '%s' file ;;
-        apt:git) printf '%s' git ;;
-        apt:debootstrap) printf '%s' debootstrap ;;
-
-        apk:dialog) printf '%s' dialog ;;
-        apk:coreutils) printf '%s' coreutils ;;
-        apk:findutils) printf '%s' findutils ;;
-        apk:grep) printf '%s' grep ;;
-        apk:sed) printf '%s' sed ;;
-        apk:awk) printf '%s' gawk ;;
-        apk:tar) printf '%s' tar ;;
-        apk:gzip) printf '%s' gzip ;;
-        apk:xz) printf '%s' xz ;;
-        apk:util-linux) printf '%s' util-linux ;;
-        apk:rsync) printf '%s' rsync ;;
-        apk:curl) printf '%s' curl ;;
-        apk:certs) printf '%s' ca-certificates ;;
-        apk:openssl) printf '%s' openssl ;;
-        apk:procps) printf '%s' procps ;;
-        apk:file) printf '%s' file ;;
-        apk:git) printf '%s' git ;;
-
-        pacman:dialog) printf '%s' dialog ;;
-        pacman:coreutils) printf '%s' coreutils ;;
-        pacman:findutils) printf '%s' findutils ;;
-        pacman:grep) printf '%s' grep ;;
-        pacman:sed) printf '%s' sed ;;
-        pacman:awk) printf '%s' gawk ;;
-        pacman:tar) printf '%s' tar ;;
-        pacman:gzip) printf '%s' gzip ;;
-        pacman:xz) printf '%s' xz ;;
-        pacman:util-linux) printf '%s' util-linux ;;
-        pacman:rsync) printf '%s' rsync ;;
-        pacman:curl) printf '%s' curl ;;
-        pacman:certs) printf '%s' ca-certificates ;;
-        pacman:openssl) printf '%s' openssl ;;
-        pacman:procps) printf '%s' procps-ng ;;
-        pacman:file) printf '%s' file ;;
-        pacman:git) printf '%s' git ;;
-        pacman:pacstrap) printf '%s' arch-install-scripts ;;
-
-        dnf:dialog) printf '%s' dialog ;;
-        dnf:coreutils) printf '%s' coreutils ;;
-        dnf:findutils) printf '%s' findutils ;;
-        dnf:grep) printf '%s' grep ;;
-        dnf:sed) printf '%s' sed ;;
-        dnf:awk) printf '%s' gawk ;;
-        dnf:tar) printf '%s' tar ;;
-        dnf:gzip) printf '%s' gzip ;;
-        dnf:xz) printf '%s' xz ;;
-        dnf:util-linux) printf '%s' util-linux ;;
-        dnf:rsync) printf '%s' rsync ;;
-        dnf:curl) printf '%s' curl ;;
-        dnf:certs) printf '%s' ca-certificates ;;
-        dnf:openssl) printf '%s' openssl ;;
-        dnf:procps) printf '%s' procps-ng ;;
-        dnf:file) printf '%s' file ;;
-        dnf:git) printf '%s' git ;;
-        dnf:dnf) printf '%s' dnf ;;
-
-        xbps:dialog) printf '%s' dialog ;;
-        xbps:coreutils) printf '%s' coreutils ;;
-        xbps:findutils) printf '%s' findutils ;;
-        xbps:grep) printf '%s' grep ;;
-        xbps:sed) printf '%s' sed ;;
-        xbps:awk) printf '%s' gawk ;;
-        xbps:tar) printf '%s' tar ;;
-        xbps:gzip) printf '%s' gzip ;;
-        xbps:xz) printf '%s' xz ;;
-        xbps:util-linux) printf '%s' util-linux ;;
-        xbps:rsync) printf '%s' rsync ;;
-        xbps:curl) printf '%s' curl ;;
-        xbps:certs) printf '%s' ca-certificates ;;
-        xbps:openssl) printf '%s' openssl ;;
-        xbps:procps) printf '%s' procps-ng ;;
-        xbps:file) printf '%s' file ;;
-        xbps:git) printf '%s' git ;;
-
-        emerge:dialog) printf '%s' app-misc/dialog ;;
-        emerge:coreutils) printf '%s' sys-apps/coreutils ;;
-        emerge:findutils) printf '%s' sys-apps/findutils ;;
-        emerge:grep) printf '%s' sys-apps/grep ;;
-        emerge:sed) printf '%s' sys-apps/sed ;;
-        emerge:awk) printf '%s' sys-apps/gawk ;;
-        emerge:tar) printf '%s' app-arch/tar ;;
-        emerge:gzip) printf '%s' app-arch/gzip ;;
-        emerge:xz) printf '%s' app-arch/xz-utils ;;
-        emerge:util-linux) printf '%s' sys-apps/util-linux ;;
-        emerge:rsync) printf '%s' net-misc/rsync ;;
-        emerge:curl) printf '%s' net-misc/curl ;;
-        emerge:certs) printf '%s' app-misc/ca-certificates ;;
-        emerge:openssl) printf '%s' dev-libs/openssl ;;
-        emerge:procps) printf '%s' sys-process/procps ;;
-        emerge:file) printf '%s' sys-apps/file ;;
-        emerge:git) printf '%s' dev-vcs/git ;;
-        *) return 1 ;;
+install_dependencies() {
+    info "Installing dependencies..."
+    
+    local pm=$(detect_pm)
+    [ -z "$pm" ] && error "Could not detect package manager. Please install manually."
+    
+    case "$pm" in
+        apt)
+            info "Detected APT (Debian/Ubuntu/Devuan). Installing dependencies..."
+            apt-get update
+            apt-get install -y --no-install-recommends \
+                bash dialog findutils grep sed gawk coreutils util-linux \
+                openssh-client curl wget git ca-certificates openssl \
+                man-db tzdata debootstrap debian-archive-keyring ubuntu-keyring \
+                tar gzip xz-utils zstd bzip2 rsync gnupg file procps \
+                qemu-user-static binfmt-support python3 python3-pip
+            ;;
+        apk)
+            info "Detected APK (Alpine). Installing dependencies..."
+            apk add --no-progress \
+                bash dialog findutils grep sed gawk coreutils util-linux \
+                openssh curl wget git ca-certificates openssl man-db tzdata \
+                tar gzip xz zstd bzip2 rsync gnupg file procps \
+                qemu-user-static python3 py3-pip
+            warn "debootstrap is not normally packaged by Alpine; Debian-family builds use it only when available."
+            ;;
+        pacman)
+            info "Detected pacman (Arch). Installing dependencies..."
+            pacman -Sy --noconfirm --needed \
+                bash dialog findutils grep sed gawk coreutils util-linux \
+                openssh curl wget git ca-certificates openssl man-db tzdata \
+                tar gzip xz zstd bzip2 rsync gnupg file procps-ng \
+                qemu-user-static python python-pip
+            command -v debootstrap >/dev/null 2>&1 || warn "Install debootstrap from the AUR to build Debian-family rootfs images."
+            ;;
+        dnf)
+            info "Detected DNF (Fedora/RHEL). Installing dependencies..."
+            dnf install -y \
+                bash dialog findutils grep sed gawk coreutils util-linux \
+                openssh-clients curl wget git ca-certificates openssl man-db tzdata \
+                tar gzip xz zstd bzip2 rsync gnupg2 file procps-ng \
+                qemu-user-static python3 python3-pip
+            dnf install -y debootstrap 2>/dev/null || warn "debootstrap is unavailable in enabled repositories; Debian-family builds will be disabled until installed."
+            ;;
     esac
+    
+    success "Dependencies installed"
 }
 
-need_feature() {
-    _nf_feature=$1
-    shift
-    _nf_found=0
-    for _nf_cmd in "$@"; do
-        if have "$_nf_cmd"; then _nf_found=1; break; fi
+check_command() {
+    command -v "$1" >/dev/null 2>&1 && return 0 || return 1
+}
+
+verify_dependencies() {
+    info "Verifying dependencies..."
+    
+    local missing=""
+    for cmd in bash dialog sed awk grep cut tr tar gzip curl; do
+        if ! check_command "$cmd"; then
+            missing+="$cmd "
+        fi
     done
-    [ "$_nf_found" -eq 1 ] && return 0
-
-    append_word MISSING "$_nf_feature"
-    _nf_pkg=$(package_for "$_nf_feature" 2>/dev/null || true)
-    [ -n "$_nf_pkg" ] && append_word PACKAGES "$_nf_pkg"
+    
+    if [ -n "$missing" ]; then
+        error "Missing required commands: $missing"
+    fi
+    
+    success "All dependencies present"
 }
 
-scan_dependencies() {
-    MISSING=''
-    PACKAGES=''
-AVAILABLE_PACKAGES=''
-SKIPPED_PACKAGES=''
+install_project() {
+    info "Installing systui to $LIB_DIR..."
+    
+    mkdir -p "$LIB_DIR"
+    mkdir -p "$BIN_DIR"
+    
+    # Copy project files
+    cp -r "$PROJECT_DIR/src" "$LIB_DIR/"
+    cp -r "$PROJECT_DIR/share" "$LIB_DIR/"
+    [ -d "$PROJECT_DIR/docs" ] && cp -r "$PROJECT_DIR/docs" "$LIB_DIR/" || true
+    
+    success "Project files installed to $LIB_DIR"
+}
 
-    # Required by the menu engine and common RootFS operations.
-    need_feature dialog dialog whiptail
-    need_feature coreutils mktemp sort cut tr head tail wc id date readlink sha256sum
-    need_feature findutils find xargs
-    need_feature grep grep
-    need_feature sed sed
-    need_feature awk awk
-    need_feature tar tar
-    need_feature gzip gzip
-    need_feature xz xz
-    need_feature util-linux mount umount chroot
-    need_feature rsync rsync
-    need_feature curl curl wget
-    need_feature certs update-ca-certificates
-    need_feature openssl openssl
-    need_feature procps ps
-    need_feature file file
-    need_feature git git
+create_executable() {
+    info "Creating executable wrapper..."
+    
+    # Create main executable
+    cat > "$BIN_DIR/systui" << 'WRAPPER'
+#!/bin/bash
+# systui — Linux System TUI
+# Auto-generated by install.sh
 
-    if [ "$WITH_BUILDERS" -eq 1 ]; then
+LIBDIR="/usr/local/lib/systui"
+
+# Source core modules
+. "$LIBDIR/src/core/config.sh" || exit 1
+. "$LIBDIR/src/core/tui-widgets.sh" || exit 1
+. "$LIBDIR/src/core/common.sh" || exit 1
+
+# Source provisioning modules
+. "$LIBDIR/src/provision/alpine.sh" 2>/dev/null || true
+. "$LIBDIR/src/provision/arch.sh" 2>/dev/null || true
+. "$LIBDIR/src/provision/debian.sh" 2>/dev/null || true
+. "$LIBDIR/src/provision/devuan.sh" 2>/dev/null || true
+
+# Source feature modules (if they exist)
+for feature in "$LIBDIR/src/features"/*.sh; do
+    [ -f "$feature" ] && . "$feature"
+done
+
+# Initialize system detection
+detect_pm
+detect_init
+detect_distro
+
+# Require root for most operations
+require_root 2>/dev/null || warn "Some features may require root access"
+
+# Main menu
+main_menu() {
+    while true; do
+        local choice
+        choice=$(tui_menu "Main Menu" "systui — choose a section:" \
+            provision "Ultimate Provision (provision system)" \
+            rootfs    "Rootfs Builder (create minimal systems)" \
+            config    "System Configuration" \
+            health    "System Health (scans and repairs)" \
+            quit      "Quit") || return 0
+        
+        case "$choice" in
+            provision)
+                menu_ultimate_provision
+                ;;
+            rootfs)
+                menu_rootfs
+                ;;
+            config)
+                menu_sysconfig
+                ;;
+            health)
+                menu_health
+                ;;
+            quit)
+                return
+                ;;
+        esac
+    done
+}
+
+provision_defaults() {
+    : "${PROV_TZ:=America/New_York}"
+    : "${PROV_LOCALE:=C.UTF-8}"
+    : "${PROV_USER:=}"
+    : "${PROV_HOST:=}"
+    : "${PROV_NOPASS:=0}"
+    : "${PROV_SHELL:=bash}"
+    : "${PROV_EDITOR:=vim}"
+    : "${PROV_PKGS:=core dev terminal network}"
+    : "${PROV_SERVICES:=ssh cron timesync logging}"
+    : "${PROV_SSH_PORT:=22}"
+    : "${PROV_SSH_ROOT:=no}"
+    : "${PROV_SSH_PASSWORD:=yes}"
+    : "${PROV_FIREWALL:=0}"
+    : "${PROV_HARDEN:=0}"
+    : "${PROV_PERFORMANCE:=balanced}"
+    : "${PROV_SWAP:=0}"
+    : "${PROV_CLEAN:=1}"
+}
+
+provision_identity_menu() {
+    local v
+    v=$(tui_input "Timezone" "Timezone (for example UTC or America/New_York)" "$PROV_TZ") || return 0
+    [ -n "$v" ] && PROV_TZ="$v"
+    v=$(tui_input "Locale" "Locale (for example C.UTF-8 or en_US.UTF-8)" "$PROV_LOCALE") || return 0
+    [ -n "$v" ] && PROV_LOCALE="$v"
+    v=$(tui_input "Username" "Primary username (empty skips creation)" "$PROV_USER") || return 0
+    PROV_USER="$v"
+    v=$(tui_input "Hostname" "System hostname (empty keeps current)" "$PROV_HOST") || return 0
+    PROV_HOST="$v"
+    v=$(tui_radio "Sudo Policy" "Choose sudo authentication policy:" \
+        password "Require the user's password" on \
+        nopass "Allow passwordless sudo" off) || return 0
+    PROV_NOPASS=$([ "$v" = nopass ] && echo 1 || echo 0)
+}
+
+provision_shell_menu() {
+    local v
+    v=$(tui_radio "Default Shell" "Select the default interactive shell:" \
+        bash "Bash" $([ "$PROV_SHELL" = bash ] && echo on || echo off) \
+        zsh "Zsh" $([ "$PROV_SHELL" = zsh ] && echo on || echo off) \
+        fish "Fish" $([ "$PROV_SHELL" = fish ] && echo on || echo off)) || return 0
+    PROV_SHELL="$v"
+    v=$(tui_radio "Default Editor" "Select the system editor:" \
+        nano "Nano" $([ "$PROV_EDITOR" = nano ] && echo on || echo off) \
+        vim "Vim" $([ "$PROV_EDITOR" = vim ] && echo on || echo off) \
+        neovim "Neovim" $([ "$PROV_EDITOR" = neovim ] && echo on || echo off) \
+        micro "Micro" $([ "$PROV_EDITOR" = micro ] && echo on || echo off)) || return 0
+    PROV_EDITOR="$v"
+}
+
+provision_packages_menu() {
+    local v
+    v=$(tui_check "Package Profiles" "Select package groups to install:" \
+        core "Core administration utilities" on \
+        dev "Compilers, Git, Python and build tools" on \
+        terminal "TUI tools and terminal productivity" on \
+        network "Networking and diagnostics" on \
+        server "Web, database and file-sharing clients" off \
+        security "Security auditing utilities" off \
+        multimedia "FFmpeg, ImageMagick and media tools" off \
+        backup "Rsync, rclone, restic and archive tools" off \
+        containers "Podman/buildah tools where available" off) || return 0
+    PROV_PKGS=$(printf '%s' "$v" | tr -d '"')
+}
+
+provision_services_menu() {
+    local v
+    v=$(tui_check "Services" "Select services to configure and enable:" \
+        ssh "OpenSSH server" on \
+        cron "Scheduled jobs" on \
+        timesync "Chrony or distro time synchronization" on \
+        logging "System logging" on \
+        avahi "mDNS service discovery" off \
+        web "Web server when installed" off) || return 0
+    PROV_SERVICES=$(printf '%s' "$v" | tr -d '"')
+}
+
+provision_ssh_menu() {
+    local v
+    v=$(tui_input "SSH Port" "OpenSSH server port" "$PROV_SSH_PORT") || return 0
+    case "$v" in ''|*[!0-9]*) ;; *) [ "$v" -ge 1 ] && [ "$v" -le 65535 ] && PROV_SSH_PORT="$v" ;; esac
+    v=$(tui_radio "SSH Root Login" "Permit direct root login over SSH:" \
+        no "Disable root login" $([ "$PROV_SSH_ROOT" = no ] && echo on || echo off) \
+        prohibit-password "Keys only" $([ "$PROV_SSH_ROOT" = prohibit-password ] && echo on || echo off) \
+        yes "Allow root login" $([ "$PROV_SSH_ROOT" = yes ] && echo on || echo off)) || return 0
+    PROV_SSH_ROOT="$v"
+    v=$(tui_radio "SSH Password Login" "Permit password authentication:" \
+        yes "Allow passwords" $([ "$PROV_SSH_PASSWORD" = yes ] && echo on || echo off) \
+        no "Keys only" $([ "$PROV_SSH_PASSWORD" = no ] && echo on || echo off)) || return 0
+    PROV_SSH_PASSWORD="$v"
+}
+
+provision_security_menu() {
+    local v
+    v=$(tui_check "Security" "Select optional security configuration:" \
+        firewall "Install and enable a firewall when supported" $([ "$PROV_FIREWALL" = 1 ] && echo on || echo off) \
+        harden "Apply conservative SSH and filesystem hardening" $([ "$PROV_HARDEN" = 1 ] && echo on || echo off)) || return 0
+    v=$(printf '%s' "$v" | tr -d '"')
+    case " $v " in *" firewall "*) PROV_FIREWALL=1 ;; *) PROV_FIREWALL=0 ;; esac
+    case " $v " in *" harden "*) PROV_HARDEN=1 ;; *) PROV_HARDEN=0 ;; esac
+}
+
+provision_performance_menu() {
+    local v
+    v=$(tui_radio "Performance Profile" "Choose a conservative system profile:" \
+        compatibility "Maximum compatibility for constrained iSH-AOK rootfs" $([ "$PROV_PERFORMANCE" = compatibility ] && echo on || echo off) \
+        balanced "Balanced defaults" $([ "$PROV_PERFORMANCE" = balanced ] && echo on || echo off) \
+        performance "Higher limits and reduced shell latency" $([ "$PROV_PERFORMANCE" = performance ] && echo on || echo off)) || return 0
+    PROV_PERFORMANCE="$v"
+    v=$(tui_yesno "Swap" "Create a 512 MiB swap file when supported?") && PROV_SWAP=1 || PROV_SWAP=0
+    v=$(tui_yesno "Cleanup" "Remove package caches and unused dependencies after provisioning?") && PROV_CLEAN=1 || PROV_CLEAN=0
+}
+
+provision_configure_menu() {
+    while true; do
+        local c
+        c=$(tui_menu "Provision Configuration" "Configure each provisioning area:" \
+            identity "Identity, timezone, locale and sudo" \
+            shell "Default shell and editor" \
+            packages "Package profiles" \
+            services "Services and startup" \
+            ssh "OpenSSH server settings" \
+            security "Firewall and hardening" \
+            performance "Performance, swap and cleanup" \
+            reset "Reset all provision defaults" \
+            back "Back") || return 0
+        case "$c" in
+            identity) provision_identity_menu ;;
+            shell) provision_shell_menu ;;
+            packages) provision_packages_menu ;;
+            services) provision_services_menu ;;
+            ssh) provision_ssh_menu ;;
+            security) provision_security_menu ;;
+            performance) provision_performance_menu ;;
+            reset) unset PROV_TZ PROV_LOCALE PROV_USER PROV_HOST PROV_NOPASS PROV_SHELL PROV_EDITOR PROV_PKGS PROV_SERVICES PROV_SSH_PORT PROV_SSH_ROOT PROV_SSH_PASSWORD PROV_FIREWALL PROV_HARDEN PROV_PERFORMANCE PROV_SWAP PROV_CLEAN; provision_defaults ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+provision_install_extra_packages() {
+    local wanted="" group p
+    for group in $PROV_PKGS; do
+        case "$PM:$group" in
+            apt:core) wanted="$wanted acl attr bc dos2unix ethtool" ;;
+            apt:dev) wanted="$wanted clang cmake git-lfs shellcheck pkg-config" ;;
+            apt:terminal) wanted="$wanted zsh fish micro zoxide" ;;
+            apt:network) wanted="$wanted dnsutils whois iperf3 autossh" ;;
+            apt:server) wanted="$wanted nginx-light sqlite3 mariadb-client postgresql-client samba-client" ;;
+            apt:security) wanted="$wanted lynis clamav aide gnupg" ;;
+            apt:multimedia) wanted="$wanted ffmpeg imagemagick sox" ;;
+            apt:backup) wanted="$wanted rclone restic borgbackup" ;;
+            apt:containers) wanted="$wanted podman buildah skopeo" ;;
+            apk:core) wanted="$wanted acl attr bc dos2unix ethtool" ;;
+            apk:dev) wanted="$wanted clang git-lfs shellcheck pkgconf" ;;
+            apk:terminal) wanted="$wanted zsh fish micro zoxide" ;;
+            apk:network) wanted="$wanted whois iperf3 autossh" ;;
+            apk:server) wanted="$wanted nginx sqlite mariadb-client postgresql-client samba-client" ;;
+            apk:security) wanted="$wanted lynis clamav gnupg" ;;
+            apk:multimedia) wanted="$wanted ffmpeg imagemagick sox" ;;
+            apk:backup) wanted="$wanted rclone restic borgbackup" ;;
+            apk:containers) wanted="$wanted podman buildah skopeo" ;;
+            pacman:core) wanted="$wanted acl attr bc dos2unix ethtool" ;;
+            pacman:dev) wanted="$wanted clang cmake git-lfs shellcheck pkgconf" ;;
+            pacman:terminal) wanted="$wanted zsh fish micro zoxide" ;;
+            pacman:network) wanted="$wanted whois iperf3 autossh" ;;
+            pacman:server) wanted="$wanted nginx sqlite mariadb-clients postgresql-libs smbclient" ;;
+            pacman:security) wanted="$wanted lynis clamav gnupg" ;;
+            pacman:multimedia) wanted="$wanted ffmpeg imagemagick sox" ;;
+            pacman:backup) wanted="$wanted rclone restic borg" ;;
+            pacman:containers) wanted="$wanted podman buildah skopeo" ;;
+        esac
+    done
+    [ -z "$wanted" ] && return 0
+    case "$PM" in
+        apt) for p in $wanted; do apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 || true; done ;;
+        apk) for p in $wanted; do apk add --no-progress "$p" >/dev/null 2>&1 || true; done ;;
+        pacman) for p in $wanted; do pacman -S --noconfirm --needed "$p" >/dev/null 2>&1 || true; done ;;
+    esac
+}
+
+provision_apply_extras() {
+    log "Applying Ultimate Provision custom options"
+    provision_install_extra_packages
+
+    # Apply the selected locale after the distro base provisioner.
+    printf 'LANG=%s\nLC_ALL=%s\n' "$PROV_LOCALE" "$PROV_LOCALE" > /etc/environment
+    [ -d /etc/default ] && printf 'LANG=%s\n' "$PROV_LOCALE" > /etc/default/locale
+    command -v update-locale >/dev/null 2>&1 && update-locale LANG="$PROV_LOCALE" >/dev/null 2>&1 || true
+
+    local shell_path editor_cmd
+    shell_path=$(command -v "$PROV_SHELL" 2>/dev/null || echo /bin/bash)
+    case "$PROV_EDITOR" in neovim) editor_cmd=nvim ;; *) editor_cmd="$PROV_EDITOR" ;; esac
+    command -v "$editor_cmd" >/dev/null 2>&1 || editor_cmd=vi
+    printf 'export EDITOR=%s\nexport VISUAL=%s\n' "$editor_cmd" "$editor_cmd" > /etc/profile.d/20-systui-editor.sh
+    chmod 0644 /etc/profile.d/20-systui-editor.sh
+    for u in root $PROV_USER; do
+        [ -n "$u" ] && id "$u" >/dev/null 2>&1 && usermod -s "$shell_path" "$u" >/dev/null 2>&1 || true
+    done
+
+    if [ -f /etc/ssh/sshd_config ]; then
+        sed -i -E \
+            -e "s/^[#[:space:]]*Port .*/Port $PROV_SSH_PORT/" \
+            -e "s/^[#[:space:]]*PermitRootLogin .*/PermitRootLogin $PROV_SSH_ROOT/" \
+            -e "s/^[#[:space:]]*PasswordAuthentication .*/PasswordAuthentication $PROV_SSH_PASSWORD/" \
+            /etc/ssh/sshd_config
+        grep -q '^Port ' /etc/ssh/sshd_config || echo "Port $PROV_SSH_PORT" >> /etc/ssh/sshd_config
+        grep -q '^PermitRootLogin ' /etc/ssh/sshd_config || echo "PermitRootLogin $PROV_SSH_ROOT" >> /etc/ssh/sshd_config
+        grep -q '^PasswordAuthentication ' /etc/ssh/sshd_config || echo "PasswordAuthentication $PROV_SSH_PASSWORD" >> /etc/ssh/sshd_config
+        sshd -t >/dev/null 2>&1 || log "WARN: sshd configuration validation failed"
+    fi
+
+    if [ "$PROV_HARDEN" = 1 ]; then
+        umask 027
+        chmod 700 /root 2>/dev/null || true
+        [ -d /etc/ssh ] && chmod 700 /etc/ssh 2>/dev/null || true
+        cat > /etc/profile.d/25-systui-security.sh <<'EOF'
+umask 027
+export HISTCONTROL=ignoreboth:erasedups
+EOF
+    fi
+
+    # Honor the service selection. Base provisioners may enable defaults first.
+    local svc enabled
+    for svc in ssh cron timesync logging avahi web; do
+        enabled=0
+        case " $PROV_SERVICES " in *" $svc "*) enabled=1 ;; esac
+        case "$PM:$svc" in
+            apt:ssh) names="ssh" ;; apt:cron) names="cron" ;; apt:timesync) names="chrony" ;; apt:logging) names="rsyslog" ;; apt:avahi) names="avahi-daemon" ;; apt:web) names="nginx" ;;
+            apk:ssh) names="sshd" ;; apk:cron) names="crond" ;; apk:timesync) names="chronyd" ;; apk:logging) names="syslog-ng" ;; apk:avahi) names="avahi-daemon" ;; apk:web) names="nginx" ;;
+            pacman:ssh) names="sshd" ;; pacman:cron) names="cronie" ;; pacman:timesync) names="chronyd" ;; pacman:logging) names="systemd-journald" ;; pacman:avahi) names="avahi-daemon" ;; pacman:web) names="nginx" ;;
+            *) names="" ;;
+        esac
+        [ -n "$names" ] || continue
+        if [ "$enabled" = 1 ]; then
+            if command -v systemctl >/dev/null 2>&1; then systemctl enable "$names" >/dev/null 2>&1 || true; systemctl restart "$names" >/dev/null 2>&1 || true
+            elif command -v rc-update >/dev/null 2>&1; then rc-update add "$names" default >/dev/null 2>&1 || true; rc-service "$names" restart >/dev/null 2>&1 || true
+            elif command -v update-rc.d >/dev/null 2>&1; then update-rc.d "$names" enable >/dev/null 2>&1 || true; service "$names" restart >/dev/null 2>&1 || true
+            fi
+        else
+            if command -v systemctl >/dev/null 2>&1; then systemctl disable "$names" >/dev/null 2>&1 || true; systemctl stop "$names" >/dev/null 2>&1 || true
+            elif command -v rc-update >/dev/null 2>&1; then rc-update del "$names" default >/dev/null 2>&1 || true; rc-service "$names" stop >/dev/null 2>&1 || true
+            elif command -v update-rc.d >/dev/null 2>&1; then update-rc.d "$names" disable >/dev/null 2>&1 || true; service "$names" stop >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+
+    if [ "$PROV_FIREWALL" = 1 ]; then
         case "$PM" in
-            apt) need_feature debootstrap debootstrap ;;
-            apk) : ;; # apk itself is the native builder
-            pacman) need_feature pacstrap pacstrap ;;
-            dnf) need_feature dnf dnf ;;
-            xbps) : ;; # xbps-install itself is the native builder
+            apt) apt-get install -y ufw >/dev/null 2>&1 || true; command -v ufw >/dev/null && { ufw allow "$PROV_SSH_PORT/tcp" >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1 || true; } ;;
+            apk) apk add --no-progress iptables >/dev/null 2>&1 || true ;;
+            pacman) pacman -S --noconfirm --needed ufw >/dev/null 2>&1 || true; command -v ufw >/dev/null && { ufw allow "$PROV_SSH_PORT/tcp" >/dev/null 2>&1; ufw --force enable >/dev/null 2>&1 || true; } ;;
+        esac
+    fi
+
+    case "$PROV_PERFORMANCE" in
+        compatibility) printf 'ulimit -n 1024 2>/dev/null || true\n' > /etc/profile.d/40-systui-performance.sh ;;
+        balanced) printf 'ulimit -n 4096 2>/dev/null || true\n' > /etc/profile.d/40-systui-performance.sh ;;
+        performance) printf 'ulimit -n 8192 2>/dev/null || true\nexport HISTSIZE=10000 HISTFILESIZE=20000\n' > /etc/profile.d/40-systui-performance.sh ;;
+    esac
+
+    if [ "$PROV_SWAP" = 1 ] && [ ! -e /swapfile ] && command -v swapon >/dev/null 2>&1; then
+        (fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null) && \
+            chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile >/dev/null 2>&1 || true
+        grep -q '^/swapfile ' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+    if [ "$PROV_CLEAN" = 1 ]; then
+        case "$PM" in
+            apt) apt-get autoremove -y >/dev/null 2>&1 || true; apt-get clean >/dev/null 2>&1 || true ;;
+            apk) rm -rf /var/cache/apk/* 2>/dev/null || true ;;
+            pacman) pacman -Sc --noconfirm >/dev/null 2>&1 || true ;;
         esac
     fi
 }
 
-print_scan() {
-    say "System scan"
-    say "  Distribution: $OS_ID${OS_LIKE:+ ($OS_LIKE)}"
-    say "  Architecture: $(uname -m 2>/dev/null || printf unknown)"
-    say "  Package manager: $PM"
-    if [ -n "$MISSING" ]; then
-        say "  Missing features: $MISSING"
-        if [ -n "$PACKAGES" ]; then
-            say "  Packages to install: $PACKAGES"
+provision_write_review() {
+    {
+        echo "=== ULTIMATE PROVISION - $1 ==="
+        echo
+        echo "Identity"
+        echo "  Timezone: $PROV_TZ"
+        echo "  Locale: $PROV_LOCALE"
+        echo "  Username: ${PROV_USER:-(unchanged)}"
+        echo "  Hostname: ${PROV_HOST:-(unchanged)}"
+        echo "  Sudo: $([ "$PROV_NOPASS" = 1 ] && echo passwordless || echo password-required)"
+        echo
+        echo "Environment"
+        echo "  Shell: $PROV_SHELL"
+        echo "  Editor: $PROV_EDITOR"
+        echo "  Package profiles: ${PROV_PKGS:-none}"
+        echo "  Services: ${PROV_SERVICES:-none}"
+        echo
+        echo "OpenSSH"
+        echo "  Port: $PROV_SSH_PORT"
+        echo "  Root login: $PROV_SSH_ROOT"
+        echo "  Password login: $PROV_SSH_PASSWORD"
+        echo
+        echo "Security and performance"
+        echo "  Firewall: $([ "$PROV_FIREWALL" = 1 ] && echo enabled || echo disabled)"
+        echo "  Hardening: $([ "$PROV_HARDEN" = 1 ] && echo enabled || echo disabled)"
+        echo "  Profile: $PROV_PERFORMANCE"
+        echo "  Swap file: $([ "$PROV_SWAP" = 1 ] && echo 512-MiB || echo disabled)"
+        echo "  Cleanup: $([ "$PROV_CLEAN" = 1 ] && echo enabled || echo disabled)"
+    } > /tmp/systui.review
+}
+
+
+provision_template_dir() {
+    printf '%s\n' "${LIBDIR:-/usr/local/lib/systui}/src/provision"
+}
+
+provision_generated_dir() {
+    printf '%s\n' "${LIBDIR:-/usr/local/lib/systui}/share/generated-provision"
+}
+
+provision_supported_distros() {
+    cat <<'EOF'
+alpine|Alpine Linux|apk
+archlinux|Arch Linux|pacman
+debian|Debian|apt
+devuan|Devuan|apt
+ubuntu|Ubuntu|apt
+kali|Kali Linux|apt
+fedora|Fedora Linux|dnf
+void|Void Linux|xbps
+opensuse-leap|openSUSE Leap|zypper
+opensuse-tumbleweed|openSUSE Tumbleweed|zypper
+gentoo|Gentoo Linux|portage
+EOF
+}
+
+provision_find_template() {
+    local distro="$1" base
+    base=$(provision_template_dir)
+    for candidate in \
+        "$base/$distro-enhanced.sh" \
+        "$base/$distro.sh" \
+        "$(provision_generated_dir)/provision-$distro.sh"; do
+        [ -f "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    return 1
+}
+
+provision_templates_menu() {
+    local items=() id label pm path status choice
+    while IFS='|' read -r id label pm; do
+        if path=$(provision_find_template "$id" 2>/dev/null); then
+            status="available — $(basename "$path")"
         else
-            warn "No package mapping is available for this package manager."
+            status="not generated"
         fi
-    else
-        say "  Dependencies: satisfied"
-    fi
-}
+        items+=("$id" "$label ($status)")
+    done < <(provision_supported_distros)
+    items+=(back "Back")
 
-package_available() {
-    _pa_pkg=$1
-    case "$PM" in
-        apt) apt-cache show "$_pa_pkg" >/dev/null 2>&1 ;;
-        apk) apk search -e "$_pa_pkg" 2>/dev/null | grep -q . ;;
-        pacman) pacman -Si "$_pa_pkg" >/dev/null 2>&1 ;;
-        dnf)
-            if have repoquery; then repoquery "$_pa_pkg" >/dev/null 2>&1
-            else dnf -q list --available "$_pa_pkg" >/dev/null 2>&1 || dnf -q list --installed "$_pa_pkg" >/dev/null 2>&1
-            fi
-            ;;
-        xbps) xbps-query -Rs "^${_pa_pkg}-[0-9]" 2>/dev/null | grep -q . ;;
-        emerge) emerge --search "$_pa_pkg" 2>/dev/null | grep -q '^\*' ;;
-        *) return 1 ;;
-    esac
-}
-
-filter_available_packages() {
-    AVAILABLE_PACKAGES=''
-    SKIPPED_PACKAGES=''
-    for _fa_pkg in $PACKAGES; do
-        if package_available "$_fa_pkg"; then
-            append_word AVAILABLE_PACKAGES "$_fa_pkg"
+    while true; do
+        choice=$(tui_menu "Provision Templates" "Built-in and generated distribution templates" "${items[@]}") || return 0
+        [ "$choice" = back ] && return 0
+        if path=$(provision_find_template "$choice" 2>/dev/null); then
+            tui_text "Provision Template — $choice" "$path" || true
         else
-            append_word SKIPPED_PACKAGES "$_fa_pkg"
-            warn "Package not found in enabled repositories; skipping: $_fa_pkg"
+            tui_msg "Template Missing" "No provision template exists for $choice yet. Use Generate Provision Scripts from the Ultimate Provision menu."
         fi
     done
 }
+
+provision_script_body() {
+    local distro="$1" label="$2" pm="$3"
+    cat <<EOF
+#!/bin/sh
+# systui standalone provision script
+# Distribution: $label
+# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+set -eu
+
+TIMEZONE=\${TIMEZONE:-America/New_York}
+LOCALE=\${LOCALE:-C.UTF-8}
+HOSTNAME_VALUE=\${HOSTNAME_VALUE:-systui-$distro}
+USERNAME=\${USERNAME:-}
+INSTALL_PROFILE=\${INSTALL_PROFILE:-standard}
+
+log() { printf '[%s] %s\\n' "$label" "\$*"; }
+need_root() { [ "\$(id -u)" -eq 0 ] || { echo 'Run this script as root.' >&2; exit 1; }; }
 
 install_packages() {
-    [ -z "$PACKAGES" ] && return 0
-    [ "$PM" != unknown ] || { warn "No supported package manager was found; continuing without dependency installation."; return 0; }
-
-    say "Checking enabled repositories for dependency packages..."
-    case "$PM" in
-        apt) as_root env DEBIAN_FRONTEND=noninteractive apt-get update || warn "Package index update failed; using currently available metadata." ;;
-        apk) as_root apk update || warn "Package index update failed; using currently available metadata." ;;
-        pacman) as_root pacman -Sy --noconfirm || warn "Package index update failed; using currently available metadata." ;;
-        dnf) as_root dnf -q makecache || warn "Package index update failed; using currently available metadata." ;;
-        xbps) as_root xbps-install -S || warn "Package index update failed; using currently available metadata." ;;
-        emerge) as_root emerge --sync || warn "Repository sync failed; using currently available metadata." ;;
-    esac
-
-    filter_available_packages
-    [ -n "$AVAILABLE_PACKAGES" ] || {
-        warn "None of the mapped dependency packages are available; continuing with the tool installation."
-        return 0
-    }
-
-    say "Installing available dependencies: $AVAILABLE_PACKAGES"
-    [ -z "$SKIPPED_PACKAGES" ] || say "Skipped unavailable packages: $SKIPPED_PACKAGES"
-    case "$PM" in
+    case "$pm" in
         apt)
-            if [ "$ASSUME_YES" -eq 1 ]; then
-                # shellcheck disable=SC2086
-                as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            else
-                # shellcheck disable=SC2086
-                as_root apt-get install $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            fi
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            case "\$INSTALL_PROFILE" in
+                minimal) pkgs='ca-certificates curl' ;;
+                developer) pkgs='ca-certificates curl wget git build-essential python3 python3-pip' ;;
+                server) pkgs='ca-certificates curl openssh-server sudo cron rsyslog' ;;
+                *) pkgs='ca-certificates curl wget git sudo openssh-server nano vim' ;;
+            esac
+            apt-get install -y \$pkgs
             ;;
         apk)
-            # shellcheck disable=SC2086
-            as_root apk add $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
+            apk update
+            case "\$INSTALL_PROFILE" in
+                minimal) pkgs='ca-certificates curl' ;;
+                developer) pkgs='ca-certificates curl wget git build-base python3 py3-pip' ;;
+                server) pkgs='ca-certificates curl openssh sudo dcron' ;;
+                *) pkgs='ca-certificates curl wget git sudo openssh nano vim' ;;
+            esac
+            apk add \$pkgs
             ;;
         pacman)
-            if [ "$ASSUME_YES" -eq 1 ]; then
-                # shellcheck disable=SC2086
-                as_root pacman -S --needed --noconfirm $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            else
-                # shellcheck disable=SC2086
-                as_root pacman -S --needed $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            fi
+            pacman -Syu --noconfirm
+            pacman -S --needed --noconfirm ca-certificates curl wget git sudo openssh nano vim
             ;;
         dnf)
-            if [ "$ASSUME_YES" -eq 1 ]; then
-                # shellcheck disable=SC2086
-                as_root dnf install -y $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            else
-                # shellcheck disable=SC2086
-                as_root dnf install $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            fi
+            dnf -y upgrade --refresh
+            dnf -y install ca-certificates curl wget git sudo openssh-server nano vim
             ;;
         xbps)
-            if [ "$ASSUME_YES" -eq 1 ]; then
-                # shellcheck disable=SC2086
-                as_root xbps-install -y $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            else
-                # shellcheck disable=SC2086
-                as_root xbps-install $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
-            fi
+            xbps-install -Suy
+            xbps-install -y ca-certificates curl wget git sudo openssh nano vim
             ;;
-        emerge)
-            # shellcheck disable=SC2086
-            as_root emerge --ask=n $AVAILABLE_PACKAGES || warn "One or more dependency packages failed to install; continuing."
+        zypper)
+            zypper --non-interactive refresh
+            zypper --non-interactive update
+            zypper --non-interactive install ca-certificates curl wget git sudo openssh nano vim
+            ;;
+        portage)
+            emerge --sync
+            emerge app-misc/ca-certificates net-misc/curl net-misc/wget dev-vcs/git app-admin/sudo net-misc/openssh app-editors/nano app-editors/vim
             ;;
     esac
 }
 
-install_files() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ mkdir -p $DEST $BINDIR"
-        say "+ copy project files to $DEST"
-        say "+ create launcher $BINDIR/ish-aok-config"
-        return 0
+configure_base() {
+    printf '%s\\n' "\$HOSTNAME_VALUE" > /etc/hostname
+    if [ -e "/usr/share/zoneinfo/\$TIMEZONE" ]; then
+        ln -snf "/usr/share/zoneinfo/\$TIMEZONE" /etc/localtime
     fi
-
-    if ! mkdir -p "$DEST" "$BINDIR" 2>/dev/null; then
-        if [ "$(id -u 2>/dev/null || printf 1)" -ne 0 ]; then
-            if have doas; then exec doas env PREFIX="$PREFIX" DESTDIR="${DESTDIR:-}" ISH_AOK_SKIP_DEPENDENCIES=1 sh "$0" --skip-deps
-            elif have sudo; then exec sudo env PREFIX="$PREFIX" DESTDIR="${DESTDIR:-}" ISH_AOK_SKIP_DEPENDENCIES=1 sh "$0" --skip-deps
-            fi
+    if [ -n "\$USERNAME" ] && ! id "\$USERNAME" >/dev/null 2>&1; then
+        if command -v adduser >/dev/null 2>&1; then
+            adduser --disabled-password --gecos '' "\$USERNAME" 2>/dev/null || adduser -D "\$USERNAME"
+        elif command -v useradd >/dev/null 2>&1; then
+            useradd -m -s /bin/sh "\$USERNAME"
         fi
-        warn "Unable to create $DEST or $BINDIR"
-        return 1
     fi
-
-    # Avoid recursively copying a previous destination when installing in-tree.
-    for _if_item in "$SELF"/*; do
-        [ "$_if_item" = "$DEST" ] && continue
-        cp -R "$_if_item" "$DEST"/
-    done
-
-    cat >"$BINDIR/ish-aok-config" <<LAUNCH
-#!/bin/sh
-exec "$PREFIX/lib/ish-aok-config/ish-aok-config" "\$@"
-LAUNCH
-    chmod 755 "$BINDIR/ish-aok-config" "$DEST/ish-aok-config"
-    say "Installed: $BINDIR/ish-aok-config"
+    mkdir -p /run/sshd 2>/dev/null || true
+    ssh-keygen -A 2>/dev/null || true
 }
 
-while [ "$#" -gt 0 ]; do
-    case $1 in
-        --check) CHECK_ONLY=1 ;;
-        --dry-run) DRY_RUN=1 ;;
-        --skip-deps) SKIP_DEPS=1 ;;
-        --with-builders) WITH_BUILDERS=1 ;;
-        --interactive) ASSUME_YES=0 ;;
-        --prefix)
-            shift
-            [ "$#" -gt 0 ] || { warn "--prefix requires a path"; exit 2; }
-            PREFIX=$1
-            DEST=${DESTDIR:-}$PREFIX/lib/ish-aok-config
-            BINDIR=${DESTDIR:-}$PREFIX/bin
-            ;;
-        -h|--help) usage; exit 0 ;;
-        *) warn "Unknown option: $1"; usage >&2; exit 2 ;;
+need_root
+log 'Installing packages'
+install_packages
+log 'Applying base configuration'
+configure_base
+log 'Provisioning complete'
+EOF
+}
+
+provision_generate_one() {
+    local distro="$1" label="$2" pm="$3" outdir outfile
+    outdir=$(provision_generated_dir)
+    outfile="$outdir/provision-$distro.sh"
+    mkdir -p "$outdir" || return 1
+    if [ -e "$outfile" ]; then
+        tui_yesno "Existing Script" "A generated script already exists for $label. Overwrite it?" || return 0
+    fi
+    provision_script_body "$distro" "$label" "$pm" > "$outfile" || return 1
+    chmod +x "$outfile"
+    log "Generated provision script: $outfile"
+}
+
+provision_generate_menu() {
+    local opts=() id label pm selected entry generated=0
+    while IFS='|' read -r id label pm; do
+        if provision_find_template "$id" >/dev/null 2>&1; then
+            opts+=("$id" "$label — template exists" off)
+        else
+            opts+=("$id" "$label — missing" off)
+        fi
+    done < <(provision_supported_distros)
+
+    selected=$(tui_checklist "Generate Provision Scripts" \
+        "Select distributions. SPACE toggles; generated scripts are stored under $(provision_generated_dir)." \
+        "${opts[@]}") || return 0
+    [ -n "$selected" ] || return 0
+
+    for id in $selected; do
+        id=${id//\"/}
+        entry=$(provision_supported_distros | awk -F'|' -v d="$id" '$1==d {print; exit}')
+        [ -n "$entry" ] || continue
+        IFS='|' read -r id label pm <<< "$entry"
+        provision_generate_one "$id" "$label" "$pm" && generated=$((generated + 1))
+    done
+    tui_msg "Provision Scripts" "Generation completed for $generated selected distribution(s).\n\nDirectory: $(provision_generated_dir)"
+}
+
+menu_ultimate_provision() {
+    local distro choice rc
+    provision_defaults
+    case "$PM" in
+        apt)
+            if grep -q 'ID=devuan' /etc/os-release 2>/dev/null; then distro=devuan
+            else distro=debian; fi ;;
+        apk) distro=alpine ;;
+        pacman) distro=archlinux ;;
+        *) distro= ;;
     esac
-    shift
-done
+    [ -n "$distro" ] || { tui_msg "Unsupported" "Your package manager ($PM) is not yet supported."; return 0; }
 
-detect_system
-if [ "$SKIP_DEPS" -ne 1 ] && [ -z "${DESTDIR:-}" ]; then
-    scan_dependencies
-    print_scan
-    if [ "$CHECK_ONLY" -eq 1 ]; then
-        [ -z "$MISSING" ]
-        exit $?
-    fi
-    install_packages
-    if [ "$DRY_RUN" -ne 1 ]; then
-        scan_dependencies
-        [ -z "$MISSING" ] || warn "Some optional or unavailable features remain missing: $MISSING"
-    fi
-elif [ "$CHECK_ONLY" -eq 1 ]; then
-    say "Dependency scan skipped."
-    exit 0
-fi
+    while true; do
+        choice=$(tui_menu "Ultimate Provision" "Comprehensive system setup (distro: $distro)" \
+            review "Review current provisioning plan" \
+            configure "Configure all provisioning options" \
+            templates "List distribution provision templates" \
+            generate "Generate missing distribution provision scripts" \
+            run "Run provisioning" \
+            info "About Ultimate Provision" \
+            back "Back") || return 0
+        case "$choice" in
+            review) provision_write_review "$distro"; tui_text "Provision Review" /tmp/systui.review ;;
+            configure) provision_configure_menu ;;
+            templates) provision_templates_menu ;;
+            generate) provision_generate_menu ;;
+            run)
+                provision_write_review "$distro"
+                tui_text "Final Provision Plan" /tmp/systui.review || true
+                tui_yesno "Confirm" "Apply this provisioning plan to $distro?" || continue
+                clear
+                echo "========== Starting Provision: $distro =========="
+                rc=0
+                case "$distro" in
+                    alpine) provision_alpine "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
+                    debian) provision_debian "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
+                    devuan) provision_devuan "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
+                    archlinux) provision_arch "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
+                esac
+                [ "$rc" -eq 0 ] && provision_apply_extras || log "WARN: Base provisioning returned $rc; custom options skipped"
+                read -rp "Provisioning finished. Press Enter to return..." _ || true
+                ;;
+            info)
+                cat > /tmp/systui.info <<'EOF'
+ULTIMATE PROVISION
 
-install_files
+Transforms a fresh Alpine, Arch, Debian, or Devuan rootfs into a configured
+system. Configuration is grouped into identity/localization, shell/editor,
+package profiles, services, SSH, security, and performance.
+
+The compatibility performance profile is recommended inside iSH-AOK. Options
+that require unavailable kernel features are attempted safely and skipped when
+unsupported.
+EOF
+                tui_text "About Ultimate Provision" /tmp/systui.info ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+# Run main menu
+main_menu
+WRAPPER
+    
+    chmod +x "$BIN_DIR/systui"
+    success "Executable created at $BIN_DIR/systui"
+}
+
+create_manpage() {
+    info "Creating man page..."
+    
+    mkdir -p "$INSTALL_PREFIX/share/man/man1"
+    
+    cat > "$INSTALL_PREFIX/share/man/man1/systui.1" << 'MANPAGE'
+.TH SYSTUI 1 "2026-07-29" "systui 1.0.0" "User Commands"
+.SH NAME
+systui \- Linux System Administration Terminal UI
+.SH SYNOPSIS
+.B systui
+.SH DESCRIPTION
+systui is a terminal-based user interface for Linux system configuration,
+provisioning, and management.
+.SH FEATURES
+.IP "•" 2
+Ultimate Provision: Comprehensive system setup for Alpine, Arch, Debian, Devuan
+.IP "•" 2
+System Configuration: Shells, repositories, packages
+.IP "•" 2
+Dialog-based TUI: Easy navigation and configuration
+.SH REQUIREMENTS
+.IP "•" 2
+Root access (for most operations)
+.IP "•" 2
+dialog command
+.IP "•" 2
+Standard Unix tools
+.SH USAGE
+.B sudo systui
+.PP
+Navigate using arrow keys and Enter. Press Tab to switch focus.
+.SH SEE ALSO
+dialog(1), bash(1)
+.SH AUTHOR
+systui Development Team
+MANPAGE
+    
+    success "Man page created at $INSTALL_PREFIX/share/man/man1/systui.1"
+}
+
+cleanup() {
+    info "Final checks..."
+    
+    # Verify installation
+    if [ ! -x "$BIN_DIR/systui" ]; then
+        error "Failed to create systui executable"
+    fi
+    
+    if ! command -v systui >/dev/null 2>&1; then
+        warn "systui not in PATH. Add $BIN_DIR to your PATH:"
+        warn "  export PATH=\"$BIN_DIR:\$PATH\""
+    fi
+    
+    success "Installation complete!"
+}
+
+###############################################################################
+# Main Installation Flow
+###############################################################################
+
+main() {
+    echo ""
+    echo "========== systui Installation =========="
+    echo "Version: 1.0.0"
+    echo "Install prefix: $INSTALL_PREFIX"
+    echo "Library directory: $LIB_DIR"
+    echo ""
+    
+    require_root
+    
+    info "Step 1: Installing system dependencies..."
+    install_dependencies
+    
+    info "Step 2: Verifying dependencies..."
+    verify_dependencies
+    
+    info "Step 3: Installing project files..."
+    install_project
+    
+    info "Step 4: Creating executable..."
+    create_executable
+    
+    info "Step 5: Creating documentation..."
+    create_manpage
+    
+    cleanup
+    
+    echo ""
+    echo "========== Installation Complete =========="
+    echo ""
+    echo "To use systui, run:"
+    echo "  sudo $BIN_DIR/systui"
+    echo ""
+    echo "For help, see:"
+    echo "  man systui"
+    echo ""
+}
+
+main "$@"

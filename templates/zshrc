@@ -1,7 +1,0 @@
-autoload -Uz compinit && compinit
-setopt APPEND_HISTORY SHARE_HISTORY HIST_IGNORE_ALL_DUPS AUTO_CD
-HISTFILE=$HOME/.zsh_history
-HISTSIZE=2000
-SAVEHIST=5000
-[ -f "$HOME/.aliases" ] && source "$HOME/.aliases"
-PROMPT='%n@%m:%~%# '

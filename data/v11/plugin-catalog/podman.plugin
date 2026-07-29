@@ -1,7 +1,0 @@
-id: podman
-name: Podman
-version: 1.0.0
-category: Containers
-min_core_version: 11.2.0
-dependencies:
-description: Rootless container tooling for compatible RootFS targets.

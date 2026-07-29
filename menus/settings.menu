@@ -1,8 +1,0 @@
-# id|label|handler|description
-mode|Simple or Advanced Mode|v103_mode_menu|Control how many options are shown
-preferences|Application Defaults|project_settings_menu|Logging, progress and behavior
-setup|Initial Setup|quick_system_setup_menu|Configure essential defaults
-ui|Terminal Interface|ui_mode_menu|Choose dialog, whiptail or text interface
-advanced|Advanced Settings|@menu:settings_advanced|Routes and developer options
-help|Help|v103_settings_help|Navigation and safety information
-back|Back|@return|

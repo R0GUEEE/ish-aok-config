@@ -1,8 +1,0 @@
-set linenumbers
-set mouse
-set softwrap
-set tabsize 4
-set tabstospaces
-set constantshow
-set minibar
-include "/usr/share/nano/*.nanorc"

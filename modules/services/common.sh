@@ -1,6 +1,0 @@
-#!/bin/sh
-service_start(){ s=$1; case $INIT_SYSTEM in openrc) as_root rc-service "$s" start;; systemd) as_root systemctl start "$s";; runit) as_root sv up "$s";; sysv) as_root service "$s" start;; *) return 1;; esac; }
-service_stop(){ s=$1; case $INIT_SYSTEM in openrc) as_root rc-service "$s" stop;; systemd) as_root systemctl stop "$s";; runit) as_root sv down "$s";; sysv) as_root service "$s" stop;; *) return 1;; esac; }
-service_restart(){ s=$1; case $INIT_SYSTEM in openrc) as_root rc-service "$s" restart;; systemd) as_root systemctl restart "$s";; runit) as_root sv restart "$s";; sysv) as_root service "$s" restart;; *) return 1;; esac; }
-service_enable(){ s=$1; case $INIT_SYSTEM in openrc) as_root rc-update add "$s" default;; systemd) as_root systemctl enable "$s";; runit) as_root ln -s "/etc/sv/$s" "/var/service/$s";; sysv) have update-rc.d && as_root update-rc.d "$s" defaults || have rc-update && as_root rc-update add "$s" default;; *) return 1;; esac; }
-service_disable(){ s=$1; case $INIT_SYSTEM in openrc) as_root rc-update del "$s" default;; systemd) as_root systemctl disable "$s";; runit) as_root rm -f "/var/service/$s";; sysv) have update-rc.d && as_root update-rc.d -f "$s" remove;; *) return 1;; esac; }

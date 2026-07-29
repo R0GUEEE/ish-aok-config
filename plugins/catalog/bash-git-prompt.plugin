@@ -1,8 +1,0 @@
-name=bash-git-prompt
-tool=bash
-kind=plugin
-manager=any
-url=https://github.com/magicmonty/bash-git-prompt.git
-dest=$CURRENT_HOME/.local/share/bash/bash-git-prompt
-adapter=bash_source
-init=GIT_PROMPT_ONLY_IN_REPO=1\n[ -f "$HOME/.local/share/bash/bash-git-prompt/gitprompt.sh" ] && source "$HOME/.local/share/bash/bash-git-prompt/gitprompt.sh"

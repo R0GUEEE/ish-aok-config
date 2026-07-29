@@ -1,9 +1,0 @@
-add_newline = true
-command_timeout = 1000
-format = "$username$hostname$directory$git_branch$git_status$line_break$character"
-[username]
-show_always = true
-[hostname]
-ssh_only = false
-[directory]
-truncation_length = 4

@@ -1,8 +1,0 @@
-name=z (directory jumping)
-tool=bash
-kind=plugin
-manager=any
-url=https://github.com/rupa/z.git
-dest=$CURRENT_HOME/.local/share/bash/z
-adapter=bash_source
-init=[ -f "$HOME/.local/share/bash/z/z.sh" ] && source "$HOME/.local/share/bash/z/z.sh"
