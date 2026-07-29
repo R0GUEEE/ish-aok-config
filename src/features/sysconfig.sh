@@ -6688,6 +6688,7 @@ menu_file_managers() {
 # application remains available without embedding a stale, hand-maintained copy.
 AWESOME_LINUX_REPO_URL="https://github.com/luong-komorebi/Awesome-Linux-Software"
 AWESOME_LINUX_RAW_URL="https://raw.githubusercontent.com/luong-komorebi/Awesome-Linux-Software/master/README.md"
+AWESOME_LINUX_CATALOG_VERSION=2
 
 awesome_linux_cache_dir() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -6730,38 +6731,94 @@ awesome_linux_parse() { # <README> <catalog TSV>
         y=tolower(x); gsub(/[^a-z0-9]+/, "-", y); gsub(/^-|-$/, "", y)
         if (y == "") y="item"; return y
     }
-    BEGIN { h2=""; h3=""; h4=""; n=0; skip=0; started=0 }
+    function category_for(section, topic, detail, detail2, detail3, top, path) {
+        # Rebuild the sprawling upstream headings into stable user-facing
+        # groups while retaining every useful subcategory beneath them.
+        if (section == "Applications") {
+            top=topic
+            if (topic == "Audio") top="Audio & Music"
+            else if (topic == "Chat Clients") top="Communication"
+            else if (topic == "Data Backup and Recovery") top="Backup & Recovery"
+            else if (topic == "E-Book Utilities") top="E-Books & Reading"
+            else if (topic == "Electronic") top="Electronics"
+            else if (topic == "File Manager") top="File Management"
+            else if (topic == "Games") top="Gaming & Emulation"
+            else if (topic == "Graphics") top="Graphics, Design & Video"
+            else if (topic == "Internet") top="Internet & Web"
+            else if (topic == "Office") top="Office & Writing"
+            else if (topic == "Proxy" || topic == "VPN") top="Network Privacy"
+            else if (topic == "Sharing Files") top="Sharing & Remote Access"
+            else if (topic == "Terminal") top="Terminal & CLI"
+            else if (topic == "Text Editors") top="Editors & IDEs"
+            else if (topic == "Utilities") top="System Utilities"
+            else if (topic == "Video") top="Graphics, Design & Video"
+            else if (topic == "Wiki Software") top="Knowledge & Wikis"
+            else if (topic == "Others") top="Other Applications"
+            if (top == "") top="Other Applications"
+            path=top
+            if (detail != "") path=path " / " detail
+            if (detail2 != "") path=path " / " detail2
+            if (detail3 != "") path=path " / " detail3
+            return path
+        }
+        if (section == "Command Line Utilities") {
+            path="Terminal & CLI"; if (topic != "") path=path " / " topic
+            if (detail != "") path=path " / " detail
+            if (detail2 != "") path=path " / " detail2
+            if (detail3 != "") path=path " / " detail3
+            return path
+        }
+        if (section == "Custom Linux Kernels") return "System / Custom Linux Kernels"
+        if (section == "Desktop Environments") return "Desktop / Desktop Environments"
+        if (section == "Display manager") {
+            path="Desktop / Display Managers"; if (topic != "") path=path " / " topic
+            return path
+        }
+        if (section == "Window Managers") {
+            path="Desktop / Window Managers"; if (topic != "") path=path " / " topic
+            return path
+        }
+        return ""
+    }
+    BEGIN { h2=""; h3=""; h4=""; h5=""; h6=""; n=0; software=0 }
     /^## /  {
-        h2=stripmd(substr($0,4)); h3=""; h4=""
-        low=tolower(h2)
-        if (low == "applications") started=1
-        skip=(low == "unsure how to contribute?" || low == "contributors" || low == "guidelines to contribute" || low == "license" || low ~ /^linux news/ || low == "reddit")
+        h2=stripmd(substr($0,4)); h3=""; h4=""; h5=""; h6=""
+        software=(h2 == "Applications" || h2 == "Command Line Utilities" ||
+                  h2 == "Custom Linux Kernels" || h2 == "Desktop Environments" ||
+                  h2 == "Display manager" || h2 == "Window Managers")
         next
     }
-    /^### / { h3=stripmd(substr($0,5)); h4=""; next }
-    /^#### /{ h4=stripmd(substr($0,6)); next }
+    /^### / { h3=stripmd(substr($0,5)); h4=""; h5=""; h6=""; next }
+    /^#### /{ h4=stripmd(substr($0,6)); h5=""; h6=""; next }
+    /^##### /{ h5=stripmd(substr($0,7)); h6=""; next }
+    /^###### /{ h6=stripmd(substr($0,8)); next }
     /^- / {
-        if (!started || skip) next
+        if (!software) next
         line=substr($0,3)
         if (line !~ /\[[^]]+\]\(https?:\/\//) next
         desc=""; splitpos=index(line," - ")
         if (splitpos>0) { desc=substr(line,splitpos+3); left=substr(line,1,splitpos-1) } else left=line
-        # Select the last normal markdown link; badges/source links precede it.
+        # Select the last normal markdown link as the homepage. Preserve a
+        # linked source badge separately so GitHub installation remains usable.
         rest=left; name=""; url=""; source=""
+        # Source badges use nested Markdown: [![label][icon]](source-url).
+        if (match(left,/\]\]\(https?:\/\/[^)]+\)/)) {
+            token=substr(left,RSTART,RLENGTH)
+            source=substr(token,4,length(token)-4)
+        }
         while (match(rest,/\[[^]]+\]\(https?:\/\/[^)]+\)/)) {
             token=substr(rest,RSTART,RLENGTH)
             closepos=index(token,"](")
             tname=substr(token,2,closepos-2)
             turl=substr(token,closepos+2,length(token)-closepos-2)
-            if (tname !~ /^!/ && tname !~ /Open.Source|Non.Free|Freeware|oss icon|money icon|freeware icon/) {
-                if (name=="") { name=tname; url=turl } else { source=url; name=tname; url=turl }
-            }
+            if (tname ~ /^!/ || tname ~ /Open.Source|Non.Free|Freeware|oss icon|money icon|freeware icon/) {
+                if (source=="") source=turl
+            } else { name=tname; url=turl }
             rest=substr(rest,RSTART+RLENGTH)
         }
         name=stripmd(name); desc=stripmd(desc)
         if (name=="" || url=="") next
-        cat=h2; if (h3!="") cat=cat " / " h3; if (h4!="") cat=cat " / " h4
-        cat=clean(cat); if (cat=="") cat="Other"
+        cat=clean(category_for(h2,h3,h4,h5,h6)); if (cat=="") next
         n++; id=sprintf("a%05d-%s",n,slug(name))
         gsub(/\t/," ",desc); gsub(/\t/," ",cat)
         print id "\t" cat "\t" name "\t" url "\t" source "\t" desc
@@ -6870,6 +6927,18 @@ EOF
     done < "$catalog"
 }
 
+awesome_linux_catalog_valid() { # <catalog.tsv>
+    local catalog="$1"
+    [ -s "$catalog" ] || return 1
+    # Contribution/help/news links are documentation, never installable
+    # projects. Reject any legacy cache that still contains such categories.
+    awk -F '\t' '
+        NF < 4 { bad=1 }
+        tolower($2) ~ /(unsure how to contribute|guidelines to contribute|contributors|linux news|reddit|license)/ { bad=1 }
+        END { exit bad ? 1 : 0 }
+    ' "$catalog"
+}
+
 awesome_linux_sync() {
     local dir readme catalog count
     dir=$(awesome_linux_cache_dir); readme="$dir/README.md"; catalog="$dir/catalog.tsv"
@@ -6883,19 +6952,34 @@ awesome_linux_sync() {
         tui_msg "Parse failed" "The downloaded README did not produce a usable catalogue."
         return 1
     fi
+    awesome_linux_catalog_valid "$catalog" || {
+        rm -f "$catalog"
+        tui_msg "Parse failed" "The generated catalogue contained invalid non-software sections."
+        return 1
+    }
     count=$(wc -l < "$catalog" | tr -d ' ')
     awesome_linux_generate_catalog_installers "$catalog" || {
         tui_msg "Installer generation warning" "The catalogue was updated, but one or more standalone installer scripts could not be generated."
     }
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$dir/last-sync"
+    printf '%s\n' "$AWESOME_LINUX_CATALOG_VERSION" > "$dir/catalog-version"
     tui_msg "Awesome Linux synchronized" "$count projects imported from the upstream repository."
 }
 
 awesome_linux_catalog() {
-    local dir catalog
-    dir=$(awesome_linux_cache_dir); catalog="$dir/catalog.tsv"
-    if [ ! -s "$catalog" ]; then
-        awesome_linux_sync || return 1
+    local dir catalog readme cached_version
+    dir=$(awesome_linux_cache_dir); catalog="$dir/catalog.tsv"; readme="$dir/README.md"
+    cached_version=$(cat "$dir/catalog-version" 2>/dev/null || true)
+
+    # Reparse an existing README whenever the taxonomy changes. This removes
+    # stale categories immediately without requiring a network refresh.
+    if [ "$cached_version" != "$AWESOME_LINUX_CATALOG_VERSION" ] || ! awesome_linux_catalog_valid "$catalog"; then
+        if [ -s "$readme" ] && awesome_linux_parse "$readme" "$catalog" && awesome_linux_catalog_valid "$catalog"; then
+            awesome_linux_generate_catalog_installers "$catalog" || true
+            printf '%s\n' "$AWESOME_LINUX_CATALOG_VERSION" > "$dir/catalog-version"
+        else
+            awesome_linux_sync || return 1
+        fi
     fi
     printf '%s\n' "$catalog"
 }

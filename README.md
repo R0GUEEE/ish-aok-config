@@ -173,16 +173,17 @@ Each function:
 
 ### What `install.sh` Does
 
-1. **Detects package manager** (apt, apk, pacman, dnf)
-2. **Installs dependencies:**
+1. **Detects package manager** (APT, APK, pacman, DNF, Zypper, XBPS, or Portage)
+2. **Installs only missing dependencies:**
    - bash
    - dialog
    - Standard utilities (grep, sed, awk, etc.)
    - Network tools (openssh, curl, wget)
    - Essential files (ca-certificates, tzdata)
+   - Available rootfs, storage, diagnostics, archive, and source-build helpers
 
-3. **Installs project files** to `/usr/local/lib/systui/`
-4. **Creates executable** at `/usr/local/bin/systui`
+3. **Replaces managed project files** in `/usr/local/lib/systui/` with the latest copy
+4. **Creates or replaces the executable** at `/usr/local/bin/systui`
 5. **Creates man page** for documentation
 6. **Verifies installation**
 
@@ -527,6 +528,17 @@ The main-menu **System Health** section replaces the former log viewer and provi
 - Conservative package repair, cleanup, SSH validation, and fstab validation
 
 The internal operation log remains available at `/tmp/systui.log` for command diagnostics.
+
+## Awesome Linux catalogue
+
+The Awesome Linux menu synchronizes the upstream software list and rebuilds it
+as a 26-group catalogue. All 1,235 current software entries are retained under
+stable categories such as Audio & Music, Development, Gaming & Emulation,
+Security, System Utilities, and Terminal & CLI. Documentation-only sections,
+including “Unsure how to contribute?”, contribution guidelines, news, Reddit,
+contributors, and licensing, are excluded and cannot appear as installable
+categories. Existing caches are automatically reparsed when the taxonomy
+version changes.
 
 ## Package and shell menu organization
 

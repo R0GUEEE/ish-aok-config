@@ -57,8 +57,70 @@ detect_pm() {
         echo "pacman"
     elif command -v dnf >/dev/null 2>&1; then
         echo "dnf"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+    elif command -v xbps-install >/dev/null 2>&1; then
+        echo "xbps"
+    elif command -v emerge >/dev/null 2>&1; then
+        echo "emerge"
     else
         echo ""
+    fi
+}
+
+package_is_installed() { # <package-manager> <native-package>
+    local pm="$1" pkg="$2"
+    case "$pm" in
+        apt) dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' ;;
+        apk) apk info -e "$pkg" >/dev/null 2>&1 ;;
+        pacman) pacman -Q "$pkg" >/dev/null 2>&1 ;;
+        dnf|zypper) rpm -q "$pkg" >/dev/null 2>&1 ;;
+        xbps) xbps-query -p pkgver "$pkg" >/dev/null 2>&1 ;;
+        emerge) has_version "$pkg" >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+install_native_packages() { # <package-manager> <required:0|1> <packages...>
+    local pm="$1" required="$2" pkg
+    shift 2
+    local missing=() failed=()
+
+    for pkg in "$@"; do
+        package_is_installed "$pm" "$pkg" || missing+=("$pkg")
+    done
+    [ ${#missing[@]} -gt 0 ] || return 0
+
+    info "Installing ${#missing[@]} missing package(s): ${missing[*]}"
+    case "$pm" in
+        apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" ;;
+        apk) apk add --no-progress "${missing[@]}" ;;
+        pacman) pacman -S --noconfirm --needed "${missing[@]}" ;;
+        dnf) dnf install -y "${missing[@]}" ;;
+        zypper) zypper --non-interactive install --no-recommends "${missing[@]}" ;;
+        xbps) xbps-install -y "${missing[@]}" ;;
+        emerge) emerge --noreplace "${missing[@]}" ;;
+    esac && return 0
+
+    warn "The package batch was not fully available; retrying one package at a time."
+    for pkg in "${missing[@]}"; do
+        package_is_installed "$pm" "$pkg" && continue
+        case "$pm" in
+            apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg" ;;
+            apk) apk add --no-progress "$pkg" ;;
+            pacman) pacman -S --noconfirm --needed "$pkg" ;;
+            dnf) dnf install -y "$pkg" ;;
+            zypper) zypper --non-interactive install --no-recommends "$pkg" ;;
+            xbps) xbps-install -y "$pkg" ;;
+            emerge) emerge --noreplace "$pkg" ;;
+        esac >/dev/null 2>&1 || failed+=("$pkg")
+    done
+
+    if [ ${#failed[@]} -gt 0 ]; then
+        if [ "$required" = 1 ]; then
+            error "Required dependencies could not be installed: ${failed[*]}"
+        fi
+        warn "Optional feature dependencies unavailable on this distribution: ${failed[*]}"
     fi
 }
 
@@ -68,52 +130,131 @@ install_dependencies() {
         return 0
     fi
 
-    info "Installing dependencies..."
-    
-    local pm=$(detect_pm)
+    info "Checking systui and sub-tool dependencies..."
+
+    local pm
+    pm=$(detect_pm)
     [ -z "$pm" ] && error "Could not detect package manager. Please install manually."
-    
+
+    # Required packages run the TUI, catalogue synchronization, updater, and
+    # archive/provisioning basics. Optional packages unlock rootfs, storage,
+    # network diagnostics, source builds, and the managed sub-tools.
     case "$pm" in
         apt)
-            info "Detected APT (Debian/Ubuntu/Devuan). Installing dependencies..."
+            info "Detected APT (Debian/Ubuntu/Devuan)."
             apt-get update
-            apt-get install -y --no-install-recommends \
+            install_native_packages "$pm" 1 \
                 bash dialog findutils grep sed gawk coreutils util-linux \
                 openssh-client curl wget git ca-certificates openssl \
-                man-db tzdata debootstrap debian-archive-keyring ubuntu-keyring \
-                tar gzip xz-utils zstd bzip2 rsync gnupg file procps \
-                qemu-user-static binfmt-support python3 python3-pip
+                man-db tzdata tar gzip xz-utils zstd bzip2 rsync gnupg file \
+                procps python3 python3-pip cpio unzip zip jq less sudo iproute2
+            install_native_packages "$pm" 0 \
+                debootstrap debian-archive-keyring ubuntu-keyring qemu-user-static \
+                binfmt-support arch-install-scripts parted fdisk e2fsprogs dosfstools \
+                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
+                ethtool dnsmasq iputils-ping dnsutils net-tools nmap traceroute mtr-tiny \
+                socat build-essential pkg-config cmake meson ninja-build autoconf \
+                automake libtool rustc cargo nodejs npm golang-go flatpak
             ;;
         apk)
-            info "Detected APK (Alpine). Installing dependencies..."
-            apk add --no-progress \
+            info "Detected APK (Alpine)."
+            apk update
+            install_native_packages "$pm" 1 \
                 bash dialog findutils grep sed gawk coreutils util-linux \
                 openssh curl wget git ca-certificates openssl man-db tzdata \
                 tar gzip xz zstd bzip2 rsync gnupg file procps \
-                qemu-user-static python3 py3-pip
+                python3 py3-pip cpio unzip zip jq less sudo iproute2
+            install_native_packages "$pm" 0 \
+                qemu-user-static parted e2fsprogs dosfstools btrfs-progs xfsprogs \
+                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
+                bind-tools net-tools nmap mtr socat build-base pkgconf cmake meson \
+                ninja autoconf automake libtool rust cargo nodejs npm go flatpak
             warn "debootstrap is not normally packaged by Alpine; Debian-family builds use it only when available."
             ;;
         pacman)
-            info "Detected pacman (Arch). Installing dependencies..."
-            pacman -Sy --noconfirm --needed \
+            info "Detected pacman (Arch)."
+            pacman -Sy --noconfirm
+            install_native_packages "$pm" 1 \
                 bash dialog findutils grep sed gawk coreutils util-linux \
                 openssh curl wget git ca-certificates openssl man-db tzdata \
                 tar gzip xz zstd bzip2 rsync gnupg file procps-ng \
-                qemu-user-static python python-pip
+                python python-pip cpio unzip zip jq less sudo iproute2
+            install_native_packages "$pm" 0 \
+                arch-install-scripts qemu-user-static parted e2fsprogs dosfstools \
+                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
+                ethtool dnsmasq iputils bind net-tools nmap traceroute mtr socat \
+                base-devel pkgconf cmake meson ninja autoconf automake libtool \
+                rust nodejs npm go flatpak
             command -v debootstrap >/dev/null 2>&1 || warn "Install debootstrap from the AUR to build Debian-family rootfs images."
             ;;
         dnf)
-            info "Detected DNF (Fedora/RHEL). Installing dependencies..."
-            dnf install -y \
+            info "Detected DNF (Fedora/RHEL)."
+            dnf makecache -y
+            install_native_packages "$pm" 1 \
                 bash dialog findutils grep sed gawk coreutils util-linux \
                 openssh-clients curl wget git ca-certificates openssl man-db tzdata \
                 tar gzip xz zstd bzip2 rsync gnupg2 file procps-ng \
-                qemu-user-static python3 python3-pip
-            dnf install -y debootstrap 2>/dev/null || warn "debootstrap is unavailable in enabled repositories; Debian-family builds will be disabled until installed."
+                python3 python3-pip cpio unzip zip jq less sudo iproute
+            install_native_packages "$pm" 0 \
+                debootstrap qemu-user-static parted util-linux e2fsprogs dosfstools \
+                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
+                ethtool dnsmasq iputils bind-utils net-tools nmap traceroute mtr \
+                socat gcc gcc-c++ make pkgconf-pkg-config cmake meson ninja-build \
+                autoconf automake libtool rust cargo nodejs npm golang flatpak
+            ;;
+        zypper)
+            info "Detected Zypper (openSUSE/SUSE)."
+            zypper --non-interactive refresh
+            install_native_packages "$pm" 1 \
+                bash dialog findutils grep sed gawk coreutils util-linux openssh \
+                curl wget git ca-certificates openssl man man-pages timezone tar \
+                gzip xz zstd bzip2 rsync gpg2 file procps python3 python3-pip \
+                cpio unzip zip jq less sudo iproute2
+            install_native_packages "$pm" 0 \
+                qemu-linux-user parted e2fsprogs dosfstools btrfsprogs xfsprogs \
+                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
+                bind-utils net-tools nmap traceroute mtr socat gcc gcc-c++ make \
+                pkg-config cmake meson ninja autoconf automake libtool rust cargo \
+                nodejs npm go flatpak
+            ;;
+        xbps)
+            info "Detected XBPS (Void Linux)."
+            xbps-install -S
+            install_native_packages "$pm" 1 \
+                bash dialog findutils grep sed gawk coreutils util-linux openssh \
+                curl wget git ca-certificates openssl man-pages tzdata tar gzip xz \
+                zstd bzip2 rsync gnupg2 file procps-ng python3 python3-pip cpio \
+                unzip zip jq less sudo iproute2
+            install_native_packages "$pm" 0 \
+                qemu-user-static parted e2fsprogs dosfstools btrfs-progs xfsprogs \
+                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
+                bind-utils net-tools nmap traceroute mtr socat base-devel pkg-config \
+                cmake meson ninja autoconf automake libtool rust cargo nodejs npm go \
+                flatpak
+            ;;
+        emerge)
+            info "Detected Portage (Gentoo)."
+            install_native_packages "$pm" 1 \
+                app-shells/bash dev-util/dialog sys-apps/findutils sys-apps/grep \
+                sys-apps/sed sys-apps/gawk sys-apps/coreutils sys-apps/util-linux \
+                net-misc/openssh net-misc/curl net-misc/wget dev-vcs/git \
+                app-misc/ca-certificates dev-libs/openssl sys-apps/man-db \
+                sys-libs/timezone-data app-arch/tar app-arch/gzip app-arch/xz-utils \
+                app-arch/zstd app-arch/bzip2 net-misc/rsync app-crypt/gnupg \
+                sys-apps/file sys-process/procps dev-lang/python app-arch/cpio \
+                app-arch/unzip app-arch/zip app-misc/jq sys-apps/less app-admin/sudo
+            install_native_packages "$pm" 0 \
+                sys-block/parted sys-fs/e2fsprogs sys-fs/dosfstools sys-fs/btrfs-progs \
+                sys-fs/xfsprogs sys-fs/cryptsetup sys-fs/lvm2 sys-fs/mdadm \
+                sys-apps/smartmontools sys-apps/hdparm sys-apps/ethtool net-dns/dnsmasq \
+                net-analyzer/nmap net-analyzer/traceroute net-analyzer/mtr net-misc/socat \
+                dev-util/cmake dev-build/meson dev-build/ninja dev-build/autoconf \
+                dev-build/automake dev-build/libtool dev-lang/rust dev-lang/nodejs \
+                dev-lang/go sys-apps/flatpak
             ;;
     esac
-    
-    success "Dependencies installed"
+
+    success "Dependency check complete"
 }
 
 check_command() {
@@ -143,7 +284,11 @@ install_project() {
     mkdir -p "$LIB_DIR"
     mkdir -p "$BIN_DIR"
     
-    # Copy project files
+    # Remove managed content first so files deleted in the new release cannot
+    # linger from an older installation. User configuration lives elsewhere.
+    rm -rf -- "$LIB_DIR/src" "$LIB_DIR/share" "$LIB_DIR/docs"
+
+    # Copy the latest project files.
     cp -r "$PROJECT_DIR/src" "$LIB_DIR/"
     cp -r "$PROJECT_DIR/share" "$LIB_DIR/"
     [ -d "$PROJECT_DIR/docs" ] && cp -r "$PROJECT_DIR/docs" "$LIB_DIR/" || true
@@ -169,10 +314,13 @@ install_project() {
 }
 
 create_executable() {
-    info "Creating executable wrapper..."
-    
-    # Create main executable
-    cat > "$BIN_DIR/systui" << 'WRAPPER'
+    local wrapper_tmp="$BIN_DIR/.systui.$$"
+    info "Creating the latest executable wrapper..."
+
+    # Build beside the destination, then replace /usr/local/bin/systui in one
+    # operation. This intentionally supersedes any older managed executable.
+    rm -f -- "$wrapper_tmp"
+    cat > "$wrapper_tmp" << 'WRAPPER'
 #!/bin/bash
 # systui — Linux System TUI
 # Auto-generated by install.sh
@@ -877,10 +1025,10 @@ EOF
 # Run main menu
 main_menu
 WRAPPER
-    sed -i "s|__SYSTUI_LIBDIR__|$LIB_DIR|g" "$BIN_DIR/systui"
-    
-    chmod +x "$BIN_DIR/systui"
-    success "Executable created at $BIN_DIR/systui"
+    sed -i "s|__SYSTUI_LIBDIR__|$LIB_DIR|g" "$wrapper_tmp"
+    install -m 0755 "$wrapper_tmp" "$BIN_DIR/systui"
+    rm -f -- "$wrapper_tmp"
+    success "Executable installed/replaced at $BIN_DIR/systui"
 }
 
 create_manpage() {
