@@ -467,6 +467,128 @@ menu_rootfs() {
     done
 }
 
+rootfs_state_file() { printf '%s/.systui-build-state\n' "$1"; }
+
+rootfs_state_get() { # <target> <key>
+    local f key
+    f=$(rootfs_state_file "$1"); key="$2"
+    [ -r "$f" ] || f="$1/etc/systui-build.conf"
+    [ -r "$f" ] || return 1
+    sed -nE "s/^${key}=\\\"?([^\\\"]*)\\\"?$/\\1/p" "$f" | tail -n1
+}
+
+rootfs_write_build_state() {
+    local target="$1"; shift
+    mkdir -p "$target"
+    cat > "$(rootfs_state_file "$target")" <<EOF
+DISTRO="$1"
+RELEASE="$2"
+ARCH="$3"
+MIRROR="$4"
+PACKAGES="$5"
+USE_QEMU="$6"
+INIT="$7"
+PRESET="$8"
+HOSTNAME="$9"
+POSTCFG="${10}"
+TIMEZONE="${11}"
+STAGE="configured"
+EOF
+}
+
+rootfs_set_build_stage() { # <target> <stage>
+    local f stage
+    f=$(rootfs_state_file "$1"); stage="$2"
+    [ -e "$f" ] || : > "$f"
+    if grep -q '^STAGE=' "$f" 2>/dev/null; then
+        sed -i -E "s/^STAGE=.*/STAGE=\"$stage\"/" "$f"
+    else
+        printf 'STAGE="%s"\n' "$stage" >> "$f"
+    fi
+}
+
+rootfs_fetch_ubuntu_keyring() {
+    local existing=/usr/share/keyrings/ubuntu-archive-keyring.gpg tmp page deb
+    [ -r "$existing" ] && { printf '%s\n' "$existing"; return 0; }
+    tmp=$(mktemp -d) || return 1
+    if command -v apt-get >/dev/null 2>&1; then
+        (cd "$tmp" && apt-get update >/dev/null 2>&1 && apt-get download ubuntu-keyring >/dev/null 2>&1) || true
+    fi
+    if ! find "$tmp" -name 'ubuntu-keyring_*.deb' -print -quit | grep -q .; then
+        page=$(curl -LfsS --connect-timeout 5 --max-time 20 \
+            https://archive.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/ 2>/dev/null || true)
+        deb=$(printf '%s' "$page" | grep -Eo 'ubuntu-keyring_[^" ]+_all\.deb' | sort -V | tail -n1)
+        [ -n "$deb" ] && curl -LfsS -o "$tmp/$deb" \
+            "https://archive.ubuntu.com/ubuntu/pool/main/u/ubuntu-keyring/$deb" 2>/dev/null || true
+    fi
+    deb=$(find "$tmp" -name 'ubuntu-keyring_*.deb' -print -quit)
+    [ -n "$deb" ] && command -v dpkg-deb >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+    dpkg-deb -x "$deb" "$tmp/extract" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+    [ -r "$tmp/extract/usr/share/keyrings/ubuntu-archive-keyring.gpg" ] || { rm -rf "$tmp"; return 1; }
+    mkdir -p /usr/share/keyrings
+    cp "$tmp/extract/usr/share/keyrings/ubuntu-archive-keyring.gpg" "$existing" || { rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+    printf '%s\n' "$existing"
+}
+
+rootfs_continue_generation() { # <target>
+    local t="$1" distro release arch mirror pkgs use_qemu stage action
+    distro=$(rootfs_state_get "$t" DISTRO || true)
+    release=$(rootfs_state_get "$t" RELEASE || true)
+    arch=$(rootfs_state_get "$t" ARCH || true)
+    mirror=$(rootfs_state_get "$t" MIRROR || true)
+    pkgs=$(rootfs_state_get "$t" PACKAGES || true)
+    use_qemu=$(rootfs_state_get "$t" USE_QEMU || true)
+    stage=$(rootfs_state_get "$t" STAGE || true)
+
+    [ -n "$distro" ] || distro=$(sed -n 's/^ID=//p' "$t/etc/os-release" 2>/dev/null | tr -d '"' | head -n1)
+    [ -n "$release" ] || release=$(sed -n 's/^VERSION_CODENAME=//p' "$t/etc/os-release" 2>/dev/null | tr -d '"' | head -n1)
+    [ -n "$arch" ] || arch=$(host_debarch)
+    [ -n "$use_qemu" ] || { needs_qemu "$arch" && use_qemu=1 || use_qemu=0; }
+
+    action=$(tui_check "Continue generation" \
+        "Detected: ${distro:-unknown} ${release:-unknown} ($arch), stage: ${stage:-unknown}\nSPACE selects recovery steps:" \
+        second "Complete interrupted debootstrap second stage" on \
+        repair "Repair dpkg/APT package configuration" on \
+        packages "Install remaining packages from build state" on \
+        config "Open in-rootfs configuration after recovery" on) || return 0
+    action=${action//\"/}
+
+    if [ ! -x "$t/bin/sh" ] && [ -n "$distro" ] && [ -n "$release" ] && [ -n "$mirror" ]; then
+        case "$distro" in
+            debian|devuan|ubuntu|kali)
+                tui_yesno "Resume bootstrap" "The base system is incomplete. Re-run debootstrap into this existing target?" || return 0
+                build_debfamily "$distro" "$release" "$arch" "$mirror" "$t" "$pkgs" "$use_qemu" || {
+                    tui_msg "Resume failed" "Bootstrap recovery failed. See $LOGFILE."; return 0; }
+                ;;
+            *) tui_msg "Unsupported state" "Automatic pre-bootstrap resume currently supports Debian, Devuan, Ubuntu and Kali roots."; return 0 ;;
+        esac
+    fi
+
+    case " $action " in *" second "*)
+        if [ -x "$t/debootstrap/debootstrap" ]; then
+            [ "$use_qemu" = 1 ] && setup_qemu_chroot "$t" "$arch" || true
+            rootfs_chroot_exec "$t" "Complete debootstrap second stage" "/debootstrap/debootstrap --second-stage" || return 0
+            rootfs_set_build_stage "$t" bootstrap-complete
+        fi ;;
+    esac
+    case " $action " in *" repair "*)
+        if [ "$(rootfs_detect_pm "$t")" = apt ]; then
+            rootfs_chroot_exec "$t" "Repair package configuration" \
+                "export DEBIAN_FRONTEND=noninteractive; dpkg --configure -a; apt-get -f install -y; apt-get update" || true
+        fi ;;
+    esac
+    case " $action " in *" packages "*)
+        if [ -n "${pkgs//[[:space:]]/}" ] && [ "$(rootfs_detect_pm "$t")" = apt ]; then
+            rootfs_chroot_exec "$t" "Install remaining rootfs packages" \
+                "export DEBIAN_FRONTEND=noninteractive; apt-get install -y $pkgs" || true
+        fi ;;
+    esac
+    rootfs_set_build_stage "$t" recovered
+    case " $action " in *" config "*) rootfs_cfg_menu "$t" ;; esac
+    tui_msg "Recovery complete" "Generation recovery finished for:\n$t\n\nReview the log for any package-specific warnings: $LOGFILE"
+}
+
 rootfs_builder() {
     local distro release arch mirror target pkgs hostname_v rootpw
     local init_choice init_pkgs="" preset use_qemu=0
@@ -486,11 +608,9 @@ rootfs_builder() {
         void   "Void Linux (official ROOTFS tarball)" off) || return 0
     [ -z "$distro" ] && return
 
-    # ---- 2: release (repository-backed, SPACE selects) ----
-    # Use host architecture to choose the correct Ubuntu repository endpoint.
-    release=$(rootfs_release_menu "$distro" "$(host_debarch)") || return 0
-
-    # ---- 3: architecture ----
+    # ---- 2/3: architecture then release ----
+    # Architecture must be selected before Ubuntu release discovery so ARM
+    # builds query ports.ubuntu.com rather than the amd64 archive.
     if [ "$distro" = "arch" ]; then
         arch="amd64"
         tui_msg "Architecture" "Arch Linux official repos are x86_64 only.\n(For ARM, see Arch Linux ARM — not covered here.)"
@@ -510,6 +630,9 @@ rootfs_builder() {
         armhf) alpine_arch="armv7";   fedora_arch="armhfp";  void_arch="armv7l" ;;
         i386)  alpine_arch="x86";     fedora_arch="i386";    void_arch="i686" ;;
     esac
+
+    # ---- release (repository-backed, architecture-aware) ----
+    release=$(rootfs_release_menu "$distro" "$arch") || return 0
     if needs_qemu "$arch"; then
         use_qemu=1
         tui_msg "Foreign architecture" \
@@ -647,7 +770,8 @@ user creation). Install on the host first if you haven't:
     target=$(tui_input "Rootfs Builder 7/12" "Target directory for the rootfs:" \
         "$ROOTFS_BASE/${distro}-${release}-${arch}") || return 0
     if [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
-        tui_yesno "Target exists" "$target exists and is not empty.\nContinue anyway (may mix contents)?" || return 0
+        tui_msg "Target exists" "$target is not empty.\n\nUse Rootfs > Manage > Continue generation to safely resume it."
+        return 0
     fi
     mkdir -p "$target"
 
@@ -716,6 +840,10 @@ user creation). Install on the host first if you haven't:
 
 Proceed?" || return 0
 
+    rootfs_write_build_state "$target" \
+        "$distro" "$release" "$arch" "$mirror" "$pkgs" "$use_qemu" \
+        "$init_choice" "$preset" "$hostname_v" "$postcfg" "$tz"
+
     case "$distro" in
         debian|devuan|ubuntu|kali) build_debfamily "$distro" "$release" "$arch" "$mirror" "$target" "$pkgs" "$use_qemu" ;;
         alpine)               build_alpine "$release" "$alpine_arch" "$mirror" "$target" "$pkgs" ;;
@@ -731,6 +859,7 @@ Proceed?" || return 0
         "$locale_v" "$shell_v" "$editor_v" "$ssh_port" \
         || warn "One or more post-build configuration steps failed."
 
+    rootfs_set_build_stage "$target" complete
     show_warnings
 
     # ---- archive ----
@@ -939,7 +1068,19 @@ build_debfamily() { # distro release arch mirror target pkgs use_qemu
         esac
     fi
 
-    local opts=(--arch="$arch")
+    if [ "$distro" = ubuntu ] && [ -z "$keyring" ]; then
+        keyring=$(rootfs_fetch_ubuntu_keyring 2>/dev/null || true)
+    fi
+    if [ "$distro" = ubuntu ] && [ -z "$keyring" ]; then
+        tui_msg "Ubuntu keyring missing" \
+"Ubuntu rootfs verification requires ubuntu-archive-keyring.gpg.
+
+Install ubuntu-keyring on the host or use System Configuration > Packages > Repos > Keys, then retry."
+        return 1
+    fi
+
+    local opts=(--arch="$arch" --variant=minbase)
+    [ "$distro" = ubuntu ] && opts+=(--components=main,universe)
     [ -n "$keyring" ] && opts+=(--keyring="$keyring")
 
     local include=""
@@ -951,6 +1092,7 @@ build_debfamily() { # distro release arch mirror target pkgs use_qemu
 
     if [ "$use_qemu" = 1 ]; then
         opts+=(--foreign)
+        rootfs_set_build_stage "$target" bootstrap-first-stage
         run_cmd "debootstrap --foreign $distro/$release ($arch)" \
             debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
 
@@ -958,15 +1100,19 @@ build_debfamily() { # distro release arch mirror target pkgs use_qemu
         # that first; only require qemu-user-static when direct execution fails.
         if chroot "$target" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
             log "debootstrap: second stage completed using native/iSH-AOK execution"
+            rootfs_set_build_stage "$target" bootstrap-complete
             return 0
         fi
 
         setup_qemu_chroot "$target" "$arch" || return 1
         run_cmd "debootstrap second stage ($arch)" \
             chroot "$target" /debootstrap/debootstrap --second-stage || return 1
+        rootfs_set_build_stage "$target" bootstrap-complete
     else
+        rootfs_set_build_stage "$target" bootstrap
         run_cmd "debootstrap $distro/$release" \
             debootstrap "${opts[@]}" "$release" "$target" "$mirror" || return 1
+        rootfs_set_build_stage "$target" bootstrap-complete
     fi
     return 0
 }
@@ -1419,6 +1565,7 @@ rootfs_manage() {
         # Safely capture submenu result and handle cancellation
         if ! c=$(tui_menu "$(basename "$sel")" \
             "PM: $(rootfs_detect_pm "$sel")  init: $(rootfs_detect_init "$sel")" \
+            continue "Continue/recover rootfs generation" \
             enter    "Enter chroot (interactive shell)" \
             cmd      "Run a single command in the chroot" \
             pkg      "Package management (inside the rootfs)" \
@@ -1435,6 +1582,7 @@ rootfs_manage() {
         fi
         [ -z "$c" ] && continue
         case "$c" in
+            continue) rootfs_continue_generation "$sel" ;;
             enter) enter_chroot "$sel" ;;
             cmd)
                 local rcmd
