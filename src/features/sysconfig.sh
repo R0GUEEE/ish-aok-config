@@ -4819,17 +4819,180 @@ fm_install_tere() {
     tui_msg "Installed" "Tere v1.6.0 was installed to /usr/local/bin/tere and integrated with .bashrc and .zshrc for $u."
 }
 
+fm_yazi_install_dependencies() {
+    tui_yesno "Yazi dependencies" "Install Yazi's recommended preview/search dependencies for this distribution?" || return 0
+    case "$DISTRO" in
+        arch|archlinux|manjaro|endeavouros)
+            pm_install ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg imagemagick || true
+            ;;
+        void)
+            xbps-install -Sy yazi ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg ImageMagick >>"$LOGFILE" 2>&1 || true
+            ;;
+        fedora|rhel|centos|rocky|almalinux|ultramarine)
+            # The COPR package pulls recommended dependencies unless weak deps are disabled.
+            ;;
+        solus)
+            eopkg install -y ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg imagemagick >>"$LOGFILE" 2>&1 || true
+            ;;
+        *)
+            # Package names differ substantially on Debian-family and other systems.
+            # Install only portable names that are available in the active repositories.
+            pm_install ffmpeg jq poppler-utils fd-find ripgrep fzf zoxide imagemagick 2>>"$LOGFILE" || true
+            ;;
+    esac
+}
+
+fm_yazi_install_binary() {
+    local arch libc api url tmp archive bin_ya bin_yazi
+    arch=$(uname -m 2>/dev/null || printf unknown)
+    case "$arch" in
+        x86_64|amd64) arch=x86_64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *) tui_msg "Unsupported architecture" "No official Yazi Linux binary selector is configured for: $arch"; return 1 ;;
+    esac
+    if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=gnu; fi
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v unzip >/dev/null 2>&1 || pm_install unzip
+    command -v curl >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 || {
+        tui_msg "Missing tools" "curl and unzip are required for the official binary method."; return 1;
+    }
+    api=$(curl -fsSL https://api.github.com/repos/sxyazi/yazi/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest official Yazi release."; return 1;
+    }
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/yazi-${arch}-unknown-linux-${libc}\.zip$" | head -n1)
+    [ -n "$url" ] || url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/yazi-${arch}-unknown-linux-(gnu|musl)\.zip$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No compatible asset" "The latest release has no recognized $arch Linux ZIP asset."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    archive="$tmp/yazi.zip"
+    if ! curl -fL "$url" -o "$archive" >>"$LOGFILE" 2>&1 || ! unzip -q "$archive" -d "$tmp/unpacked" >>"$LOGFILE" 2>&1; then
+        rm -rf "$tmp"; tui_msg "Install failed" "Could not download or extract the official Yazi binary."; return 1
+    fi
+    bin_yazi=$(find "$tmp/unpacked" -type f -name yazi -print -quit)
+    bin_ya=$(find "$tmp/unpacked" -type f -name ya -print -quit)
+    [ -n "$bin_yazi" ] && [ -n "$bin_ya" ] || { rm -rf "$tmp"; tui_msg "Invalid archive" "The release archive did not contain both yazi and ya."; return 1; }
+    install -Dm755 "$bin_yazi" /usr/local/bin/yazi
+    install -Dm755 "$bin_ya" /usr/local/bin/ya
+    rm -rf "$tmp"
+}
+
+fm_yazi_install_cargo() {
+    command -v cargo >/dev/null 2>&1 || pm_install cargo rustc
+    command -v cargo >/dev/null 2>&1 || { tui_msg "Cargo unavailable" "Install a current Rust toolchain first."; return 1; }
+    run_cmd "Install Yazi through yazi-build" cargo install --force yazi-build
+}
+
+fm_yazi_install_source() {
+    local tmp
+    command -v git >/dev/null 2>&1 || pm_install git
+    command -v cargo >/dev/null 2>&1 || pm_install cargo rustc
+    pm_install make gcc pkg-config 2>>"$LOGFILE" || true
+    command -v git >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 || {
+        tui_msg "Build tools unavailable" "git and a current Cargo toolchain are required."; return 1;
+    }
+    tmp=$(mktemp -d) || return 1
+    if ! git clone --depth 1 https://github.com/sxyazi/yazi.git "$tmp/yazi" >>"$LOGFILE" 2>&1 \
+       || ! (cd "$tmp/yazi" && cargo build --release --locked) >>"$LOGFILE" 2>&1; then
+        rm -rf "$tmp"; tui_msg "Build failed" "Yazi could not be built. See $LOGFILE."; return 1
+    fi
+    install -Dm755 "$tmp/yazi/target/release/yazi" /usr/local/bin/yazi
+    install -Dm755 "$tmp/yazi/target/release/ya" /usr/local/bin/ya
+    rm -rf "$tmp"
+}
+
+fm_yazi_install() {
+    detect_distro
+    local method distro_label="$DISTRO_PRETTY_NAME"
+    case "$DISTRO" in
+        arch|archlinux|manjaro|endeavouros)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nChoose an installation method from Yazi's installation guide:" \
+                native "pacman package (recommended for Arch-family systems)" on \
+                binary "Latest official GitHub release binary" off \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off) || return 0 ;;
+        void)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nChoose an installation method from Yazi's installation guide:" \
+                native "XBPS package (recommended for Void Linux)" on \
+                binary "Latest official GitHub release binary" off \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off) || return 0 ;;
+        fedora|rhel|centos|rocky|almalinux|ultramarine)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nChoose an installation method from Yazi's installation guide:" \
+                native "DNF COPR package (community-maintained method documented by Yazi)" on \
+                binary "Latest official GitHub release binary" off \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off) || return 0 ;;
+        nixos)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nChoose an installation method from Yazi's installation guide:" \
+                native "Nix package" on \
+                binary "Latest official GitHub release binary" off \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off) || return 0 ;;
+        solus)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nChoose an installation method from Yazi's installation guide:" \
+                native "eopkg package" on \
+                binary "Latest official GitHub release binary" off \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off) || return 0 ;;
+        *)
+            method=$(tui_radio "Install Yazi" "Detected: $distro_label\n\nYazi's guide does not list a native package for this distribution. Choose a documented portable method:" \
+                binary "Latest official GitHub release binary (recommended)" on \
+                cargo "crates.io through yazi-build" off \
+                source "Build latest source with Cargo" off \
+                snap "Snap package, when snapd is available" off) || return 0 ;;
+    esac
+
+    if ! {
+    case "$method" in
+        native)
+            case "$DISTRO" in
+                arch|archlinux|manjaro|endeavouros)
+                    pacman -S --needed yazi ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg imagemagick >>"$LOGFILE" 2>&1 ;;
+                void)
+                    xbps-install -Sy yazi ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg ImageMagick >>"$LOGFILE" 2>&1 ;;
+                fedora|rhel|centos|rocky|almalinux|ultramarine)
+                    command -v dnf >/dev/null 2>&1 || { tui_msg "Unavailable" "dnf is required."; return 1; }
+                    dnf -y install dnf-plugins-core >>"$LOGFILE" 2>&1 || true
+                    dnf -y copr enable lihaohong/yazi >>"$LOGFILE" 2>&1 && dnf -y install yazi >>"$LOGFILE" 2>&1 ;;
+                nixos) nix-env -iA nixos.yazi >>"$LOGFILE" 2>&1 ;;
+                solus) eopkg install -y yazi ffmpeg 7zip jq poppler fd ripgrep fzf zoxide resvg imagemagick >>"$LOGFILE" 2>&1 ;;
+            esac
+            ;;
+        binary) fm_yazi_install_binary && fm_yazi_install_dependencies ;;
+        cargo) fm_yazi_install_cargo && fm_yazi_install_dependencies ;;
+        source) fm_yazi_install_source && fm_yazi_install_dependencies ;;
+        snap)
+            command -v snap >/dev/null 2>&1 || { tui_msg "Snap unavailable" "Install and enable snapd first."; return 1; }
+            snap install yazi --classic >>"$LOGFILE" 2>&1
+            ;;
+    esac
+    }; then
+        tui_msg "Install failed" "The selected Yazi installation method failed. Review $LOGFILE."
+        return 1
+    fi
+
+    if command -v yazi >/dev/null 2>&1; then
+        tui_msg "Installed" "Yazi is available at $(command -v yazi).\n\nVersion: $(yazi --version 2>/dev/null | head -n1)"
+    else
+        tui_msg "Install failed" "Yazi was not found in PATH after installation. Review $LOGFILE."
+        return 1
+    fi
+}
+
 fm_install() {
     local fm="$1" pkg
     if [ "$fm" = tere ]; then
         fm_install_tere
+        return $?
+    elif [ "$fm" = yazi ]; then
+        fm_yazi_install
         return $?
     fi
     pkg=$(fm_pkg_for "$fm")
     pm_install "$pkg" >/dev/null 2>&1 || true
     command -v "$fm" >/dev/null 2>&1 && { tui_msg "Installed" "$fm is installed."; return 0; }
     case "$fm" in
-        yazi)  fm_cargo_install yazi-fm yazi; fm_cargo_install yazi-cli ya || true ;;
         broot) fm_cargo_install broot ;;
         xplr)  fm_cargo_install xplr ;;
         *)     tui_msg "Unavailable" "$fm is not available from the active repositories. Enable the appropriate repository or install it manually." ;;
@@ -5062,10 +5225,12 @@ menu_fm_plugins() {
 }
 
 menu_file_manager_one() {
-    local fm="$1" label="$2" c
+    local fm="$1" label="$2" c install_label
     while true; do
+        install_label="Install $label"
+        [ "$fm" = yazi ] && install_label="Install Yazi — distribution-aware methods"
         c=$(tui_menu "$label  $(st "$fm")" "Install, remove and configure $label:" \
-            install "Install $label" \
+            install "$install_label" \
             remove  "Remove $label" \
             default "Write recommended default configuration" \
             edit    "Edit configuration" \
