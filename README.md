@@ -596,3 +596,7 @@ The RootFS Builder now opens a categorized package catalogue after preset select
 - Expanded GitHub add-on catalogues and update/status management for terminal file managers.
 - Full OpenSSH server configuration for authentication, access controls, keys, forwarding, keepalives, SFTP, banners, host keys, logs, and validation.
 - Additional iSH-AOK compatibility, storage, cache, logging, shell, APT, and capability-report tuning.
+
+## Expanded package-manager configuration
+
+System Configuration > Packages > Managers now provides configuration and maintenance hubs for APT, apt-fast, Nala, aptitude, pacman, yay, paru, DNF, YUM, zypper, apk, XBPS, Portage, Flatpak, Snap, Nix, Homebrew, pip, pipx, npm, pnpm, Yarn, Cargo, RubyGems, Composer, and Go tools.

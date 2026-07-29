@@ -1980,38 +1980,240 @@ svc() {  # svc <enable|disable|start|stop|restart|status> <service>
 
 # Package-manager hub. Keeps native and language/application package managers
 # separate from repositories and the software catalogue.
+pm_status() { command -v "$1" >/dev/null 2>&1 && printf '[installed]' || printf '[not installed]'; }
+
+pm_edit_file() {
+    local f="$1"
+    mkdir -p "$(dirname "$f")"
+    touch "$f"
+    "${EDITOR:-nano}" "$f"
+}
+
+pm_show_command() {
+    local title="$1"; shift
+    "$@" > /tmp/systui.pkg 2>&1 || true
+    tui_text "$title" /tmp/systui.pkg
+}
+
+pm_generic_health() {
+    local cmd="$1" version_arg="${2:---version}"
+    {
+        echo "Executable: $(command -v "$cmd" 2>/dev/null || echo missing)"
+        echo
+        "$cmd" "$version_arg" 2>&1 || true
+    } > /tmp/systui.pkg
+    tui_text "$cmd health" /tmp/systui.pkg
+}
+
+menu_cfg_apt() {
+    while true; do
+        local c
+        c=$(tui_menu "APT configuration" "Configure APT and dpkg:" \
+            tune "Performance/download tuning" config "Edit apt.conf.d configuration" \
+            policy "Show package policy" verify "Verify package database" \
+            repair "Repair interrupted/broken packages" cache "Clean package caches" \
+            history "Show dpkg transaction history" reset "Remove SysTUI tuning file" back "Back") || return 0
+        case "$c" in
+            tune) menu_cfg_native ;;
+            config) pm_edit_file /etc/apt/apt.conf.d/90systui-custom ;;
+            policy) pm_show_command "APT policy" apt-cache policy ;;
+            verify) run_cmd "Verify dpkg database" dpkg --audit ;;
+            repair) run_cmd "Repair APT/dpkg" bash -c 'dpkg --configure -a && apt-get -f install -y' ;;
+            cache) run_cmd "Clean APT caches" bash -c 'apt-get clean && apt-get autoclean && apt-get autoremove -y' ;;
+            history) { zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:|End-Date)' /var/log/apt/history.log* 2>/dev/null | tail -250 || true; } > /tmp/systui.pkg; tui_text "APT history" /tmp/systui.pkg ;;
+            reset) rm -f /etc/apt/apt.conf.d/90systui-tune /etc/apt/apt.conf.d/90systui-custom; tui_msg "Reset" "SysTUI APT configuration removed." ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_cfg_cli_manager() { # id command config install-package
+    local id="$1" cmd="$2" cfg="$3" pkg="${4:-$2}" c q
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        tui_yesno "$id" "$id is not installed. Install it now?" || return 0
+        pm_install "$pkg" || return 0
+    fi
+    while true; do
+        c=$(tui_menu "$id configuration" "Manage $id:" \
+            version "Version and executable" install "Install package/application" \
+            update "Update installed packages" list "List installed packages" \
+            cache "Clean or inspect cache" config "Edit configuration" \
+            doctor "Diagnostics/health check" back "Back") || return 0
+        case "$c" in
+            version) pm_generic_health "$cmd" ;;
+            install)
+                q=$(tui_input "$id install" "Package/application name:" "") || continue
+                [ -z "$q" ] && continue
+                case "$id" in
+                    pip) pip3 install --break-system-packages $q 2>/dev/null || pip3 install $q ;;
+                    pipx) pipx install "$q" ;;
+                    npm) npm install -g "$q" ;;
+                    pnpm) pnpm add -g "$q" ;;
+                    yarn) yarn global add "$q" ;;
+                    cargo) cargo install "$q" ;;
+                    gem) gem install "$q" ;;
+                    composer) composer global require "$q" ;;
+                    go) GOBIN="${GOBIN:-$HOME/go/bin}" go install "$q" ;;
+                    brew) brew install "$q" ;;
+                    nix) nix profile install "$q" ;;
+                esac ;;
+            update)
+                case "$id" in
+                    pip) pip3 list --outdated; tui_msg "pip" "Use the install action with an exact package to upgrade safely." ;;
+                    pipx) pipx upgrade-all ;;
+                    npm) npm update -g ;;
+                    pnpm) pnpm update -g ;;
+                    yarn) yarn global upgrade ;;
+                    cargo) command -v cargo-install-update >/dev/null && cargo install-update -a || tui_msg "Cargo" "Install cargo-update to enable bulk crate upgrades." ;;
+                    gem) gem update ;;
+                    composer) composer global update ;;
+                    go) tui_msg "Go" "Go does not maintain a global upgrade database; reinstall modules with @latest." ;;
+                    brew) brew update && brew upgrade ;;
+                    nix) nix profile upgrade '.*' ;;
+                esac ;;
+            list)
+                case "$id" in
+                    pip) pip3 list ;;
+                    pipx) pipx list ;;
+                    npm) npm list -g --depth=0 ;;
+                    pnpm) pnpm list -g --depth=0 ;;
+                    yarn) yarn global list ;;
+                    cargo) cargo install --list ;;
+                    gem) gem list ;;
+                    composer) composer global show ;;
+                    go) find "${GOBIN:-$HOME/go/bin}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null ;;
+                    brew) brew list --versions ;;
+                    nix) nix profile list ;;
+                esac > /tmp/systui.pkg 2>&1; tui_text "$id installed" /tmp/systui.pkg ;;
+            cache)
+                case "$id" in
+                    pip) pip3 cache info; tui_yesno "pip cache" "Purge pip cache?" && pip3 cache purge ;;
+                    pipx) pipx reinstall-all ;;
+                    npm) npm cache verify; tui_yesno "npm cache" "Clean npm cache forcibly?" && npm cache clean --force ;;
+                    pnpm) pnpm store status; tui_yesno "pnpm store" "Prune unused store content?" && pnpm store prune ;;
+                    yarn) yarn cache dir; tui_yesno "Yarn cache" "Clean Yarn cache?" && yarn cache clean ;;
+                    cargo) du -sh "${CARGO_HOME:-$HOME/.cargo}" 2>/dev/null; tui_yesno "Cargo cache" "Remove registry cache (downloads only)?" && rm -rf "${CARGO_HOME:-$HOME/.cargo}/registry/cache" ;;
+                    gem) gem cleanup ;;
+                    composer) composer clear-cache ;;
+                    go) go clean -cache -testcache; tui_msg "Go cache" "Build and test caches cleaned." ;;
+                    brew) brew cleanup -s ;;
+                    nix) nix store gc ;;
+                esac ;;
+            config)
+                [ -n "$cfg" ] && pm_edit_file "$cfg" || tui_msg "$id" "No single configuration file is used by this manager." ;;
+            doctor)
+                case "$id" in
+                    pip) pip3 check ;;
+                    pipx) pipx environment ;;
+                    npm) npm doctor ;;
+                    pnpm) pnpm doctor 2>/dev/null || pnpm config list ;;
+                    yarn) yarn config list ;;
+                    cargo) cargo --version --verbose ;;
+                    gem) gem environment ;;
+                    composer) composer diagnose ;;
+                    go) go env ;;
+                    brew) brew doctor ;;
+                    nix) nix config show 2>/dev/null || nix show-config ;;
+                esac > /tmp/systui.pkg 2>&1; tui_text "$id diagnostics" /tmp/systui.pkg ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+menu_cfg_flatpak() {
+    command -v flatpak >/dev/null 2>&1 || { tui_yesno "Flatpak" "Install Flatpak now?" || return; pm_install flatpak; }
+    while true; do
+        local c q
+        c=$(tui_menu "Flatpak configuration" "Manage Flatpak:" remotes "Manage/list remotes" flathub "Add Flathub" permissions "Show application overrides" repair "Repair installation" unused "Remove unused runtimes" update "Update all" config "Edit global installation config" back "Back") || return
+        case "$c" in
+            remotes) pm_show_command "Flatpak remotes" flatpak remotes --show-details ;;
+            flathub) flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo ;;
+            permissions) pm_show_command "Flatpak overrides" flatpak override --show ;;
+            repair) run_cmd "Flatpak repair" flatpak repair ;;
+            unused) run_cmd "Remove unused Flatpak runtimes" flatpak uninstall --unused -y ;;
+            update) run_cmd "Flatpak update" flatpak update -y ;;
+            config) pm_edit_file /var/lib/flatpak/repo/config ;;
+            back|"") return ;;
+        esac
+    done
+}
+
+menu_cfg_snap() {
+    command -v snap >/dev/null 2>&1 || { tui_yesno "Snap" "Install snapd now?" || return; pm_install snapd; }
+    while true; do
+        local c v
+        c=$(tui_menu "Snap configuration" "Manage snapd:" changes "Recent changes" refresh "Refresh all snaps" schedule "Show refresh schedule" hold "Set refresh hold" snapshots "List snapshots" connections "List interfaces/connections" config "Show system configuration" back "Back") || return
+        case "$c" in
+            changes) pm_show_command "Snap changes" snap changes ;;
+            refresh) snap refresh ;;
+            schedule) pm_show_command "Snap refresh schedule" snap refresh --time ;;
+            hold) v=$(tui_input "Refresh hold" "Hold duration/date (example: 24h or 2026-08-01T00:00:00Z):" "24h") || continue; snap set system refresh.hold="$v" ;;
+            snapshots) pm_show_command "Snap snapshots" snap saved ;;
+            connections) pm_show_command "Snap connections" snap connections ;;
+            config) pm_show_command "Snap system config" snap get system ;;
+            back|"") return ;;
+        esac
+    done
+}
+
+menu_cfg_native_full() {
+    while true; do
+        local c
+        c=$(tui_menu "Native manager: $PM" "Configure and maintain the active native package manager:" tune "Configuration and performance tuning" repos "Repository management" update "Refresh and upgrade" cache "Cache cleanup" verify "Database/package verification" history "Transaction history" edit "Edit primary configuration" back "Back") || return
+        case "$c" in
+            tune) menu_cfg_native ;;
+            repos) menu_repos ;;
+            update) pm_update ;;
+            cache) pm_clean ;;
+            verify)
+                case "$PM" in apt) dpkg --audit;; pacman) pacman -Dk;; dnf) dnf check;; yum) yum check;; zypper) zypper verify;; apk) apk audit --system;; xbps) xbps-pkgdb -a;; emerge) equery check '*' 2>/dev/null;; esac > /tmp/systui.pkg 2>&1; tui_text "$PM verification" /tmp/systui.pkg ;;
+            history)
+                case "$PM" in apt) zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:)' /var/log/apt/history.log* 2>/dev/null;; pacman) tail -250 /var/log/pacman.log;; dnf|yum) "$PM" history;; zypper) tail -250 /var/log/zypp/history;; apk) echo 'apk does not record transaction history by default.';; xbps) tail -250 /var/log/socklog/xbps/current 2>/dev/null;; emerge) tail -250 /var/log/emerge.log;; esac > /tmp/systui.pkg 2>&1; tui_text "$PM history" /tmp/systui.pkg ;;
+            edit)
+                case "$PM" in apt) pm_edit_file /etc/apt/apt.conf.d/90systui-custom;; pacman) pm_edit_file /etc/pacman.conf;; dnf) pm_edit_file /etc/dnf/dnf.conf;; yum) pm_edit_file /etc/yum.conf;; zypper) pm_edit_file /etc/zypp/zypp.conf;; apk) pm_edit_file /etc/apk/repositories;; xbps) pm_edit_file /etc/xbps.d/00-repository-main.conf;; emerge) pm_edit_file /etc/portage/make.conf;; esac ;;
+            back|"") return ;;
+        esac
+    done
+}
+
 menu_package_managers() {
     while true; do
         local c
-        c=$(tui_menu "Package Managers" "Install and configure package-management frontends:" \
-            native  "Native manager ($PM): update, cache and configuration" \
-            apt     "APT configuration and diagnostics" \
-            aptfast "apt-fast — parallel APT downloads $(st apt-fast)" \
-            nala    "Nala — modern APT frontend $(st nala)" \
-            pip     "Python pip configuration and package installation" \
-            pipx    "pipx — isolated Python applications $(st pipx)" \
-            flatpak "Flatpak and Flathub $(st flatpak)" \
-            snap    "Snap/snapd $(st snap)" \
-            cargo   "Rust Cargo configuration $(st cargo)" \
-            npm     "npm configuration $(st npm)" \
-            pnpm    "pnpm installation/configuration $(st pnpm)" \
-            yarn    "Yarn installation/configuration $(st yarn)" \
-            back    "Back") || return 0
+        c=$(tui_menu "Package Managers" "Configure native, universal and language package managers:" \
+            native "Native manager ($PM): full configuration and maintenance" \
+            apt "APT $(pm_status apt-get)" aptfast "apt-fast $(pm_status apt-fast)" nala "Nala $(pm_status nala)" aptitude "aptitude $(pm_status aptitude)" \
+            pacman "pacman $(pm_status pacman)" yay "yay $(pm_status yay)" paru "paru $(pm_status paru)" \
+            dnf "DNF $(pm_status dnf)" yum "YUM $(pm_status yum)" zypper "zypper $(pm_status zypper)" apk "apk $(pm_status apk)" xbps "XBPS $(pm_status xbps-install)" emerge "Portage/emerge $(pm_status emerge)" \
+            flatpak "Flatpak $(pm_status flatpak)" snap "Snap $(pm_status snap)" nix "Nix $(pm_status nix)" brew "Homebrew/Linuxbrew $(pm_status brew)" \
+            pip "pip $(pm_status pip3)" pipx "pipx $(pm_status pipx)" npm "npm $(pm_status npm)" pnpm "pnpm $(pm_status pnpm)" yarn "Yarn $(pm_status yarn)" \
+            cargo "Cargo $(pm_status cargo)" gem "RubyGems $(pm_status gem)" composer "Composer $(pm_status composer)" go "Go modules/tools $(pm_status go)" back "Back") || return 0
         case "$c" in
-            native) menu_pm_config || true ;;
-            apt) [ "$PM" = apt ] || { tui_msg "N/A" "APT is not the active package manager."; continue; }
-                 local a; a=$(tui_menu "APT" "APT tools:" update "Update indexes" upgrade "Upgrade system" fix "Repair dependencies" config "Edit apt.conf" policy "Show policy" back "Back") || continue
-                 case "$a" in update) apt-get update ;; upgrade) apt-get update && apt-get upgrade -y ;; fix) dpkg --configure -a; apt-get -f install ;; config) ${EDITOR:-nano} /etc/apt/apt.conf 2>/dev/null || ${EDITOR:-nano} /etc/apt/apt.conf.d/99systui ;; policy) apt-cache policy > /tmp/systui.pkg; tui_text "APT policy" /tmp/systui.pkg ;; esac ;;
-            aptfast) [ "$PM" = apt ] && menu_cfg_aptfast || tui_msg "N/A" "apt-fast requires APT." ;;
-            nala) [ "$PM" = apt ] && menu_cfg_nala || tui_msg "N/A" "Nala requires APT." ;;
-            pip) command -v pip3 >/dev/null 2>&1 || pm_install python3-pip; local q; q=$(tui_input "pip" "Package(s) to install; blank opens pip config:" "") || continue; if [ -n "$q" ]; then pip3 install --break-system-packages $q 2>/dev/null || pip3 install $q; else mkdir -p /root/.config/pip; ${EDITOR:-nano} /root/.config/pip/pip.conf; fi ;;
-            pipx) command -v pipx >/dev/null 2>&1 || { pm_install pipx 2>/dev/null || pip3 install --user pipx; }; local q; q=$(tui_input "pipx" "Application to install (blank shows list):" "") || continue; [ -n "$q" ] && pipx install "$q" || { pipx list > /tmp/systui.pkg 2>&1; tui_text "pipx" /tmp/systui.pkg; } ;;
-            flatpak) pm_install flatpak && flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo ;;
-            snap) pm_install snapd; tui_msg "snapd" "snapd installed. Enable its service/socket using the Services menu when supported." ;;
-            cargo) command -v cargo >/dev/null 2>&1 || pm_install cargo; local q; q=$(tui_input "Cargo" "Crate to install (blank opens config):" "") || continue; [ -n "$q" ] && cargo install "$q" || { mkdir -p /root/.cargo; ${EDITOR:-nano} /root/.cargo/config.toml; } ;;
-            npm) command -v npm >/dev/null 2>&1 || pm_install npm; local q; q=$(tui_input "npm" "Global package to install (blank opens config):" "") || continue; [ -n "$q" ] && npm install -g "$q" || npm config edit ;;
-            pnpm) command -v npm >/dev/null 2>&1 || pm_install npm; command -v pnpm >/dev/null 2>&1 || npm install -g pnpm; pnpm config edit ;;
-            yarn) command -v npm >/dev/null 2>&1 || pm_install npm; command -v yarn >/dev/null 2>&1 || npm install -g yarn; yarn config list > /tmp/systui.pkg 2>&1; tui_text "Yarn configuration" /tmp/systui.pkg ;;
+            native) menu_cfg_native_full ;;
+            apt) command -v apt-get >/dev/null && menu_cfg_apt || tui_msg "APT" "APT is not installed." ;;
+            aptfast) command -v apt-get >/dev/null && menu_cfg_aptfast || tui_msg "apt-fast" "apt-fast requires APT." ;;
+            nala) command -v apt-get >/dev/null && menu_cfg_nala || tui_msg "Nala" "Nala requires APT." ;;
+            aptitude) menu_cfg_cli_manager aptitude aptitude /etc/apt/apt.conf aptitude ;;
+            pacman) command -v pacman >/dev/null && { PM_SAVE="$PM"; PM=pacman; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "pacman" "pacman is not installed." ;;
+            dnf) command -v dnf >/dev/null && { PM_SAVE="$PM"; PM=dnf; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "DNF" "DNF is not installed." ;;
+            yum) command -v yum >/dev/null && { PM_SAVE="$PM"; PM=yum; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "YUM" "YUM is not installed." ;;
+            zypper) command -v zypper >/dev/null && { PM_SAVE="$PM"; PM=zypper; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "zypper" "zypper is not installed." ;;
+            apk) command -v apk >/dev/null && { PM_SAVE="$PM"; PM=apk; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "apk" "apk is not installed." ;;
+            xbps) command -v xbps-install >/dev/null && { PM_SAVE="$PM"; PM=xbps; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "XBPS" "XBPS is not installed." ;;
+            emerge) command -v emerge >/dev/null && { PM_SAVE="$PM"; PM=emerge; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "Portage" "emerge is not installed." ;;
+            yay|paru) menu_cfg_cli_manager "$c" "$c" "$HOME/.config/$c/config.json" "$c" ;;
+            flatpak) menu_cfg_flatpak ;;
+            snap) menu_cfg_snap ;;
+            nix) menu_cfg_cli_manager nix nix "$HOME/.config/nix/nix.conf" nix ;;
+            brew) menu_cfg_cli_manager brew brew "$HOME/.config/homebrew/brew.env" brew ;;
+            pip) menu_cfg_cli_manager pip pip3 "$HOME/.config/pip/pip.conf" python3-pip ;;
+            pipx) menu_cfg_cli_manager pipx pipx "$HOME/.config/pipx/config" pipx ;;
+            npm) menu_cfg_cli_manager npm npm "$HOME/.npmrc" npm ;;
+            pnpm) menu_cfg_cli_manager pnpm pnpm "$HOME/.config/pnpm/rc" pnpm ;;
+            yarn) menu_cfg_cli_manager yarn yarn "$HOME/.yarnrc" yarn ;;
+            cargo) menu_cfg_cli_manager cargo cargo "$HOME/.cargo/config.toml" cargo ;;
+            gem) menu_cfg_cli_manager gem gem "$HOME/.gemrc" ruby ;;
+            composer) menu_cfg_cli_manager composer composer "$HOME/.config/composer/config.json" composer ;;
+            go) menu_cfg_cli_manager go go "$HOME/.config/go/env" golang ;;
             back|"") return 0 ;;
         esac
     done
