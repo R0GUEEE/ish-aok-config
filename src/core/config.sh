@@ -89,17 +89,41 @@ detect_init() {
 }
 
 detect_distro() {
-    # Detect Linux distribution
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        DISTRO="${ID:-unknown}"
-        DISTRO_VERSION="${VERSION_ID:-unknown}"
-    else
-        DISTRO="unknown"
-        DISTRO_VERSION="unknown"
+    # Detect Linux distribution without leaking variables from os-release.
+    local os_release="" id="" id_like="" version_id="" pretty_name=""
+
+    if [ -r /etc/os-release ]; then
+        os_release=/etc/os-release
+    elif [ -r /usr/lib/os-release ]; then
+        os_release=/usr/lib/os-release
     fi
-    export DISTRO DISTRO_VERSION
-    log "Detected distro: $DISTRO $DISTRO_VERSION"
+
+    if [ -n "$os_release" ]; then
+        id=$(sed -n 's/^ID=//p' "$os_release" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+        id_like=$(sed -n 's/^ID_LIKE=//p' "$os_release" | head -n1 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+        version_id=$(sed -n 's/^VERSION_ID=//p' "$os_release" | head -n1 | tr -d '"')
+        pretty_name=$(sed -n 's/^PRETTY_NAME=//p' "$os_release" | head -n1 | sed 's/^"//;s/"$//')
+    fi
+
+    # Fallbacks for stripped-down root filesystems lacking os-release.
+    if [ -z "$id" ]; then
+        if [ -r /etc/devuan_version ]; then id=devuan
+        elif [ -r /etc/debian_version ]; then id=debian
+        elif [ -r /etc/alpine-release ]; then id=alpine
+        elif [ -r /etc/arch-release ]; then id=archlinux
+        elif [ -r /etc/fedora-release ]; then id=fedora
+        elif [ -r /etc/gentoo-release ]; then id=gentoo
+        elif command -v xbps-install >/dev/null 2>&1; then id=void
+        else id=unknown
+        fi
+    fi
+
+    DISTRO="$id"
+    DISTRO_ID_LIKE="$id_like"
+    DISTRO_VERSION="${version_id:-unknown}"
+    DISTRO_PRETTY_NAME="${pretty_name:-$id}"
+    export DISTRO DISTRO_ID_LIKE DISTRO_VERSION DISTRO_PRETTY_NAME
+    log "Detected distro: $DISTRO_PRETTY_NAME (id=$DISTRO, like=${DISTRO_ID_LIKE:-none}, version=$DISTRO_VERSION)"
 }
 
 require_root() {

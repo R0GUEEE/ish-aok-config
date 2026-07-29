@@ -708,21 +708,55 @@ provision_generate_menu() {
     tui_msg "Provision Scripts" "Generation completed for $generated selected distribution(s).\n\nDirectory: $(provision_generated_dir)"
 }
 
-menu_ultimate_provision() {
-    local distro choice rc
-    provision_defaults
-    case "$PM" in
-        apt)
-            if grep -q 'ID=devuan' /etc/os-release 2>/dev/null; then distro=devuan
-            else distro=debian; fi ;;
-        apk) distro=alpine ;;
-        pacman) distro=archlinux ;;
-        *) distro= ;;
+provision_detect_current() {
+    # Return: detected-id|display-name|base-provisioner
+    local id="${DISTRO:-unknown}" like="${DISTRO_ID_LIKE:-}" name="${DISTRO_PRETTY_NAME:-${DISTRO:-unknown}}" base=""
+
+    case "$id" in
+        alpine) base=alpine ;;
+        arch|archlinux) id=archlinux; base=archlinux ;;
+        devuan) base=devuan ;;
+        debian) base=debian ;;
+        ubuntu|linuxmint|pop|neon|elementary|zorin|kali|parrot|raspbian)
+            base=debian
+            ;;
+        artix|manjaro|endeavouros|garuda)
+            base=archlinux
+            ;;
+        *)
+            case " $like " in
+                *" devuan "*) base=devuan ;;
+                *" debian "*|*" ubuntu "*) base=debian ;;
+                *" arch "*|*" archlinux "*) base=archlinux ;;
+                *" alpine "*) base=alpine ;;
+            esac
+            ;;
     esac
-    [ -n "$distro" ] || { tui_msg "Unsupported" "Your package manager ($PM) is not yet supported."; return 0; }
+
+    printf '%s|%s|%s\n' "$id" "$name" "$base"
+}
+
+menu_ultimate_provision() {
+    local detected_id distro_name provisioner detection choice rc
+    provision_defaults
+
+    # Refresh detection each time the menu opens in case systui is operating
+    # inside a newly entered chroot/rootfs.
+    detect_pm
+    detect_init
+    detect_distro
+    detection=$(provision_detect_current)
+    IFS='|' read -r detected_id distro_name provisioner <<< "$detection"
+
+    if [ -z "$provisioner" ]; then
+        tui_msg "Unsupported Distribution" \
+            "Detected: $distro_name\nID: $detected_id\nVersion: $DISTRO_VERSION\nID_LIKE: ${DISTRO_ID_LIKE:-none}\nPackage manager: ${PM:-unknown}\n\nUltimate Provision currently has base provisioners for Alpine, Arch-family, Debian-family, and Devuan systems."
+        return 0
+    fi
 
     while true; do
-        choice=$(tui_menu "Ultimate Provision" "Comprehensive system setup (distro: $distro)" \
+        choice=$(tui_menu "Ultimate Provision" \
+            "Detected: $distro_name ($detected_id $DISTRO_VERSION) | provisioner: $provisioner | init: ${INIT:-unknown}" \
             review "Review current provisioning plan" \
             configure "Configure all provisioning options" \
             templates "List distribution provision templates" \
@@ -731,18 +765,19 @@ menu_ultimate_provision() {
             info "About Ultimate Provision" \
             back "Back") || return 0
         case "$choice" in
-            review) provision_write_review "$distro"; tui_text "Provision Review" /tmp/systui.review ;;
+            review) provision_write_review "$distro_name ($detected_id; $provisioner provisioner)"; tui_text "Provision Review" /tmp/systui.review ;;
             configure) provision_configure_menu ;;
             templates) provision_templates_menu ;;
             generate) provision_generate_menu ;;
             run)
-                provision_write_review "$distro"
+                provision_write_review "$distro_name ($detected_id; $provisioner provisioner)"
                 tui_text "Final Provision Plan" /tmp/systui.review || true
-                tui_yesno "Confirm" "Apply this provisioning plan to $distro?" || continue
+                tui_yesno "Confirm" "Apply the $provisioner-family provisioning plan to $distro_name?" || continue
                 clear
-                echo "========== Starting Provision: $distro =========="
+                echo "========== Starting Provision: $distro_name =========="
+                echo "Detected ID: $detected_id | Base provisioner: $provisioner | Init: ${INIT:-unknown}"
                 rc=0
-                case "$distro" in
+                case "$provisioner" in
                     alpine) provision_alpine "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
                     debian) provision_debian "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
                     devuan) provision_devuan "$PROV_TZ" "$PROV_USER" "$PROV_HOST" "$PROV_NOPASS" || rc=$? ;;
@@ -752,16 +787,22 @@ menu_ultimate_provision() {
                 read -rp "Provisioning finished. Press Enter to return..." _ || true
                 ;;
             info)
-                cat > /tmp/systui.info <<'EOF'
+                cat > /tmp/systui.info <<EOF
 ULTIMATE PROVISION
 
-Transforms a fresh Alpine, Arch, Debian, or Devuan rootfs into a configured
-system. Configuration is grouped into identity/localization, shell/editor,
-package profiles, services, SSH, security, and performance.
+Detected system
+  Name: $distro_name
+  ID: $detected_id
+  Version: $DISTRO_VERSION
+  ID_LIKE: ${DISTRO_ID_LIKE:-none}
+  Package manager: ${PM:-unknown}
+  Init system: ${INIT:-unknown}
+  Selected base provisioner: $provisioner
 
-The compatibility performance profile is recommended inside iSH-AOK. Options
-that require unavailable kernel features are attempted safely and skipped when
-unsupported.
+Detection reads /etc/os-release, falls back to /usr/lib/os-release and legacy
+release files, and uses ID_LIKE for derivative distributions. Ubuntu, Kali,
+Mint, Pop!_OS and similar Debian derivatives use the Debian provisioner;
+Manjaro, Artix and similar Arch derivatives use the Arch provisioner.
 EOF
                 tui_text "About Ultimate Provision" /tmp/systui.info ;;
             back) return 0 ;;
