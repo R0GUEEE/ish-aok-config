@@ -1087,6 +1087,15 @@ EOF
 build_debfamily() { # distro release arch mirror target pkgs use_qemu
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6" use_qemu="$7"
     local wgetrc="" selected_mirror=""
+
+    # Derive foreign/native mode from the actual host and target architectures
+    # at execution time. This prevents a stale or restored use_qemu flag from
+    # adding --foreign to native Ubuntu (or other Debian-family) builds.
+    if needs_qemu "$arch"; then
+        use_qemu=1
+    else
+        use_qemu=0
+    fi
     if ! command -v debootstrap >/dev/null 2>&1; then
         tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
         return 1
