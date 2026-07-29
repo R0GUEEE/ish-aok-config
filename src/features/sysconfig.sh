@@ -566,47 +566,84 @@ menu_distro_repos() {
         tui_msg "APT required" "Distro Repos writes APT source entries to /etc/apt/sources.list.d.\nThe current package manager is '$PM'."
         return 0
     }
+
+    local host_id="unknown" host_name="Unknown distribution"
+    if [ -r /etc/os-release ]; then
+        host_id=$(. /etc/os-release; printf '%s' "${ID:-unknown}")
+        host_name=$(. /etc/os-release; printf '%s' "${PRETTY_NAME:-${NAME:-$host_id}}")
+    elif [ -r /usr/lib/os-release ]; then
+        host_id=$(. /usr/lib/os-release; printf '%s' "${ID:-unknown}")
+        host_name=$(. /usr/lib/os-release; printf '%s' "${PRETTY_NAME:-${NAME:-$host_id}}")
+    fi
+
     while true; do
-        local distro release components pockets types file c
-        distro=$(tui_radio "Distro Repos" \
-            "Official repositories from Rootfs Builder distributions.\nSPACE selects a distribution; ENTER confirms:" \
-            debian "Debian — APT repository" on
-            devuan "Devuan — APT repository" off
-            ubuntu "Ubuntu — APT repository" off
-            kali "Kali Linux — APT repository" off
-            alpine "Alpine Linux — uses apk repositories" off
-            arch "Arch Linux — uses pacman mirrorlists" off
-            fedora "Fedora — uses DNF .repo files" off
-            opensuse "openSUSE Leap — uses zypper services/repos" off
-            tumbleweed "openSUSE Tumbleweed — uses zypper services/repos" off
-            gentoo "Gentoo — uses Portage sync configuration" off
-            void "Void Linux — uses XBPS repositories" off
-            back "Back" off) || return 0
-        [ "$distro" = back ] && return 0
-        case "$distro" in
-            debian|devuan|ubuntu|kali) ;;
-            *)
-                tui_msg "Native repository format" \
-                    "$(distro_repo_label "$distro") is included in the Rootfs Builder, but its official repositories cannot be added to APT sources.list.d.\n\nUse that distribution's native repository manager inside its rootfs."
-                continue ;;
-        esac
-        release=$(distro_repo_release_menu "$distro") || continue
-        components=$(distro_repo_components "$distro" "$release") || continue
-        pockets=$(distro_repo_pockets "$distro" "$release") || continue
-        types=$(tui_check "Distro Repos — Package types" "SPACE toggles; ENTER confirms:" \
-            deb "Binary packages (deb)" on
-            deb-src "Source packages (deb-src)" off) || continue
-        types=${types//\"/}
-        [ -n "${types// }" ] || continue
-        file=$(distro_repo_write_apt "$distro" "$release" "$components" "$pockets" "$types") || {
-            tui_msg "Error" "Could not write the repository file. Check $LOGFILE."
+        local selected distro release components pockets types file action
+        local files=() added=0 failed=0
+
+        selected=$(tui_check "Distro Repos" \
+            "Host: $host_name\n\nSPACE toggles distributions; ENTER confirms.\nCross-distribution APT sources are allowed." \
+            debian "Debian — APT repository" off \
+            devuan "Devuan — APT repository" off \
+            ubuntu "Ubuntu — APT repository" off \
+            kali "Kali Linux — APT repository" off \
+            alpine "Alpine Linux — browse native apk repositories" off \
+            arch "Arch Linux — browse native pacman repositories" off \
+            fedora "Fedora — browse native DNF repositories" off \
+            opensuse "openSUSE Leap — browse native zypper repositories" off \
+            tumbleweed "openSUSE Tumbleweed — browse native zypper repositories" off \
+            gentoo "Gentoo — browse native Portage repositories" off \
+            void "Void Linux — browse native XBPS repositories" off) || return 0
+        selected=${selected//\"/}
+        [ -n "${selected// }" ] || continue
+
+        for distro in $selected; do
+            case "$distro" in
+                debian|devuan|ubuntu|kali)
+                    if [ "$host_id" != "$distro" ]; then
+                        tui_yesno "Cross-distribution repository" \
+                            "Current system: $host_name ($host_id)\nSelected source: $(distro_repo_label "$distro")\n\nMixing distribution repositories can cause dependency conflicts or make the system unbootable. Continue and create an isolated sources.list.d file?" \
+                            || continue
+                    fi
+                    ;;
+                *)
+                    tui_msg "Native repository format" \
+                        "$(distro_repo_label "$distro") does not use APT. Its official repositories cannot be written as an APT sources.list.d entry.\n\nUse that distribution's native repository manager inside its rootfs."
+                    continue
+                    ;;
+            esac
+
+            release=$(distro_repo_release_menu "$distro") || continue
+            components=$(distro_repo_components "$distro" "$release") || continue
+            pockets=$(distro_repo_pockets "$distro" "$release") || continue
+            types=$(tui_check "Distro Repos — Package types" "SPACE toggles; ENTER confirms:" \
+                deb "Binary packages (deb)" on \
+                deb-src "Source packages (deb-src)" off) || continue
+            types=${types//\"/}
+            [ -n "${types// }" ] || continue
+
+            if file=$(distro_repo_write_apt "$distro" "$release" "$components" "$pockets" "$types"); then
+                files+=("$file")
+                added=$((added + 1))
+            else
+                warn "Could not write repositories for $distro $release."
+                failed=$((failed + 1))
+            fi
+        done
+
+        [ "$added" -gt 0 ] || {
+            [ "$failed" -gt 0 ] && tui_msg "Repository errors" "No repository files were created. Check $LOGFILE."
             continue
         }
-        c=$(tui_radio "Distro Repos — Added" "Created:\n$file\n\nChoose the next action:" \
-            another "Add another distribution repository" on
-            refresh "Run apt-get update now" off
+
+        local summary="Created $added repository file(s):"
+        for file in "${files[@]}"; do summary="$summary\n$file"; done
+        [ "$failed" -gt 0 ] && summary="$summary\n\nFailed: $failed (see $LOGFILE)"
+
+        action=$(tui_radio "Distro Repos — Added" "$summary\n\nChoose the next action:" \
+            refresh "Run apt-get update now" off \
+            another "Add more distribution repositories" on \
             back "Return to Repositories" off) || return 0
-        case "$c" in
+        case "$action" in
             refresh) run_cmd "apt-get update" apt-get update ;;
             back) return 0 ;;
         esac
@@ -2811,7 +2848,7 @@ menu_shell_plugins() {
         local c sel
         c=$(tui_menu "Shell Plugins" "Cross-shell enhancements:" starship "Starship" fzf "fzf" comp "Completions" zoxide "zoxide" atuin "Atuin" direnv "direnv" carapace "Carapace" syntax "Syntax highlighting" autosuggest "Autosuggestions" back "Back") || return 0
         case "$c" in
-            starship) command -v starship >/dev/null || { pm_install starship 2>/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh"; };;
+            starship) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh";;
             fzf) pm_install fzf;;
             comp) sel=$(tui_check "Completions" "SPACE selects:" bash-completion "Bash" on zsh-completions "Zsh" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_install $sel;;
             zoxide) pm_install zoxide;; atuin) pm_install atuin 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; direnv) pm_install direnv;; carapace) pm_install carapace 2>/dev/null || tui_msg "Unavailable" "Not found in repositories.";; syntax) pm_install zsh-syntax-highlighting;; autosuggest) pm_install zsh-autosuggestions;; back|"") return 0;;
