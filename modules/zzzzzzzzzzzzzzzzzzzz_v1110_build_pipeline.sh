@@ -23,26 +23,41 @@ v1110_pipeline_menu(){
   done
 }
 
-v1110_builder_dashboard(){
-  v1101_init >/dev/null 2>&1 || true
+v1110_resources_menu(){
   while :; do
-    choice=$(ui_menu 'RootFS Builder' "Resumable pipeline | Backend: $(v1110_backend_name)\nTarget: $(v1101_profile_value DISTRO) $(v1101_profile_value RELEASE) / $(v1101_profile_value ARCH)" \
-      pipeline 'Build Pipeline — plan, run, resume, history, and logs' \
-      new 'Guided RootFS build configuration' \
-      profiles 'Build profiles' \
+    choice=$(ui_menu 'Builder Resources' 'Package sets, repositories, keyrings and caches used by builds.' \
       packages 'Reusable package sets' \
-      queue 'Build queue' \
       repositories 'Builder repositories and mirrors' \
       keyrings 'Target-distribution keyring cache' \
       cache 'Download and artifact cache' \
+      back 'Back') || return 0
+    case $choice in
+      packages) v1101_package_sets_menu;;
+      repositories) v1101_builder_repositories_menu;;
+      keyrings) v110_rootfs_keyrings_menu;;
+      cache) v1101_cache_menu;;
+      back) return 0;;
+    esac
+  done
+}
+
+v1110_builder_dashboard(){
+  v1101_init >/dev/null 2>&1 || true
+  while :; do
+    choice=$(ui_menu 'RootFS Builder' "$(printf 'Resumable pipeline | Backend: %s\nTarget: %s %s / %s' "$(v1110_backend_name)" "$(v1101_profile_value DISTRO)" "$(v1101_profile_value RELEASE)" "$(v1101_profile_value ARCH)")" \
+      pipeline 'Build Pipeline — plan, run, resume, history, and logs' \
+      new 'Guided RootFS build configuration' \
+      profiles 'Build profiles' \
+      queue 'Build queue' \
+      resources 'Package sets, repositories, keyrings and cache' \
       validate 'Pre-build validation' \
       artifacts 'Artifacts and manifests' \
       manage 'Manage existing RootFS filesystems' \
       advanced 'Advanced builder tools' \
       back 'Back') || return 0
     case $choice in
-      pipeline) v1110_pipeline_menu;; new) v102_guided_build;; profiles) v1101_profile_menu;; packages) v1101_package_sets_menu;;
-      queue) v1101_queue_menu;; repositories) v1101_builder_repositories_menu;; keyrings) v110_rootfs_keyrings_menu;; cache) v1101_cache_menu;;
+      pipeline) v1110_pipeline_menu;; new) v102_guided_build;; profiles) v1101_profile_menu;;
+      queue) v1101_queue_menu;; resources) v1110_resources_menu;;
       validate) v1101_validation_menu;; artifacts) v1101_artifacts_menu;; manage) v104_manage_rootfs_menu;; advanced) v102_advanced_build_menu;; back) return 0;;
     esac
   done

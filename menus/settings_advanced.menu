@@ -6,5 +6,4 @@ palette|Command Palette|workspace_command_palette|Search every registered action
 classic|Classic Navigation|classic_main_menu|Complete legacy v8 menu structure
 navigation|Navigation Diagnostics|v970_navigation_diagnostics_menu|Canonical routes, audits and saved-state repair
 history|Navigation History|v980_history_menu|Breadcrumbs and recently visited canonical menus
-search|Navigation Search|v990_navigation_search_menu|Search all tools and open most-used actions
 back|Back|@return|

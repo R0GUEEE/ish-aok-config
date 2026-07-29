@@ -118,7 +118,9 @@ EOF_ROWS
   [ "$stale" -eq 0 ] || rc=1
 
   printf '\nUnderlying route audit:\n' >>"$V970_ROUTE_REPORT"
-  if v962_route_audit; then
+  # Run in a subshell: the nested audit reuses the shell-global rc variable
+  # and would otherwise clobber the failures recorded above.
+  if ( v962_route_audit ); then
     printf '  PASS v9.6.2 complete routing audit\n' >>"$V970_ROUTE_REPORT"
   else
     printf '  FAIL v9.6.2 complete routing audit\n' >>"$V970_ROUTE_REPORT"; rc=1

@@ -12,7 +12,7 @@ unified_build_menu(){ v91_menu_run build; }
 v90_rootfs_actions_menu(){ v91_menu_run rootfs; }
 v90_build_workflow_menu(){ v91_menu_run build; }
 v90_administration_menu(){ v91_menu_run management; }
-v90_reports_menu(){ v91_menu_run reports; }
+v90_reports_menu(){ v91_menu_run main; }
 v90_settings_menu(){ v91_menu_run settings; }
 
 v962_route_manifest(){
@@ -24,7 +24,7 @@ unified_build_menu|build
 v90_rootfs_actions_menu|rootfs
 v90_build_workflow_menu|build
 v90_administration_menu|management
-v90_reports_menu|reports
+v90_reports_menu|main
 v90_settings_menu|settings
 ROUTES
 }

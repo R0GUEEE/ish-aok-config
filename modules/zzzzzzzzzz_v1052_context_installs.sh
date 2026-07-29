@@ -64,7 +64,7 @@ v1052_network_menu(){
   while :; do
     c=$(ui_menu 'Networking and SSH' 'Configure networking or install missing host networking utilities.' \
       install 'Install networking tools' ssh 'SSH configuration' dns 'DNS configuration' tools 'Network diagnostics' back Back) || return 0
-    case $c in install) v105_select_group_packages network;; ssh) ssh_menu;; dns) network_menu;; tools) network_tools_menu;; back) return 0;; esac
+    case $c in install) v105_select_group_packages network;; ssh) ssh_menu;; dns) network_dns_profile;; tools) network_tools_menu;; back) return 0;; esac
   done
 }
 

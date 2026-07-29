@@ -86,7 +86,7 @@ unified_build_menu|build
 v90_rootfs_actions_menu|rootfs
 v90_build_workflow_menu|build
 v90_administration_menu|management
-v90_reports_menu|reports
+v90_reports_menu|main
 v90_settings_menu|settings
 ROUTES
 }
@@ -98,7 +98,7 @@ v101_route_audit(){
   v962_reachable_menus | sort -u >"$reachable"
   {
     printf '%s %s — Menu Routing Audit\n\n' "$PROGRAM" "$VERSION"
-    if v91_menu_validate; then printf 'Handlers: PASS\n'; else printf 'Handlers: FAIL\n'; rc=1; fi
+    if ( v91_menu_validate ); then printf 'Handlers: PASS\n'; else printf 'Handlers: FAIL\n'; rc=1; fi
     for f in "$V91_MENU_DIR"/*.menu; do
       [ -f "$f" ] || continue; m=${f##*/}; m=${m%.menu}
       grep -qx "$m" "$reachable" || { printf 'Orphan menu: %s\n' "$m"; rc=1; }

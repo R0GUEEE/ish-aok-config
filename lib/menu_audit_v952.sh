@@ -8,7 +8,7 @@ v952_menu_audit(){
     printf '%s %s — Menu Audit\n\n' "$PROGRAM" "$VERSION"
     printf 'Declarative menus:\n'
   } >>"$V952_MENU_AUDIT_REPORT"
-  if v91_menu_validate >>"$V952_MENU_AUDIT_REPORT" 2>&1; then
+  if ( v91_menu_validate ) >>"$V952_MENU_AUDIT_REPORT" 2>&1; then
     printf '  PASS: all declarative handlers and submenus resolve\n' >>"$V952_MENU_AUDIT_REPORT"
   else
     printf '  FAIL: declarative validation errors detected\n' >>"$V952_MENU_AUDIT_REPORT"; rc=1

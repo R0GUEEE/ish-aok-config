@@ -21,5 +21,5 @@ m=$(v94_matrix_create smoke); v94_matrix_add "$m" "$child" alpine edge arm64
 v94_matrix_validate "$m" >/dev/null
 v94_matrix_plan "$m" | grep -q 'alpine'
 v94_capability_report | grep -q 'debootstrap'
-grep -q '^matrix|' "$BASE/menus/build_multi.menu"
+grep -q '^matrix|' "$BASE/menus/build_advanced.menu"
 grep -q -- '--build-matrix-report' "$BASE/modules/main.sh"

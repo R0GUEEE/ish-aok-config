@@ -1,3 +1,0 @@
-execute|Build execution, status and logs|v88_build_execution_menu|Review plan, run, resume, recover and inspect history
-capabilities|Builder capabilities|v95_builder_capabilities_ui|Detect available backends
-back|Back|@return|

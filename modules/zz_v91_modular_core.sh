@@ -98,7 +98,7 @@ workspace_report_v91(){
 v90_rootfs_actions_menu(){ v91_menu_run rootfs; }
 v90_build_workflow_menu(){ v91_menu_run build; }
 v90_administration_menu(){ v91_menu_run administration; }
-v90_reports_menu(){ v91_menu_run reports; }
+v90_reports_menu(){ v91_menu_run main; }
 v90_settings_menu(){ v91_menu_run settings; }
 workspace_dashboard_v90(){ workspace_dashboard_v91; }
 workspace_report_v90(){ workspace_report_v91; }

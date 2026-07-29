@@ -4,7 +4,6 @@ preferences|Application Defaults|project_settings_menu|Logging, progress and beh
 setup|Initial Setup|quick_system_setup_menu|Configure essential defaults
 ui|Terminal Interface|ui_mode_menu|Choose dialog, whiptail or text interface
 plugins|Extensions and Plugins|sdk_modules_menu|Install and manage optional modules
-search|Favorites and Search|v990_navigation_search_menu|Find and save tools
 advanced|Advanced Settings|@menu:settings_advanced|Diagnostics, routes and developer options
 help|Help|v103_settings_help|Navigation and safety information
 back|Back|@return|

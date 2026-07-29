@@ -283,7 +283,7 @@ main(){
     --software-catalog-report) v11_catalog_report;;
     --software-catalog-audit) v11_catalog_audit;;
     --sdk-self-test) v112_sdk_self_test;;
-    --diagnostics-audit) v112_bug_audit;;
+    --diagnostics-audit) v112_bug_audit; _audit_rc=$?; cat "$V112_AUDIT_REPORT"; return "$_audit_rc";;
     --version) printf '%s %s\n' "$PROGRAM" "$VERSION";;
     --v11-plugin-report) v11_plugin_inventory || true;;
         --repository-report) root=$(active_rootfs 2>/dev/null || echo /); [ -d "$root" ] || root=/; out=$(repo_v86_report "$root"); cat "$out";;
@@ -292,7 +292,15 @@ main(){
     --module-report) sdk_module_report;;
     --validate-modules) sdk_discover_modules; rc=0; while IFS="$(printf '\t')" read -r id title category version status origin manifest rest; do sdk_validate_manifest "$manifest" || { printf 'Invalid: %s\n' "$manifest" >&2; rc=1; }; done <"$V75_MODULE_INDEX"; exit "$rc";;
     --workflow) shift; workflow_run_named "${1:-}";;
-    --run-action) shift; command_run "${1:-}";;
+    --run-action)
+      shift
+      _cli_action=${1:-}
+      command -v command_registry_build >/dev/null 2>&1 && command_registry_build
+      if [ -z "$_cli_action" ] || ! command_exists "$_cli_action"; then
+        printf 'Unknown action: %s\nRun --registry-report for available actions.\n' "$_cli_action" >&2
+        return 2
+      fi
+      command_run "$_cli_action";;
     --registry-report) REGISTRY_REPORT_QUIET=yes; export REGISTRY_REPORT_QUIET; registry_report;;
     --plugin-report) plugin_list_catalog; printf '\nInstalled:\n'; for f in "$PLUGIN_MANIFEST_DIR"/*.manifest; do [ -f "$f" ] && cat "$f"; done; true;;
     --verbose) VERBOSE=yes; export VERBOSE; shift; main_menu;;

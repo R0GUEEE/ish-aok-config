@@ -39,8 +39,6 @@ v91_menu_title(){
     rootfs_protect) printf 'Snapshots & Repair';;
     rootfs_transfer) printf 'Clone, Compare & Export';;
     build_profile) printf 'Build Profile';;
-    build_run) printf 'Build & Monitor';;
-    build_multi) printf 'Matrix & Queue';;
     build_outputs) printf 'Artifacts & Export';;
     reports_system) printf 'System Reports';;
     settings_advanced) printf 'Advanced Settings';;
@@ -61,8 +59,6 @@ v91_menu_text(){
     rootfs_protect) printf 'Snapshots, health checks, compatibility and repair.';;
     rootfs_transfer) printf 'Clone, compare, import and export RootFS instances.';;
     build_profile) printf 'Select a preset, configure paths and validate the profile.';;
-    build_run) printf 'Review, execute, resume and monitor build plans.';;
-    build_multi) printf 'Manage matrices, recipes, queues and projects.';;
     build_outputs) printf 'Manage archives, compression and artifact output.';;
     reports_system) printf 'Distribution, service and repository reports.';;
     settings_advanced) printf 'Command palette, developer tools and legacy navigation.';;

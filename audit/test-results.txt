@@ -1,18 +1,13 @@
 integrated_navigation.sh                         PASS
-v91_modular_core.sh                              PASS
 plugin_selection.sh                              PASS
-v91_posix.sh                                     PASS
 progress.sh                                      PASS
 registry.sh                                      PASS
-v1101_builder_framework.sh                       PASS
-v1110_build_pipeline.sh                          PASS
 shell_plugins.sh                                 PASS
 syntax.sh                                        PASS
 test_v110_builder_repo_editor.sh                 PASS
 test_v73_milestone2.sh                           PASS
 test_v73_workspace.sh                            PASS
 test_v90_workspace.sh                            PASS
-v91_menu_engine.sh                               PASS
 v1000_task_center.sh                             PASS
 v101_classic_main.sh                             PASS
 v102_simple_builder.sh                           PASS
@@ -28,6 +23,8 @@ v108_repository_sources.sh                       PASS
 v109_keyring_manager.sh                          PASS
 v1100_cli.sh                                     PASS
 v1100_foundation.sh                              PASS
+v1101_builder_framework.sh                       PASS
+v1110_build_pipeline.sh                          PASS
 v111_rootfs_keyring_cache.sh                     PASS
 v1120_plugin_sdk.sh                              PASS
 v112_menu_audit_bugfix.sh                        PASS
@@ -49,6 +46,9 @@ v86_repository_policy.sh                         PASS
 v87_builder_menu_integration.sh                  PASS
 v88_build_execution.sh                           PASS
 v89_build_profiles.sh                            PASS
+v91_menu_engine.sh                               PASS
+v91_modular_core.sh                              PASS
+v91_posix.sh                                     PASS
 v92_builder_locations.sh                         PASS
 v93_build_paths.sh                               PASS
 v941_rootfs_navigation.sh                        PASS
