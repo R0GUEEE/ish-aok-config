@@ -407,6 +407,212 @@ repo_add_apt_popular() { # <tag ...>
     show_warnings
 }
 
+
+# ---- Official distribution repositories -------------------------------------
+# Browse the distributions supported by Rootfs Builder and write official APT
+# repositories to isolated files under /etc/apt/sources.list.d. Non-APT
+# distributions remain visible in the catalogue but cannot be represented by
+# an APT sources.list entry.
+distro_repo_label() {
+    case "$1" in
+        debian) echo "Debian" ;; devuan) echo "Devuan" ;; ubuntu) echo "Ubuntu" ;;
+        alpine) echo "Alpine Linux" ;; arch) echo "Arch Linux" ;; fedora) echo "Fedora" ;;
+        kali) echo "Kali Linux" ;; opensuse) echo "openSUSE Leap" ;;
+        tumbleweed) echo "openSUSE Tumbleweed" ;; gentoo) echo "Gentoo Linux" ;;
+        void) echo "Void Linux" ;; *) echo "$1" ;;
+    esac
+}
+
+distro_repo_release_menu() { # <distro>
+    local distro="$1" arch candidates="" def="" r state tags=()
+    arch=$(dpkg --print-architecture 2>/dev/null || echo amd64)
+    if declare -F rootfs_release_candidates >/dev/null 2>&1; then
+        candidates=$(rootfs_release_candidates "$distro" "$arch" | tail -n 20)
+    fi
+    case "$distro" in
+        debian) def=trixie; [ -n "$candidates" ] || candidates=$'bookworm\ntrixie\nforky\nsid' ;;
+        devuan) def=excalibur; [ -n "$candidates" ] || candidates=$'daedalus\nexcalibur\nfreia\nceres' ;;
+        ubuntu) def=noble; [ -n "$candidates" ] || candidates=$'jammy\nnoble\nplucky\nquesting' ;;
+        kali) def=kali-rolling; candidates=$'kali-rolling\nkali-last-snapshot' ;;
+        *) return 1 ;;
+    esac
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        state=off; [ "$r" = "$def" ] && state=on
+        tags+=("$r" "$(distro_repo_label "$distro") $r" "$state")
+    done <<<"$candidates"
+    tags+=(custom "Enter a release manually" off)
+    r=$(tui_radio "Distro Repos — Release" "SPACE selects a release; ENTER confirms:" "${tags[@]}") || return 1
+    [ "$r" = custom ] && r=$(tui_input "Custom release" "Release/codename:" "$def")
+    [ -n "$r" ] || return 1
+    printf '%s\n' "$r"
+}
+
+distro_repo_key_option() { # <distro> -> apt option or empty
+    local f
+    case "$1" in
+        debian) set -- /usr/share/keyrings/debian-archive-keyring.gpg ;;
+        devuan) set -- /usr/share/keyrings/devuan-archive-keyring.gpg /usr/share/keyrings/devuan-keyring.gpg ;;
+        ubuntu) set -- /usr/share/keyrings/ubuntu-archive-keyring.gpg ;;
+        kali) set -- /usr/share/keyrings/kali-archive-keyring.gpg ;;
+        *) return 0 ;;
+    esac
+    for f in "$@"; do
+        [ -f "$f" ] && { printf '[signed-by=%s]' "$f"; return 0; }
+    done
+}
+
+distro_repo_components() { # <distro> <release>
+    local distro="$1" release="$2" args=() sel
+    case "$distro" in
+        debian|devuan|kali)
+            args=(main "main — officially supported packages" on
+                  contrib "contrib — free packages depending on non-free software" off
+                  non-free "non-free — redistributable non-free software" off
+                  non-free-firmware "non-free-firmware — device firmware" off) ;;
+        ubuntu)
+            args=(main "main — officially supported software" on
+                  restricted "restricted — supported proprietary drivers" off
+                  universe "universe — community-maintained software" off
+                  multiverse "multiverse — restricted software" off) ;;
+        *) return 1 ;;
+    esac
+    sel=$(tui_check "Distro Repos — Components" \
+        "$(distro_repo_label "$distro") $release\nSPACE toggles components; ENTER confirms:" "${args[@]}") || return 1
+    sel=${sel//\"/}
+    [ -n "${sel// }" ] || return 1
+    printf '%s\n' "$sel"
+}
+
+distro_repo_pockets() { # <distro> <release>
+    local distro="$1" release="$2" sel
+    case "$distro" in
+        debian)
+            sel=$(tui_check "Distro Repos — Suites" "SPACE toggles suites; ENTER confirms:" \
+                base "$release" on
+                updates "$release-updates" off
+                security "$release-security" off
+                backports "$release-backports" off) || return 1 ;;
+        ubuntu)
+            sel=$(tui_check "Distro Repos — Pockets" "SPACE toggles pockets; ENTER confirms:" \
+                base "$release" on
+                updates "$release-updates" on
+                security "$release-security" on
+                backports "$release-backports" off
+                proposed "$release-proposed (development/testing)" off) || return 1 ;;
+        devuan)
+            sel=$(tui_check "Distro Repos — Suites" "SPACE toggles suites; ENTER confirms:" \
+                base "$release" on \
+                updates "$release-updates" on \
+                security "$release-security" on) || return 1 ;;
+        kali) sel=base ;;
+        *) return 1 ;;
+    esac
+    sel=${sel//\"/}
+    [ -n "${sel// }" ] || return 1
+    printf '%s\n' "$sel"
+}
+
+distro_repo_write_apt() { # <distro> <release> <components> <pockets> <types>
+    local distro="$1" release="$2" components="$3" pockets="$4" types="$5"
+    local base security suite pocket type opt file label
+    case "$distro" in
+        debian)
+            base="https://deb.debian.org/debian"
+            security="https://security.debian.org/debian-security" ;;
+        devuan) base="https://deb.devuan.org/merged" ;;
+        ubuntu)
+            case "$(dpkg --print-architecture 2>/dev/null)" in
+                arm64|armhf|ppc64el|riscv64|s390x)
+                    base="https://ports.ubuntu.com/ubuntu-ports"; security="$base" ;;
+                *)
+                    base="https://archive.ubuntu.com/ubuntu"; security="https://security.ubuntu.com/ubuntu" ;;
+            esac ;;
+        kali) base="https://http.kali.org/kali" ;;
+        *) return 1 ;;
+    esac
+    opt=$(distro_repo_key_option "$distro")
+    file="/etc/apt/sources.list.d/systui-distro-${distro}-${release}.list"
+    mkdir -p /etc/apt/sources.list.d
+    [ -f "$file" ] && cp "$file" "$file.bak.$(date +%s)"
+    {
+        echo "# Added by systui Distro Repos — $(distro_repo_label "$distro") $release"
+        echo "# Official distribution repositories only."
+        for pocket in $pockets; do
+            case "$pocket" in
+                base) suite="$release" ;;
+                updates) suite="$release-updates" ;;
+                security) suite="$release-security" ;;
+                backports) suite="$release-backports" ;;
+                proposed) suite="$release-proposed" ;;
+                *) continue ;;
+            esac
+            for type in $types; do
+                [ "$type" = deb ] || [ "$type" = deb-src ] || continue
+                if { [ "$distro" = debian ] || [ "$distro" = ubuntu ]; } && [ "$pocket" = security ]; then
+                    printf '%s %s %s %s %s\n' "$type" "$opt" "$security" "$suite" "$components"
+                else
+                    printf '%s %s %s %s %s\n' "$type" "$opt" "$base" "$suite" "$components"
+                fi
+            done
+        done
+    } | sed 's/^\(deb\(-src\)\?\)  /\1 /' > "$file"
+    log "repo: wrote official $distro $release repositories to $file"
+    printf '%s\n' "$file"
+}
+
+menu_distro_repos() {
+    [ "$PM" = apt ] || {
+        tui_msg "APT required" "Distro Repos writes APT source entries to /etc/apt/sources.list.d.\nThe current package manager is '$PM'."
+        return 0
+    }
+    while true; do
+        local distro release components pockets types file c
+        distro=$(tui_radio "Distro Repos" \
+            "Official repositories from Rootfs Builder distributions.\nSPACE selects a distribution; ENTER confirms:" \
+            debian "Debian — APT repository" on
+            devuan "Devuan — APT repository" off
+            ubuntu "Ubuntu — APT repository" off
+            kali "Kali Linux — APT repository" off
+            alpine "Alpine Linux — uses apk repositories" off
+            arch "Arch Linux — uses pacman mirrorlists" off
+            fedora "Fedora — uses DNF .repo files" off
+            opensuse "openSUSE Leap — uses zypper services/repos" off
+            tumbleweed "openSUSE Tumbleweed — uses zypper services/repos" off
+            gentoo "Gentoo — uses Portage sync configuration" off
+            void "Void Linux — uses XBPS repositories" off
+            back "Back" off) || return 0
+        [ "$distro" = back ] && return 0
+        case "$distro" in
+            debian|devuan|ubuntu|kali) ;;
+            *)
+                tui_msg "Native repository format" \
+                    "$(distro_repo_label "$distro") is included in the Rootfs Builder, but its official repositories cannot be added to APT sources.list.d.\n\nUse that distribution's native repository manager inside its rootfs."
+                continue ;;
+        esac
+        release=$(distro_repo_release_menu "$distro") || continue
+        components=$(distro_repo_components "$distro" "$release") || continue
+        pockets=$(distro_repo_pockets "$distro" "$release") || continue
+        types=$(tui_check "Distro Repos — Package types" "SPACE toggles; ENTER confirms:" \
+            deb "Binary packages (deb)" on
+            deb-src "Source packages (deb-src)" off) || continue
+        types=${types//\"/}
+        [ -n "${types// }" ] || continue
+        file=$(distro_repo_write_apt "$distro" "$release" "$components" "$pockets" "$types") || {
+            tui_msg "Error" "Could not write the repository file. Check $LOGFILE."
+            continue
+        }
+        c=$(tui_radio "Distro Repos — Added" "Created:\n$file\n\nChoose the next action:" \
+            another "Add another distribution repository" on
+            refresh "Run apt-get update now" off
+            back "Return to Repositories" off) || return 0
+        case "$c" in
+            refresh) run_cmd "apt-get update" apt-get update ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
 # ---- APT sources.list.d file manager (apt only) -------------------------------
 repo_sources_listd() {
     [ "$PM" != apt ] && { tui_msg "N/A" "sources.list.d management is APT-only."; return; }
@@ -898,6 +1104,7 @@ menu_repos() {
             view    "View configured repositories" \
             manage  "Manage sources (space-select enable/disable)" \
             listd   "Manage sources.list and sources.list.d" \
+            distro  "Distro Repos (official distro repositories)" \
             popular "Add popular repositories (space-select)" \
             refresh "Refresh package indexes" \
             addrepo "Add a custom repository" \
@@ -915,6 +1122,7 @@ menu_repos() {
                 tui_text "Repositories" /tmp/systui.repo ;;
             manage)  repo_manage ;;
             listd)   repo_sources_listd ;;
+            distro)  menu_distro_repos ;;
             popular) repo_popular ;;
             refresh)
                 case "$PM" in
