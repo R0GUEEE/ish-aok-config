@@ -809,17 +809,86 @@ repo_manage() {
     esac
 }
 
+apt_keyring_package_for_distro() {
+    local distro="$1" pkg
+    case "$distro" in
+        debian)      set -- debian-archive-keyring ;;
+        devuan)      set -- devuan-keyring devuan-archive-keyring ;;
+        ubuntu)      set -- ubuntu-keyring ;;
+        alpine)      set -- alpine-keys ;;
+        arch)        set -- archlinux-keyring ;;
+        fedora)      set -- fedora-gpg-keys fedora-repos ;;
+        kali)        set -- kali-archive-keyring ;;
+        opensuse|tumbleweed) set -- opensuse-archive-keyring openSUSE-build-key ;;
+        gentoo)      set -- gentoo-keys gentoo-keyring ;;
+        void)        set -- void-linux-keyring void-keyring ;;
+        *)           return 1 ;;
+    esac
+    for pkg in "$@"; do
+        apt-cache show "$pkg" >/dev/null 2>&1 && { printf '%s\n' "$pkg"; return 0; }
+    done
+    return 1
+}
+
 apt_missing_keyrings_menu() {
     [ "$PM" = apt ] || return 0
-    local args=() pkg state sel
-    for pkg in debian-archive-keyring ubuntu-keyring devuan-keyring kali-archive-keyring; do
-        apt-cache show "$pkg" >/dev/null 2>&1 || continue
-        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' && state=on || state=off
-        args+=("$pkg" "Archive signing keys" "$state")
+
+    local args=() distro label pkg state sel selected install_pkgs="" unavailable=""
+    local distros="debian devuan ubuntu alpine arch fedora kali opensuse tumbleweed gentoo void"
+
+    for distro in $distros; do
+        case "$distro" in
+            debian)     label="Debian" ;;
+            devuan)     label="Devuan" ;;
+            ubuntu)     label="Ubuntu" ;;
+            alpine)     label="Alpine Linux" ;;
+            arch)       label="Arch Linux" ;;
+            fedora)     label="Fedora" ;;
+            kali)       label="Kali Linux" ;;
+            opensuse)   label="openSUSE Leap" ;;
+            tumbleweed) label="openSUSE Tumbleweed" ;;
+            gentoo)     label="Gentoo Linux" ;;
+            void)       label="Void Linux" ;;
+        esac
+
+        if pkg=$(apt_keyring_package_for_distro "$distro"); then
+            if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+                state=on
+                args+=("$distro" "$label — $pkg (installed)" "$state")
+            else
+                state=off
+                args+=("$distro" "$label — install $pkg" "$state")
+            fi
+        else
+            args+=("$distro" "$label — unavailable in current APT sources" off)
+        fi
     done
-    [ ${#args[@]} -gt 0 ] || { tui_msg "None" "No supported keyring packages found."; return 0; }
-    sel=$(tui_check "Archive Keyrings" "SPACE selects keyrings to install:" "${args[@]}") || return 0
-    sel=${sel//\"/}; [ -n "${sel// }" ] && run_cmd "Installing archive keyrings" apt-get install -y $sel
+
+    sel=$(tui_check "Missing Rootfs Keyrings" \
+        "SPACE selects rootfs distributions; ENTER installs available keyrings.\nInstalled keyrings are pre-selected:" \
+        "${args[@]}") || return 0
+    selected=${sel//\"/}
+    [ -n "${selected// }" ] || return 0
+
+    for distro in $selected; do
+        if pkg=$(apt_keyring_package_for_distro "$distro"); then
+            case " $install_pkgs " in
+                *" $pkg "*) ;;
+                *) install_pkgs="$install_pkgs $pkg" ;;
+            esac
+        else
+            unavailable="$unavailable $distro"
+        fi
+    done
+
+    if [ -n "${install_pkgs// }" ]; then
+        run_cmd "Installing selected rootfs keyrings" apt-get install -y $install_pkgs
+    fi
+
+    if [ -n "${unavailable// }" ]; then
+        tui_msg "Unavailable keyrings" \
+            "No APT keyring package was found for:$unavailable\n\nEnable an appropriate host repository, refresh package indexes, and retry."
+    fi
 }
 
 menu_repos() {
@@ -1552,6 +1621,108 @@ aptfast_set() { # key value
     fi
 }
 
+
+
+# Fetch the current distribution's official mirror directory, benchmark mirrors
+# against its active suite, and configure apt-fast with the fastest results.
+aptfast_optimize_official_mirrors() {
+    local os_id suite list_url probe_suffix tmp raw candidates results selected count
+    os_id="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-debian}")"
+    suite="$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_CODENAME:-}")"
+    [ -n "$suite" ] || suite="$(awk '$1=="deb" && $2 !~ /^\[/ {print $3; exit}' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null)"
+    [ -n "$suite" ] || suite=stable
+
+    case "$os_id" in
+        devuan)
+            list_url="https://pkgmaster.devuan.org/mirror_list.txt"
+            probe_suffix="merged/dists/$suite/InRelease"
+            ;;
+        debian|raspbian)
+            list_url="https://www.debian.org/mirror/list-full"
+            probe_suffix="debian/dists/$suite/InRelease"
+            ;;
+        ubuntu|linuxmint|pop)
+            list_url="https://launchpad.net/ubuntu/+archivemirrors"
+            probe_suffix="ubuntu/dists/$suite/InRelease"
+            ;;
+        kali)
+            list_url="https://http.kali.org/README.mirrorlist"
+            probe_suffix="kali/dists/$suite/InRelease"
+            ;;
+        *)
+            tui_msg "Official mirror analysis" "No official APT mirror-list parser is available for '$os_id'."
+            return 0
+            ;;
+    esac
+
+    count="$(tui_input "Fast mirror count" "How many fastest mirrors should apt-fast use?" "5")" || return 0
+    case "$count" in ''|*[!0-9]*) count=5;; esac
+    [ "$count" -ge 1 ] 2>/dev/null || count=1
+    [ "$count" -le 20 ] 2>/dev/null || count=20
+
+    tmp="$(mktemp -d /tmp/systui-aptfast.XXXXXX)" || return 1
+    raw="$tmp/mirrors.raw"; candidates="$tmp/candidates"; results="$tmp/results"
+    trap 'rm -rf "$tmp"' RETURN
+
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 "$list_url" -o "$raw"; then
+        tui_msg "Mirror analysis failed" "Could not download the official mirror list:\n$list_url"
+        return 0
+    fi
+
+    case "$os_id" in
+        devuan)
+            grep -Eo 'https?://[^[:space:]"<>]+' "$raw" | sed 's/[),;]$//' | sed 's#/*$##' | sort -u > "$candidates"
+            ;;
+        debian|raspbian)
+            grep -Eo 'https?://[^"<> ]+' "$raw" | sed 's/&amp;/\&/g; s#/*$##' | grep -E '/debian$|/debian/' | sed 's#/debian.*#/debian#' | sort -u > "$candidates"
+            ;;
+        ubuntu|linuxmint|pop)
+            grep -Eo 'https?://[^"<> ]+/ubuntu/?' "$raw" | sed 's#/*$##' | sort -u > "$candidates"
+            ;;
+        kali)
+            grep -Eo 'https?://[^[:space:]"<>]+' "$raw" | sed 's/[),;]$//; s#/*$##' | sort -u > "$candidates"
+            ;;
+    esac
+
+    # Keep the benchmark practical on iSH: test at most 60 official entries.
+    sed -n '1,60p' "$candidates" > "$tmp/candidates.limited"
+    : > "$results"
+    local base probe metrics elapsed speed
+    while IFS= read -r base; do
+        [ -n "$base" ] || continue
+        case "$os_id:$base" in
+            devuan:*/merged) probe="$base/dists/$suite/InRelease" ;;
+            devuan:*) probe="$base/$probe_suffix" ;;
+            debian:*|raspbian:*)
+                case "$base" in */debian) probe="$base/dists/$suite/InRelease";; *) probe="$base/$probe_suffix";; esac ;;
+            ubuntu:*|linuxmint:*|pop:*)
+                case "$base" in */ubuntu) probe="$base/dists/$suite/InRelease";; *) probe="$base/$probe_suffix";; esac ;;
+            kali:*)
+                case "$base" in */kali) probe="$base/dists/$suite/InRelease";; *) probe="$base/$probe_suffix";; esac ;;
+        esac
+        metrics="$(curl -LfsS --range 0-131071 --connect-timeout 3 --max-time 10 -o /dev/null -w '%{time_total} %{speed_download}' "$probe" 2>/dev/null)" || continue
+        elapsed=${metrics%% *}; speed=${metrics##* }
+        [ -n "$elapsed" ] && printf '%s\t%s\t%s\n' "$elapsed" "$speed" "$base" >> "$results"
+    done < "$tmp/candidates.limited"
+
+    if [ ! -s "$results" ]; then
+        tui_msg "Mirror analysis failed" "No official mirrors responded successfully for suite '$suite'."
+        return 0
+    fi
+
+    selected="$(sort -n -k1,1 -k2,2r "$results" | head -n "$count" | cut -f3)"
+    local mirror_array="(" m
+    while IFS= read -r m; do [ -n "$m" ] && mirror_array="$mirror_array '$m'"; done <<EOF
+$selected
+EOF
+    mirror_array="$mirror_array )"
+    aptfast_set MIRRORS "$mirror_array"
+
+    printf 'Distribution: %s\nSuite: %s\nOfficial list: %s\n\nSelected mirrors:\n%s\n' \
+        "$os_id" "$suite" "$list_url" "$selected" > "$tmp/summary"
+    tui_text "apt-fast fastest official mirrors" "$tmp/summary"
+}
+
 menu_cfg_aptfast() {
     if ! command -v apt-fast >/dev/null; then
         tui_yesno "apt-fast" "apt-fast is not installed. Install it now?" || return 0
@@ -1569,7 +1740,8 @@ confirm-before-download=$(aptfast_get DOWNLOADBEFORE)" \
             conns   "Max parallel connections (_MAXNUM)" \
             splits  "Connections per file (_SPLITCON)" \
             confirm "Ask before downloading (DOWNLOADBEFORE)" \
-            mirrors "Set mirror list (MIRRORS)" \
+            analyze "Analyze official mirror list and select fastest" \
+            mirrors "Set mirror list manually (MIRRORS)" \
             show    "Show /etc/apt-fast.conf" \
             back    "Back") || return 0
         case "$c" in
@@ -1585,6 +1757,7 @@ confirm-before-download=$(aptfast_get DOWNLOADBEFORE)" \
                     true  "Yes — show size and confirm" "$( [ "$cur" = true ] && echo on || echo off)" \
                     false "No — just download" "$( [ "$cur" = true ] && echo off || echo on)") || continue
                 [ -n "$v" ] && aptfast_set DOWNLOADBEFORE "$v" ;;
+            analyze) aptfast_optimize_official_mirrors ;;
             mirrors)
                 local v; v=$(tui_input "MIRRORS" "Comma-separated mirror URLs (blank keeps current):" "") || continue
                 [ -n "$v" ] && aptfast_set MIRRORS "( '$v' )" ;;
@@ -4073,6 +4246,344 @@ perf_tuned() {
     [ -n "$p" ] && run_cmd "tuned-adm profile $p" tuned-adm profile "$p"
 }
 
+
+# ---- File managers -----------------------------------------------------------
+fm_home() {
+    local u="$1"
+    getent passwd "$u" 2>/dev/null | cut -d: -f6
+}
+
+fm_target_user() {
+    local def="${SUDO_USER:-root}" u
+    u=$(tui_input "Target user" "Configure file manager for which user?" "$def") || return 1
+    id "$u" >/dev/null 2>&1 || { tui_msg "Error" "User '$u' does not exist."; return 1; }
+    printf '%s\n' "$u"
+}
+
+fm_as_user() { # fm_as_user <user> <command>
+    local u="$1" cmd="$2"
+    if [ "$u" = root ]; then bash -lc "$cmd"
+    else su - "$u" -c "$cmd"
+    fi
+}
+
+fm_pkg_for() { # fm_pkg_for <manager>
+    case "$1:$PM" in
+        lf:*) echo lf ;;
+        tere:apt|tere:apk|tere:pacman|tere:dnf) echo tere ;;
+        yazi:apt|yazi:apk|yazi:pacman|yazi:dnf) echo yazi ;;
+        ranger:*) echo ranger ;;
+        nnn:*) echo nnn ;;
+        vifm:*) echo vifm ;;
+        broot:*) echo broot ;;
+        xplr:*) echo xplr ;;
+    esac
+}
+
+fm_cargo_install() {
+    local crate="$1" bin="${2:-$1}"
+    command -v cargo >/dev/null 2>&1 || pm_install cargo rustc
+    command -v cargo >/dev/null 2>&1 || { tui_msg "Error" "Cargo could not be installed."; return 1; }
+    run_cmd "Install $crate with Cargo" cargo install --locked "$crate"
+    command -v "$bin" >/dev/null 2>&1
+}
+
+fm_install() {
+    local fm="$1" pkg
+    pkg=$(fm_pkg_for "$fm")
+    pm_install "$pkg" >/dev/null 2>&1 || true
+    command -v "$fm" >/dev/null 2>&1 && { tui_msg "Installed" "$fm is installed."; return 0; }
+    case "$fm" in
+        tere)  fm_cargo_install tere ;;
+        yazi)  fm_cargo_install yazi-fm yazi; fm_cargo_install yazi-cli ya || true ;;
+        broot) fm_cargo_install broot ;;
+        xplr)  fm_cargo_install xplr ;;
+        *)     tui_msg "Unavailable" "$fm is not available from the active repositories. Enable the appropriate repository or install it manually." ;;
+    esac
+}
+
+fm_remove() {
+    local fm="$1" pkg
+    pkg=$(fm_pkg_for "$fm")
+    command -v "$pkg" >/dev/null 2>&1 && pm_remove "$pkg"
+    [ -x /root/.cargo/bin/"$fm" ] && rm -f /root/.cargo/bin/"$fm"
+    tui_msg "Removed" "Removal completed for $fm. User configuration was preserved."
+}
+
+fm_write_default_config() {
+    local fm="$1" u h
+    u=$(fm_target_user) || return 0
+    h=$(fm_home "$u")
+    [ -n "$h" ] || return 0
+    case "$fm" in
+        lf)
+            fm_as_user "$u" "mkdir -p ~/.config/lf; cat > ~/.config/lf/lfrc <<'EOF'
+set hidden true
+set drawbox true
+set icons true
+set preview true
+map q quit
+map gh cd ~
+map <enter> open
+map / search
+cmd open \${{
+  case \$(file --mime-type -Lb \"\$f\") in
+    text/*|application/json) \${EDITOR:-vi} \"\$f\" ;;
+    *) xdg-open \"\$f\" >/dev/null 2>&1 & ;;
+  esac
+}}
+EOF"
+            ;;
+        tere)
+            fm_as_user "$u" "grep -q 'command tere' ~/.bashrc 2>/dev/null || cat >> ~/.bashrc <<'EOF'
+
+# tere: exit into the selected directory
+tere() {
+    local result
+    result=\$(command tere --mouse=on --skip-first-run-prompt \"\$@\")
+    [ -n \"\$result\" ] && cd -- \"\$result\"
+}
+EOF"
+            ;;
+        yazi)
+            fm_as_user "$u" "mkdir -p ~/.config/yazi; cat > ~/.config/yazi/yazi.toml <<'EOF'
+[manager]
+show_hidden = true
+sort_by = \"natural\"
+sort_dir_first = true
+linemode = \"size\"
+[preview]
+wrap = \"yes\"
+EOF
+cat > ~/.config/yazi/keymap.toml <<'EOF'
+[[manager.prepend_keymap]]
+on = [ \"g\", \"h\" ]
+run = \"cd ~\"
+desc = \"Go home\"
+EOF"
+            ;;
+        ranger)
+            fm_as_user "$u" "mkdir -p ~/.config/ranger; ranger --copy-config=all >/dev/null 2>&1 || true; sed -i 's/^set show_hidden false/set show_hidden true/' ~/.config/ranger/rc.conf 2>/dev/null || true"
+            ;;
+        nnn)
+            fm_as_user "$u" "mkdir -p ~/.config/nnn; grep -q 'NNN_OPTS' ~/.profile 2>/dev/null || cat >> ~/.profile <<'EOF'
+export NNN_OPTS='Hde'
+export NNN_PLUG='f:finder;o:fzopen;p:preview-tui;d:diffs;t:nmount'
+EOF"
+            ;;
+        vifm)
+            fm_as_user "$u" "mkdir -p ~/.config/vifm; cat > ~/.config/vifm/vifmrc <<'EOF'
+set vicmd=vim
+set syscalls
+set hidden
+set wildmenu
+set ignorecase
+set smartcase
+map gh :cd ~<cr>
+EOF"
+            ;;
+        broot)
+            fm_as_user "$u" "mkdir -p ~/.config/broot; broot --install >/dev/null 2>&1 || true"
+            ;;
+        xplr)
+            fm_as_user "$u" "mkdir -p ~/.config/xplr; [ -f ~/.config/xplr/init.lua ] || cat > ~/.config/xplr/init.lua <<'EOF'
+version = '0.21.9'
+xplr.config.general.show_hidden = true
+xplr.config.general.enable_mouse = true
+EOF"
+            ;;
+    esac
+    chown -R "$u":"$(id -gn "$u")" "$h/.config" 2>/dev/null || true
+    tui_msg "Configured" "Default $fm configuration installed for $u."
+}
+
+fm_edit_config() {
+    local fm="$1" u h f
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    case "$fm" in
+        lf) f="$h/.config/lf/lfrc" ;;
+        tere) f="$h/.bashrc" ;;
+        yazi) f="$h/.config/yazi/yazi.toml" ;;
+        ranger) f="$h/.config/ranger/rc.conf" ;;
+        nnn) f="$h/.profile" ;;
+        vifm) f="$h/.config/vifm/vifmrc" ;;
+        broot) f="$h/.config/broot/conf.hjson" ;;
+        xplr) f="$h/.config/xplr/init.lua" ;;
+    esac
+    mkdir -p "$(dirname "$f")"; touch "$f"; chown "$u":"$(id -gn "$u")" "$f" 2>/dev/null || true
+    "${EDITOR:-nano}" "$f"
+}
+
+fm_plugin_catalog() { # tag|description|repo|destination-relative
+    case "$1" in
+        lf)
+            cat <<'EOF'
+lf-sixel|Sixel image preview helper|horriblename/lf-sixel|.config/lf/plugins/lf-sixel
+lf-gadgets|Preview and utility scripts|dylanaraps/lf|.config/lf/plugins/lf-upstream
+lf-icons|Nerd Font icon configuration|gokcehan/lf|.config/lf/plugins/lf-icons-source
+EOF
+            ;;
+        tere)
+            cat <<'EOF'
+tere-fzf|fzf-oriented shell integration examples|mgunyho/tere|.config/tere/addons/tere-upstream
+EOF
+            ;;
+        yazi)
+            cat <<'EOF'
+full-border|Full border UI plugin|yazi-rs/plugins|.config/yazi/plugins/full-border.yazi
+smart-enter|Context-aware Enter key|yazi-rs/plugins|.config/yazi/plugins/smart-enter.yazi
+chmod|Interactive chmod plugin|yazi-rs/plugins|.config/yazi/plugins/chmod.yazi
+max-preview|Maximize preview pane|yazi-rs/plugins|.config/yazi/plugins/max-preview.yazi
+jump-to-char|Jump to item by character|yazi-rs/plugins|.config/yazi/plugins/jump-to-char.yazi
+starship|Starship prompt integration|Rolv-Apneseth/starship.yazi|.config/yazi/plugins/starship.yazi
+EOF
+            ;;
+        ranger)
+            cat <<'EOF'
+ranger-devicons|Nerd Font file icons|alexanderjeurissen/ranger_devicons|.config/ranger/plugins/ranger_devicons
+ranger-fzf|fzf integration commands|MuXiu1997/ranger-fzf-filter|.config/ranger/plugins/ranger-fzf-filter
+ranger-zoxide|zoxide directory jumping|jchook/ranger-zoxide|.config/ranger/plugins/ranger-zoxide
+ranger-archives|Archive extraction helpers|maximtrp/ranger-archives|.config/ranger/plugins/ranger-archives
+EOF
+            ;;
+        nnn)
+            cat <<'EOF'
+plugins|Official nnn plugin collection|jarun/nnn|.config/nnn/plugins-source
+icons|Nerd Font icon support|jarun/nnn|.config/nnn/icons-source
+EOF
+            ;;
+        vifm)
+            cat <<'EOF'
+vifm-colors|Official color schemes|vifm/vifm-colors|.config/vifm/colors
+vifmimg|Image preview helper|thimc/vifmimg|.config/vifm/plugins/vifmimg
+EOF
+            ;;
+        broot)
+            cat <<'EOF'
+broot-upstream|Official skins and verb examples|Canop/broot|.config/broot/addons/broot-upstream
+EOF
+            ;;
+        xplr)
+            cat <<'EOF'
+zoxide|zoxide integration|sayanarijit/zoxide.xplr|.config/xplr/plugins/zoxide
+fzf|fzf integration|sayanarijit/fzf.xplr|.config/xplr/plugins/fzf
+icons|Nerd Font icons|sayanarijit/dua-cli.xplr|.config/xplr/plugins/dua-cli
+trash-cli|Safe trash integration|sayanarijit/trash-cli.xplr|.config/xplr/plugins/trash-cli
+EOF
+            ;;
+    esac
+}
+
+fm_plugins_install() {
+    local fm="$1" u h line tag desc repo dest state selected item
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    local args=()
+    while IFS='|' read -r tag desc repo dest; do
+        [ -n "$tag" ] || continue
+        [ -d "$h/$dest" ] && state=on || state=off
+        args+=("$tag" "$desc — $repo" "$state")
+    done < <(fm_plugin_catalog "$fm")
+    [ ${#args[@]} -gt 0 ] || { tui_msg "Plugins" "No curated add-ons are defined for $fm."; return 0; }
+    selected=$(tui_check "$fm plugins" "SPACE selects add-ons. Existing repositories are updated." "${args[@]}") || return 0
+    command -v git >/dev/null 2>&1 || pm_install git
+    for item in $selected; do
+        while IFS='|' read -r tag desc repo dest; do
+            [ "$tag" = "$item" ] || continue
+            fm_as_user "$u" "mkdir -p \"\$(dirname ~/$dest)\"; if [ -d ~/$dest/.git ]; then git -C ~/$dest pull --ff-only; else rm -rf ~/$dest; git clone --depth 1 https://github.com/$repo.git ~/$dest; fi"
+        done < <(fm_plugin_catalog "$fm")
+    done
+    tui_msg "Plugins" "Selected $fm add-ons were installed or updated for $u."
+}
+
+fm_plugins_remove() {
+    local fm="$1" u h tag desc repo dest state selected item
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    local args=()
+    while IFS='|' read -r tag desc repo dest; do
+        [ -d "$h/$dest" ] || continue
+        args+=("$tag" "$desc" off)
+    done < <(fm_plugin_catalog "$fm")
+    [ ${#args[@]} -gt 0 ] || { tui_msg "Plugins" "No managed $fm add-ons are installed for $u."; return 0; }
+    selected=$(tui_check "Remove $fm plugins" "SPACE selects add-ons to remove:" "${args[@]}") || return 0
+    for item in $selected; do
+        while IFS='|' read -r tag desc repo dest; do [ "$tag" = "$item" ] && rm -rf "$h/$dest"; done < <(fm_plugin_catalog "$fm")
+    done
+    tui_msg "Plugins" "Selected add-ons removed. Manual configuration references may still need removal."
+}
+
+fm_plugins_custom() {
+    local fm="$1" u h url name dest
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    url=$(tui_input "Custom GitHub add-on" "Git repository URL:" "https://github.com/") || return 0
+    [ "$url" != "https://github.com/" ] || return 0
+    name=$(basename "$url" .git); dest="$h/.config/$fm/plugins/$name"
+    command -v git >/dev/null 2>&1 || pm_install git
+    fm_as_user "$u" "mkdir -p ~/.config/$fm/plugins; git clone --depth 1 '$url' ~/.config/$fm/plugins/'$name'" \
+        && tui_msg "Installed" "$name installed at $dest"
+}
+
+menu_fm_plugins() {
+    local fm="$1" c
+    while true; do
+        c=$(tui_menu "$fm — Plugin Manager" "GitHub add-ons, themes, previewers and frameworks:" \
+            install "Install/update curated add-ons" \
+            remove  "Remove managed add-ons" \
+            custom  "Install custom Git repository" \
+            back    "Back") || return 0
+        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; back) return 0;; esac
+    done
+}
+
+menu_file_manager_one() {
+    local fm="$1" label="$2" c
+    while true; do
+        c=$(tui_menu "$label  $(st "$fm")" "Install, remove and configure $label:" \
+            install "Install $label" \
+            remove  "Remove $label" \
+            default "Write recommended default configuration" \
+            edit    "Edit configuration" \
+            plugins "Plugin/add-on manager (GitHub)" \
+            launch  "Launch $label" \
+            back    "Back") || return 0
+        case "$c" in
+            install) fm_install "$fm" ;;
+            remove) fm_remove "$fm" ;;
+            default) fm_write_default_config "$fm" ;;
+            edit) fm_edit_config "$fm" ;;
+            plugins) menu_fm_plugins "$fm" ;;
+            launch) command -v "$fm" >/dev/null 2>&1 && "$fm" || tui_msg "Not installed" "Install $label first." ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+menu_file_managers() {
+    while true; do
+        local c
+        c=$(tui_menu "File Managers" "Terminal file managers and GitHub add-ons:" \
+            lf     "lf — fast Go file manager $(st lf)" \
+            tere   "tere — fast directory navigator $(st tere)" \
+            yazi   "Yazi — async Rust file manager $(st yazi)" \
+            ranger "Ranger — Vim-style Python file manager $(st ranger)" \
+            nnn    "nnn — lightweight extensible file manager $(st nnn)" \
+            vifm   "Vifm — dual-pane Vim-style manager $(st vifm)" \
+            broot  "Broot — tree navigator and launcher $(st broot)" \
+            xplr   "xplr — hackable Lua file explorer $(st xplr)" \
+            back   "Back") || return 0
+        case "$c" in
+            lf) menu_file_manager_one lf "lf" ;;
+            tere) menu_file_manager_one tere "tere" ;;
+            yazi) menu_file_manager_one yazi "Yazi" ;;
+            ranger) menu_file_manager_one ranger "Ranger" ;;
+            nnn) menu_file_manager_one nnn "nnn" ;;
+            vifm) menu_file_manager_one vifm "Vifm" ;;
+            broot) menu_file_manager_one broot "Broot" ;;
+            xplr) menu_file_manager_one xplr "xplr" ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
 # ---- System configuration hub ----------------------------------------------
 
 ###############################################################################
@@ -4087,6 +4598,7 @@ menu_sysconfig() {
             packages    "Packages (catalogue, repositories, apt-fast...)" \
             shells      "Shells & plugins (frameworks, starship, history...)" \
             editors     "Editors (install + per-editor configuration)" \
+            filemanagers "File managers (lf, tere, Yazi, Ranger, plugins...)" \
             network     "Network (SSH, fail2ban, DNS, proxy, time...)" \
             services    "Services ($INIT, logs, unit creator, init swap)" \
             users       "Users (passwords, sudoers, aging, SSH keys...)" \
@@ -4097,6 +4609,7 @@ menu_sysconfig() {
             packages)    menu_packages ;;
             shells)      menu_shells ;;
             editors)     menu_editors ;;
+            filemanagers) menu_file_managers ;;
             network)     menu_network ;;
             services)    menu_services ;;
             users)       menu_users ;;

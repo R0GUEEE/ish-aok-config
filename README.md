@@ -1,8 +1,4 @@
-# systui — Modular Linux System Administration TUI
-
-**Version:** 1.0.0  
-**Status:** Production Ready  
-**License:** Free and open for modification
+# systui — Modular Linux System Administration TUI 
 
 ## Overview
 
@@ -539,3 +535,18 @@ System Configuration > Packages now contains Package Managers, Repos, Catalogue,
 APT repository management includes both `/etc/apt/sources.list` and `/etc/apt/sources.list.d/`. The signing-key menu can install available Debian, Ubuntu, Devuan, and Kali archive keyrings using a SPACE-to-select checklist.
 
 System Configuration > Shells separates Managers from Plugins. Each Bash, Zsh, and Fish manager includes installation, removal, and its framework/plugin-manager configuration. Cross-shell plugins include Starship, fzf, completion packages, zoxide, Atuin, direnv, Carapace, syntax highlighting, and autosuggestions.
+
+## Terminal file managers
+
+`System Configuration > File Managers` manages terminal file managers and their user configuration:
+
+- lf
+- tere
+- Yazi
+- Ranger
+- nnn
+- Vifm
+- Broot
+- xplr
+
+Each entry supports installation/removal, a recommended starter configuration, direct configuration editing, launching, and a GitHub-backed add-on manager. Add-ons are installed per user under the applicable `~/.config` directory; custom Git repositories are also supported.
