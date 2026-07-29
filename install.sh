@@ -63,6 +63,11 @@ detect_pm() {
 }
 
 install_dependencies() {
+    if [ "${SYSTUI_SKIP_DEPS:-0}" = "1" ]; then
+        info "Skipping dependency installation (SYSTUI_SKIP_DEPS=1)"
+        return 0
+    fi
+
     info "Installing dependencies..."
     
     local pm=$(detect_pm)
@@ -142,6 +147,23 @@ install_project() {
     cp -r "$PROJECT_DIR/src" "$LIB_DIR/"
     cp -r "$PROJECT_DIR/share" "$LIB_DIR/"
     [ -d "$PROJECT_DIR/docs" ] && cp -r "$PROJECT_DIR/docs" "$LIB_DIR/" || true
+    if [ -f "$PROJECT_DIR/update.sh" ]; then
+        install -m 0755 "$PROJECT_DIR/update.sh" "$LIB_DIR/update.sh"
+        ln -sfn "$LIB_DIR/update.sh" "$BIN_DIR/systui-update"
+    fi
+
+    # Record the source checkout so systui-update works from the installed copy.
+    local state_dir="${SYSTUI_STATE_DIR:-/etc/systui}"
+    local source_url="" source_branch=""
+    mkdir -p "$state_dir"
+    if command -v git >/dev/null 2>&1 && git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        source_url=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || true)
+        source_branch=$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+        printf '%s\n' "$(git -C "$PROJECT_DIR" rev-parse --show-toplevel)" > "$state_dir/source-dir"
+        [ -n "$source_url" ] && printf '%s\n' "$source_url" > "$state_dir/source-url"
+        [ -n "$source_branch" ] && printf '%s\n' "$source_branch" > "$state_dir/source-branch"
+        chmod 0644 "$state_dir"/source-* 2>/dev/null || true
+    fi
     
     success "Project files installed to $LIB_DIR"
 }

@@ -560,3 +560,19 @@ against an incompatible distribution.
 
 ### Shell plugin configuration managers
 System Configuration > Shells > Plugins now opens a per-user manager for each plugin. Starship, fzf, completions, zoxide, Atuin, direnv, Carapace, Zsh syntax highlighting, and Zsh autosuggestions include install/remove actions, shell integration, editable configuration, status inspection, and cleanup controls.
+
+## Updating
+
+From a Git checkout:
+
+```bash
+sudo ./update.sh
+```
+
+After installation, the same updater is available globally:
+
+```bash
+sudo systui-update
+```
+
+The updater fetches the current branch from `origin`, backs up and stashes local source changes, fast-forwards to the latest revision, and reruns `install.sh`. Use `--no-deps` to skip package dependency installation or `--force` to reset the source checkout after creating a backup.
