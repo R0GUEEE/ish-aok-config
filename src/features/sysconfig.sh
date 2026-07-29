@@ -1326,6 +1326,71 @@ apt_missing_keyrings_menu() {
         "Could not install:$failed\n\nReview the log for network, architecture, extraction-tool, or upstream repository errors."
 }
 
+
+# ---- Ubuntu PPA repository manager (APT only) -------------------------------
+ppa_normalize() {
+    local p="$1"
+    p=${p#ppa:}
+    case "$p" in
+        https://launchpad.net/~*|http://launchpad.net/~*)
+            p=${p#*launchpad.net/~}
+            p=${p/\/+archive\/ubuntu\//\/}
+            p=${p/\/+archive\//\/}
+            ;;
+    esac
+    p=${p#/}; p=${p%/}
+    printf 'ppa:%s\n' "$p"
+}
+
+menu_ppa_repos() {
+    [ "$PM" = apt ] || { tui_msg "PPA repositories" "PPAs are supported only on Ubuntu-family APT systems."; return 0; }
+    local host_id host_like
+    host_id=$(os_id); host_like=$(awk -F= '$1=="ID_LIKE"{gsub(/\"/,"",$2); print $2}' /etc/os-release 2>/dev/null)
+    case " $host_id $host_like " in *" ubuntu "*|*" linuxmint "*|*" pop "*|*" elementary "*) :;;
+        *) tui_yesno "Compatibility warning" "Launchpad PPAs target Ubuntu releases. This system identifies as '$host_id'. Adding a PPA to Debian, Devuan, Kali, or another distribution can break dependency resolution. Continue anyway?" || return 0;;
+    esac
+    while true; do
+        local c ppa line files sel f tags=()
+        c=$(tui_menu "PPA Repositories" "Add, inspect, disable, enable, or remove Launchpad PPAs:" \
+            add "Add a PPA (ppa:owner/archive)" \
+            list "List configured PPAs" \
+            disable "Disable selected PPA files" \
+            enable "Enable selected disabled PPA files" \
+            remove "Remove selected PPAs" \
+            refresh "Refresh APT package indexes" \
+            back "Back") || return 0
+        case "$c" in
+            add)
+                ppa=$(tui_input "Add PPA" "PPA identifier (example: ppa:deadsnakes/ppa):" "ppa:") || continue
+                [ "$ppa" != "ppa:" ] && [ -n "$ppa" ] || continue
+                ppa=$(ppa_normalize "$ppa")
+                case "$ppa" in ppa:*/*) :;; *) tui_msg "Invalid PPA" "Use ppa:owner/archive format."; continue;; esac
+                command -v add-apt-repository >/dev/null 2>&1 || {
+                    run_cmd "Installing add-apt-repository" apt-get install -y software-properties-common || continue
+                }
+                run_cmd "Adding $ppa" add-apt-repository -y "$ppa" || continue
+                run_cmd "Refreshing APT indexes" apt-get update
+                ;;
+            list)
+                { grep -rHEn '^[[:space:]]*deb .*ppa\.launchpad(content)?\.net|^[[:space:]]*URIs: .*ppa\.launchpad(content)?\.net' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || echo '(no PPAs configured)'; } > /tmp/systui.ppa
+                tui_text "Configured PPAs" /tmp/systui.ppa ;;
+            disable|enable|remove)
+                tags=()
+                if [ "$c" = enable ]; then files=$(find /etc/apt/sources.list.d -maxdepth 1 -type f \( -name '*ppa*.disabled' -o -name '*launchpad*.disabled' \) 2>/dev/null | sort)
+                else files=$(grep -rlE 'ppa\.launchpad(content)?\.net' /etc/apt/sources.list.d 2>/dev/null | sort); fi
+                [ -n "$files" ] || { tui_msg "PPA repositories" "No matching PPA files found."; continue; }
+                while IFS= read -r f; do [ -n "$f" ] && tags+=("$f" "$(basename "$f")" off); done <<< "$files"
+                sel=$(tui_check "${c^} PPAs" "SPACE selects repository files:" "${tags[@]}") || continue
+                sel=${sel//\"/}; [ -n "${sel// }" ] || continue
+                [ "$c" = remove ] && tui_yesno "Remove PPAs" "Permanently delete the selected repository files?\n\n$sel" || [ "$c" != remove ] || continue
+                for f in $sel; do case "$c" in disable) mv "$f" "$f.disabled";; enable) mv "$f" "${f%.disabled}";; remove) rm -f "$f";; esac; done
+                run_cmd "Refreshing APT indexes" apt-get update ;;
+            refresh) run_cmd "Refreshing APT indexes" apt-get update ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
 menu_repos() {
     while true; do
         local c
@@ -1335,6 +1400,7 @@ menu_repos() {
             listd   "Manage sources.list and sources.list.d" \
             distro  "Distro Repos (official distro repositories)" \
             popular "Add popular repositories (space-select)" \
+            ppa     "Add/manage Ubuntu PPA repositories" \
             refresh "Refresh package indexes" \
             addrepo "Add a custom repository" \
             keys    "Signing keys and missing archive keyrings" \
@@ -1353,6 +1419,7 @@ menu_repos() {
             listd)   repo_sources_listd ;;
             distro)  menu_distro_repos ;;
             popular) repo_popular ;;
+            ppa)     menu_ppa_repos ;;
             refresh)
                 case "$PM" in
                     apt)    run_cmd "apt-get update" apt-get update ;;
@@ -3754,6 +3821,96 @@ menu_aliases() {
     done
 }
 
+
+# ---- Unified key mapping configuration --------------------------------------
+keymap_target_user() {
+    local u h
+    u=$(tui_input "Mapping user" "Configure mappings for which user?" "${SUDO_USER:-root}") || return 1
+    h=$(user_home "$u"); [ -n "$h" ] || { tui_msg "Unknown user" "User '$u' was not found."; return 1; }
+    printf '%s|%s\n' "$u" "$h"
+}
+
+keymap_append_block() { # file begin end line user
+    local f="$1" begin="$2" end="$3" line="$4" u="$5"
+    mkdir -p "$(dirname "$f")"; touch "$f"
+    if ! grep -qF "$begin" "$f"; then printf '\n%s\n%s\n' "$begin" "$end" >> "$f"; fi
+    sed -i "/$(printf '%s' "$end" | sed 's/[][\\.^$*+?{}|()]/\\&/g')/i\\$line" "$f"
+    chown "$u":"$(id -gn "$u")" "$f" 2>/dev/null || true
+}
+
+menu_shell_mappings() {
+    local target u h tool c key action f line
+    target=$(keymap_target_user) || return 0; u=${target%%|*}; h=${target#*|}
+    while true; do
+        tool=$(tui_menu "Shell key mappings — $u" "Select a shell/input layer:" bash "Bash Readline (.inputrc)" zsh "Zsh ZLE (.zshrc)" fish "Fish bind commands (config.fish)" global "System Readline (/etc/inputrc)" back "Back") || return 0
+        [ "$tool" = back ] && return 0
+        c=$(tui_menu "$tool mappings" "Mapping actions:" presets "Install useful mapping presets" add "Add a custom mapping" edit "Edit mapping file" show "Show current mapping file" back "Back") || continue
+        case "$tool" in bash) f="$h/.inputrc";; zsh) f="$h/.zshrc";; fish) f="$h/.config/fish/config.fish";; global) f=/etc/inputrc;; esac
+        case "$c" in
+            presets)
+                case "$tool" in
+                    bash|global) keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' '"\\C-p": history-search-backward' "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' '"\\C-n": history-search-forward' "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' 'set completion-ignore-case on' "$u";;
+                    zsh) keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' "bindkey '^P' history-substring-search-up" "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' "bindkey '^N' history-substring-search-down" "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' "bindkey '^A' beginning-of-line" "$u";;
+                    fish) keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' 'bind \\cp up-or-search' "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' 'bind \\cn down-or-search' "$u"; keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' 'bind \\cf forward-char' "$u";;
+                esac; tui_msg "Mappings installed" "Useful mappings were added to $f.";;
+            add)
+                key=$(tui_input "Key sequence" "Key sequence (examples: \\C-g, ^G, \\cg):" "") || continue
+                action=$(tui_input "Mapping action" "Command/widget/action:" "") || continue
+                [ -n "$key" ] && [ -n "$action" ] || continue
+                case "$tool" in bash|global) line="\"$key\": $action";; zsh) line="bindkey '$key' '$action'";; fish) line="bind $key $action";; esac
+                keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' "$line" "$u";;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            show) [ -f "$f" ] && tui_text "$tool mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
+        esac
+    done
+}
+
+editor_mapping_file() { local e="$1" h="$2"; case "$e" in nano) echo "$h/.nanorc";; vim) echo "$h/.vimrc";; nvim) echo "$h/.config/nvim/init.lua";; micro) echo "$h/.config/micro/bindings.json";; emacs) echo "$h/.emacs.d/init.el";; helix) echo "$h/.config/helix/config.toml";; esac; }
+menu_editor_mappings() {
+    local target u h e c f key action line
+    target=$(keymap_target_user) || return 0; u=${target%%|*}; h=${target#*|}
+    while true; do
+        e=$(tui_menu "Editor key mappings — $u" "Select editor:" nano "Nano" vim "Vim" nvim "Neovim" micro "Micro" emacs "Emacs" helix "Helix" back "Back") || return 0
+        [ "$e" = back ] && return 0; f=$(editor_mapping_file "$e" "$h")
+        c=$(tui_menu "$e mappings" "Mapping actions:" add "Add custom mapping" edit "Edit mapping file" show "Show mapping file" back "Back") || continue
+        case "$c" in
+            add)
+                key=$(tui_input "Key" "Native key notation for $e:" "") || continue; action=$(tui_input "Action" "Native command/action for $e:" "") || continue
+                [ -n "$key" ] && [ -n "$action" ] || continue
+                case "$e" in nano) line="bind $key $action main";; vim) line="nnoremap $key $action";; nvim) line="vim.keymap.set('n', '$key', '$action', { silent = true })";; micro) line="  \"$key\": \"$action\"";; emacs) line="(global-set-key (kbd \"$key\") '$action)";; helix) line="$key = \"$action\"";; esac
+                mkdir -p "$(dirname "$f")"; touch "$f"
+                if [ "$e" = micro ]; then
+                    if [ ! -s "$f" ]; then printf '{\n%s\n}\n' "$line" > "$f"; else sed -i '$d' "$f"; sed -i '$s/$/,/' "$f"; printf '%s\n}\n' "$line" >> "$f"; fi
+                elif [ "$e" = helix ]; then grep -q '^\[keys.normal\]' "$f" || printf '\n[keys.normal]\n' >> "$f"; printf '%s\n' "$line" >> "$f"
+                else printf '\n%s\n' "$line" >> "$f"; fi
+                chown -R "$u":"$(id -gn "$u")" "$(dirname "$f")" 2>/dev/null || true;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            show) [ -f "$f" ] && tui_text "$e mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
+        esac
+    done
+}
+
+fm_mapping_file() { local fm="$1" h="$2"; case "$fm" in lf) echo "$h/.config/lf/lfrc";; tere) echo "$h/.config/tere/keybindings.conf";; yazi) echo "$h/.config/yazi/keymap.toml";; ranger) echo "$h/.config/ranger/rc.conf";; nnn) echo "$h/.config/nnn/keybinds.conf";; vifm) echo "$h/.config/vifm/vifmrc";; broot) echo "$h/.config/broot/conf.hjson";; xplr) echo "$h/.config/xplr/init.lua";; esac; }
+menu_file_manager_mappings() {
+    local fm="$1" target u h f c key action line
+    target=$(keymap_target_user) || return 0; u=${target%%|*}; h=${target#*|}; f=$(fm_mapping_file "$fm" "$h")
+    while true; do
+        c=$(tui_menu "$fm key mappings — $u" "Configure native key mappings:" add "Add custom mapping" edit "Edit mapping file" show "Show mapping file" reset "Remove systui custom mapping block" back "Back") || return 0
+        case "$c" in
+            add)
+                key=$(tui_input "Key" "Native key notation for $fm:" "") || continue; action=$(tui_input "Action" "Native command/action for $fm:" "") || continue
+                [ -n "$key" ] && [ -n "$action" ] || continue
+                case "$fm" in lf|ranger|vifm) line="map $key $action";; yazi) line="[[manager.prepend_keymap]]\non = [ \"$key\" ]\nrun = \"$action\"\ndesc = \"systui custom mapping\"";; xplr) line="xplr.config.modes.builtin.default.key_bindings.on_key['$key'] = { help = 'custom', messages = { '$action' } }";; tere|nnn|broot) line="# $key -> $action";; esac
+                mkdir -p "$(dirname "$f")"; touch "$f"; printf '\n# systui-custom-keymap begin\n%b\n# systui-custom-keymap end\n' "$line" >> "$f"; chown -R "$u":"$(id -gn "$u")" "$(dirname "$f")" 2>/dev/null || true
+                [ "$fm" = tere ] || [ "$fm" = nnn ] || [ "$fm" = broot ] && tui_msg "Mapping note" "$fm does not expose a stable universal per-key config syntax in all packaged versions. The mapping was recorded in $f for manual adaptation.";;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            show) [ -f "$f" ] && tui_text "$fm mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
+            reset) [ -f "$f" ] && sed -i '/^# systui-custom-keymap begin$/,/^# systui-custom-keymap end$/d' "$f";;
+            back|"") return 0;;
+        esac
+    done
+}
+
 menu_shells() {
     while true; do
         local c
@@ -3761,6 +3918,7 @@ menu_shells() {
             managers "Managers (install, remove and configure each shell)" \
             config "Shell config files (.bashrc, .zshrc, config.fish and profiles)" \
             aliases "Alias manager (catalog, custom aliases, import and validation)" \
+            mappings "Key mapping configuration (Bash, Zsh, Fish, Readline)" \
             plugins "Plugins (Starship, fzf, completions and more)" \
             history "History settings" readline "Readline/inputrc tuning" bashopts "Bash options" \
             default "Set default shell" advanced "Advanced shell settings" back "Back") || return 0
@@ -3768,6 +3926,7 @@ menu_shells() {
             managers) menu_shell_hierarchy ;;
             config) menu_shell_config ;;
             aliases) menu_aliases ;;
+            mappings) menu_shell_mappings ;;
             plugins) menu_shell_plugins ;;
             history) tui_msg "History" "Use Shell config files → Populate common configuration entries to manage persistent history." ;;
             readline) "${EDITOR:-nano}" /etc/inputrc || true ;;
@@ -3789,6 +3948,7 @@ menu_editors() {
             vimcfg  "Configure vim (sane system-wide defaults)" \
             nvimcfg "Configure neovim (basic init.lua, per-user)" \
             microcfg "Configure micro (tabsize, colorscheme)" \
+            mappings "Key mapping configuration for all supported editors" \
             default "Set system default \$EDITOR" \
             advanced "Advanced (vim-plug, syntax highlighting, alternatives)" \
             back    "Back") || return 0
@@ -3880,6 +4040,7 @@ vim.opt.mouse = ""
 EOF
                 chown -R "$u" "$home_dir/.config/nvim"
                 tui_msg "Done" "Basic init.lua written for $u.\nFor a full setup, consider kickstart.nvim." ;;
+            mappings) menu_editor_mappings ;;
             microcfg)
                 local u home_dir ts
                 u=$(tui_input "User" "Configure micro for which user?" "${SUDO_USER:-root}") || continue
@@ -6335,6 +6496,7 @@ menu_file_manager_one() {
             configure "Space-to-select configuration menu" \
             default   "Write recommended default configuration" \
             edit      "Edit configuration" \
+            mappings  "Key mapping configuration" \
             plugins "Plugin/add-on manager (GitHub)" \
             launch  "Launch $label" \
             back    "Back") || return 0
@@ -6344,6 +6506,7 @@ menu_file_manager_one() {
             configure) fm_configure_menu "$fm" ;;
             default) fm_write_default_config "$fm" ;;
             edit) fm_edit_config "$fm" ;;
+            mappings) menu_file_manager_mappings "$fm" ;;
             plugins) menu_fm_plugins "$fm" ;;
             launch) command -v "$fm" >/dev/null 2>&1 && "$fm" || tui_msg "Not installed" "Install $label first." ;;
             back) return 0 ;;
