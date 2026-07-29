@@ -37,6 +37,14 @@ tui_menu() {
         --menu "$text" 22 74 14 "$@" 3>&1 1>&2 2>&3
 }
 
+# Menu that hides internal selection tags and displays only descriptions.
+# Useful when tags are generated IDs that should not appear in the UI.
+tui_menu_no_tags() {
+    local title="$1" text="$2"; shift 2
+    $DIALOG --backtitle "$BACKTITLE" --title "$title" --no-tags \
+        --menu "$text" 22 90 14 "$@" 3>&1 1>&2 2>&3
+}
+
 tui_radio() {
     # Radio list (single choice): tui_radio <title> <text> <tag1> <desc1> <on|off> [...]
     # Returns: selected tag
@@ -76,17 +84,23 @@ run_cmd() {
     echo ">>> $desc"
     echo ">>> $*"
     echo "================================================================="
-    if "$@" 2>&1 | tee -a "$LOGFILE"; then
+    # Preserve the command's status rather than tee's. This function may be
+    # called while the project-wide ERR trap is active, so keep the pipeline in
+    # an explicit conditional and read PIPESTATUS immediately.
+    local rc=0
+    set +e
+    "$@" 2>&1 | tee -a "$LOGFILE"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -eq 0 ]; then
         echo "================================================================="
         echo "Done: $desc"
-        # Successful installs return immediately so multi-package and plugin
-        # queues can continue without requiring Enter after every item.
         return 0
-    else
-        echo "================================================================="
-        read -rp "FAILED: $desc — see $LOGFILE  (press Enter)" _
-        return 1
     fi
+    echo "================================================================="
+    log "FAILED ($rc): $desc"
+    read -rp "FAILED ($rc): $desc — see $LOGFILE  (press Enter)" _ || true
+    return "$rc"
 }
 
 ###############################################################################

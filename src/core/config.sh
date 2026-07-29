@@ -11,10 +11,15 @@ SYSTUI_TITLE="systui — Linux System TUI"
 BACKTITLE="iSH-AOK · systui v${SYSTUI_VERSION}"
 
 # Logging
-LOGFILE="/tmp/systui.log"
-WARNFILE="/tmp/systui.warnings"
+SYSTUI_TMP="${SYSTUI_TMP:-$(mktemp -d "${TMPDIR:-/tmp}/systui.XXXXXX")}"
+chmod 700 "$SYSTUI_TMP"
+export SYSTUI_TMP
+LOGFILE="$SYSTUI_TMP/systui.log"
+WARNFILE="$SYSTUI_TMP/systui.warnings"
 : > "$LOGFILE"
 : > "$WARNFILE"
+cleanup_systui_tmp() { [ -n "${SYSTUI_TMP:-}" ] && [ -d "$SYSTUI_TMP" ] && rm -rf -- "$SYSTUI_TMP"; }
+trap cleanup_systui_tmp EXIT INT TERM
 
 # Dialog
 export DIALOG="${DIALOG:-dialog}"
@@ -64,6 +69,12 @@ detect_pm() {
         PM="dnf"
     elif command -v zypper >/dev/null 2>&1; then
         PM="zypper"
+    elif command -v yum >/dev/null 2>&1; then
+        PM="yum"
+    elif command -v xbps-install >/dev/null 2>&1; then
+        PM="xbps"
+    elif command -v emerge >/dev/null 2>&1; then
+        PM="emerge"
     else
         PM=""
     fi

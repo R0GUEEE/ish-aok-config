@@ -2,80 +2,144 @@
 ###############################################################################
 
 # ---- Environment detection -------------------------------------------------
-PM=""; INIT=""
-detect_pm() {
-    if   command -v apt-get >/dev/null; then PM="apt"
-    elif command -v apk     >/dev/null; then PM="apk"
-    elif command -v pacman  >/dev/null; then PM="pacman"
-    elif command -v dnf     >/dev/null; then PM="dnf"
-    else PM="unknown"; fi
-}
-detect_init() {
-    if   [ -d /run/systemd/system ];            then INIT="systemd"
-    elif command -v rc-service >/dev/null;      then INIT="openrc"
-    elif [ -d /etc/runit ] || [ -d /run/runit ];then INIT="runit"
-    elif [ -f /etc/inittab ];                   then INIT="sysvinit"
-    else INIT="unknown"; fi
-}
+# Package-manager and init detection are provided by src/core/config.sh.
+# Keep local fallbacks for standalone sourcing and support every advertised PM.
+PM="${PM:-}"; INIT="${INIT:-}"
+if ! declare -F detect_pm >/dev/null 2>&1; then
+    detect_pm() {
+        if command -v apt-get >/dev/null 2>&1; then PM=apt
+        elif command -v apk >/dev/null 2>&1; then PM=apk
+        elif command -v pacman >/dev/null 2>&1; then PM=pacman
+        elif command -v dnf >/dev/null 2>&1; then PM=dnf
+        elif command -v yum >/dev/null 2>&1; then PM=yum
+        elif command -v zypper >/dev/null 2>&1; then PM=zypper
+        elif command -v xbps-install >/dev/null 2>&1; then PM=xbps
+        elif command -v emerge >/dev/null 2>&1; then PM=emerge
+        else PM=unknown; fi
+        export PM
+    }
+fi
+if ! declare -F detect_init >/dev/null 2>&1; then
+    detect_init() {
+        if [ -d /run/systemd/system ]; then INIT=systemd
+        elif command -v rc-service >/dev/null 2>&1; then INIT=openrc
+        elif [ -d /etc/runit ] || [ -d /run/runit ]; then INIT=runit
+        elif [ -f /etc/inittab ]; then INIT=sysvinit
+        else INIT=unknown; fi
+        export INIT
+    }
+fi
 
-# Installed-status marker for menu labels.
 st() { command -v "$1" >/dev/null 2>&1 && echo "[installed]" || echo ""; }
-# Marker based on a path existing (for non-command software).
 stp() { [ -e "$1" ] && echo "[installed]" || echo ""; }
 
-pm_install() {  # pm_install <pkgs...>
+valid_safe_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; }
+valid_username() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,31}$ ]] && getent passwd "$1" >/dev/null 2>&1; }
+valid_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+valid_pkg_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9+._:@%/~=-]*$ ]]; }
+validate_packages() {
+    local p
+    [ "$#" -gt 0 ] || return 1
+    for p in "$@"; do
+        valid_pkg_name "$p" || { tui_msg "Invalid package" "Unsafe or invalid package name: $p"; return 1; }
+    done
+}
+parse_package_input() { # <string> <array-name>
+    local input="$1" out_name="$2" p
+    local -a parsed=()
+    read -r -a parsed <<< "$input"
+    [ "${#parsed[@]}" -gt 0 ] || return 1
+    validate_packages "${parsed[@]}" || return 1
+    eval "$out_name=(\"\${parsed[@]}\")"
+}
+
+pm_install() {
+    validate_packages "$@" || return 1
     case "$PM" in
-        apt)    run_cmd "apt install $*" apt-get install -y "$@" ;;
-        apk)    run_cmd "apk add $*" apk add "$@" ;;
-        pacman) run_cmd "pacman -S $*" pacman -S --noconfirm --needed "$@" ;;
-        dnf)    run_cmd "dnf install $*" dnf install -y "$@" ;;
-        *)      tui_msg "Error" "No supported package manager found." ;;
+        apt) run_cmd "apt install $*" apt-get install -y -- "$@" ;;
+        apk) run_cmd "apk add $*" apk add -- "$@" ;;
+        pacman) run_cmd "pacman -S $*" pacman -S --noconfirm --needed -- "$@" ;;
+        dnf) run_cmd "dnf install $*" dnf install -y -- "$@" ;;
+        yum) run_cmd "yum install $*" yum install -y -- "$@" ;;
+        zypper) run_cmd "zypper install $*" zypper --non-interactive install -- "$@" ;;
+        xbps) run_cmd "xbps-install $*" xbps-install -Sy -- "$@" ;;
+        emerge) run_cmd "emerge $*" emerge --ask=n -- "$@" ;;
+        *) tui_msg "Error" "No supported package manager found."; return 1 ;;
     esac
 }
 pm_remove() {
+    validate_packages "$@" || return 1
     case "$PM" in
-        apt)    run_cmd "apt remove $*" apt-get remove -y "$@" ;;
-        apk)    run_cmd "apk del $*" apk del "$@" ;;
-        pacman) run_cmd "pacman -R $*" pacman -Rns --noconfirm "$@" ;;
-        dnf)    run_cmd "dnf remove $*" dnf remove -y "$@" ;;
+        apt) run_cmd "apt remove $*" apt-get remove -y -- "$@" ;;
+        apk) run_cmd "apk del $*" apk del -- "$@" ;;
+        pacman) run_cmd "pacman -R $*" pacman -Rns --noconfirm -- "$@" ;;
+        dnf) run_cmd "dnf remove $*" dnf remove -y -- "$@" ;;
+        yum) run_cmd "yum remove $*" yum remove -y -- "$@" ;;
+        zypper) run_cmd "zypper remove $*" zypper --non-interactive remove -- "$@" ;;
+        xbps) run_cmd "xbps-remove $*" xbps-remove -Ry -- "$@" ;;
+        emerge) run_cmd "emerge unmerge $*" emerge --ask=n --unmerge "$@" ;;
+        *) tui_msg "Error" "No supported package manager found."; return 1 ;;
     esac
 }
 pm_update() {
     case "$PM" in
-        apt)    run_cmd "apt update && upgrade" bash -c "apt-get update && apt-get upgrade -y" ;;
-        apk)    run_cmd "apk upgrade" bash -c "apk update && apk upgrade" ;;
+        apt) run_cmd "apt update && upgrade" bash -o pipefail -c 'apt-get update && apt-get upgrade -y' ;;
+        apk) run_cmd "apk upgrade" bash -o pipefail -c 'apk update && apk upgrade' ;;
         pacman) run_cmd "pacman -Syu" pacman -Syu --noconfirm ;;
-        dnf)    run_cmd "dnf upgrade" dnf upgrade -y ;;
+        dnf) run_cmd "dnf upgrade" dnf upgrade -y ;;
+        yum) run_cmd "yum update" yum update -y ;;
+        zypper) run_cmd "zypper update" zypper --non-interactive refresh --force && run_cmd "zypper update" zypper --non-interactive update ;;
+        xbps) run_cmd "xbps upgrade" xbps-install -Suy ;;
+        emerge) run_cmd "Portage sync/update" emerge --sync && emerge --ask=n --update --deep --newuse @world ;;
+        *) return 1 ;;
     esac
 }
-pm_search() { # pm_search <term>
+pm_search() {
     case "$PM" in
-        apt)    apt-cache search "$1" ;;
-        apk)    apk search -v "$1" ;;
-        pacman) pacman -Ss "$1" ;;
-        dnf)    dnf search "$1" ;;
+        apt) apt-cache search -- "$1" ;; apk) apk search -v -- "$1" ;; pacman) pacman -Ss -- "$1" ;;
+        dnf) dnf search -- "$1" ;; yum) yum search -- "$1" ;; zypper) zypper search -- "$1" ;;
+        xbps) xbps-query -Rs -- "$1" ;; emerge) emerge --search "$1" ;;
     esac
 }
 pm_clean() {
     case "$PM" in
-        apt)    run_cmd "apt clean + autoremove" bash -c "apt-get autoremove -y && apt-get clean" ;;
-        apk)    run_cmd "apk cache clean" bash -c "apk cache clean 2>/dev/null || rm -rf /var/cache/apk/*" ;;
-        pacman) run_cmd "pacman cache clean" bash -c "pacman -Sc --noconfirm && pacman -Rns \$(pacman -Qtdq) --noconfirm 2>/dev/null; true" ;;
-        dnf)    run_cmd "dnf clean + autoremove" bash -c "dnf autoremove -y && dnf clean all" ;;
+        apt) run_cmd "apt clean + autoremove" bash -o pipefail -c 'apt-get autoremove -y && apt-get clean' ;;
+        apk) run_cmd "apk cache clean" sh -c 'apk cache clean 2>/dev/null || rm -rf /var/cache/apk/*' ;;
+        pacman) run_cmd "pacman cache clean" sh -c 'pacman -Sc --noconfirm; orphans=$(pacman -Qtdq 2>/dev/null || true); [ -z "$orphans" ] || pacman -Rns --noconfirm -- $orphans' ;;
+        dnf) run_cmd "dnf clean + autoremove" sh -c 'dnf autoremove -y && dnf clean all' ;;
+        yum) run_cmd "yum clean" yum clean all ;;
+        zypper) run_cmd "zypper clean" zypper clean --all ;;
+        xbps) run_cmd "xbps clean" xbps-remove -Ooy ;;
+        emerge) run_cmd "Portage depclean" emerge --ask=n --depclean ;;
     esac
 }
-
-# Map Debian-style catalogue names to the local package manager's namespace.
-local_pkg_map() { # local_pkg_map <pkgs...> -> echoes mapped list
+local_pkg_map() {
     case "$PM" in
-        apk)    map_packages alpine "$@" ;;
-        pacman) map_packages arch "$@" ;;
-        dnf)    warn "Catalogue names are Debian-style; some may differ on dnf systems."
-                echo "$*" ;;
-        *)      echo "$*" ;;
+        apk) map_packages alpine "$@" ;; pacman) map_packages arch "$@" ;;
+        dnf|yum|zypper) map_packages fedora "$@" ;; xbps) map_packages void "$@" ;;
+        *) printf '%s\n' "$*" ;;
     esac
 }
 
+safe_edit() {
+    local file="$1" editor_spec="${EDITOR:-nano}"; shift || true
+    local -a editor_argv=()
+    read -r -a editor_argv <<< "$editor_spec"
+    [ "${#editor_argv[@]}" -gt 0 ] && command -v "${editor_argv[0]}" >/dev/null 2>&1 || editor_argv=(nano)
+    "${editor_argv[@]}" "$file" "$@"
+}
+atomic_install_file() { # <source> <destination> [mode]
+    local src="$1" dst="$2" mode="${3:-0644}" dir tmp
+    dir=$(dirname "$dst"); mkdir -p "$dir"
+    tmp=$(mktemp "$dir/.systui.XXXXXX") || return 1
+    install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$dst"
+}
+safe_template_expand() { # explicit variables only; never eval
+    local value="$1"
+    value=${value//\$ID/$ID}; value=${value//\$CODENAME/$CODENAME}; value=${value//\$ARCH/$ARCH}; value=${value//\$K/$K}
+    printf '%s' "$value"
+}
 # ---- System scanner ---------------------------------------------------------
 # Inventory of known software: "command|display name|category"
 SW_INVENTORY="
@@ -133,7 +197,7 @@ scan_pkg_count() {
 }
 
 scan_full_report() {
-    local rpt="/tmp/systui.scan"
+    local rpt="${SYSTUI_TMP}/scan"
     {
         echo "==================================================================="
         echo " systui system scan — $(date '+%F %T')"
@@ -237,8 +301,8 @@ menu_scan_system() {
                     echo; df -hT -x tmpfs -x devtmpfs 2>/dev/null || df -h
                     echo; echo "--- PCI (if available) ---"
                     lspci 2>/dev/null | head -25
-                } > /tmp/systui.scan 2>&1
-                tui_text "Hardware scan" /tmp/systui.scan ;;
+                } > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Hardware scan" ${SYSTUI_TMP}/scan ;;
             software)
                 {
                     echo "Software inventory ($(scan_pkg_count) packages via $PM):"
@@ -252,8 +316,8 @@ menu_scan_system() {
                             printf "  [ ] %-20s not installed\n" "$name"
                         fi
                     done <<< "$SW_INVENTORY"
-                } > /tmp/systui.scan 2>&1
-                tui_text "Software inventory" /tmp/systui.scan ;;
+                } > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Software inventory" ${SYSTUI_TMP}/scan ;;
             netsvc)
                 {
                     echo "--- Running services ($INIT) ---"
@@ -265,8 +329,8 @@ menu_scan_system() {
                     esac
                     echo; echo "--- Listening ports ---"
                     ss -tulnH 2>/dev/null | awk '{printf "  %-6s %s\n",$1,$5}' | sort -u
-                } > /tmp/systui.scan 2>&1
-                tui_text "Services & ports" /tmp/systui.scan ;;
+                } > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Services & ports" ${SYSTUI_TMP}/scan ;;
             back) return 0 ;;
         esac
     done
@@ -298,8 +362,8 @@ menu_scan_queries() {
                     apk)    echo "apk does not track per-package sizes conveniently."
                             echo "Approximate: largest directories under /usr:"
                             du -sh /usr/* 2>/dev/null | sort -hr | head -20 ;;
-                esac > /tmp/systui.scan 2>&1
-                tui_text "Largest packages" /tmp/systui.scan ;;
+                esac > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Largest packages" ${SYSTUI_TMP}/scan ;;
             recent)
                 case "$PM" in
                     apt)    { zgrep -h " install \| upgrade " /var/log/dpkg.log* 2>/dev/null \
@@ -307,8 +371,8 @@ menu_scan_queries() {
                     pacman) grep -E 'installed|upgraded' /var/log/pacman.log 2>/dev/null | tail -40 ;;
                     dnf)    dnf history 2>/dev/null | head -30 ;;
                     apk)    echo "apk does not keep an install-history log by default." ;;
-                esac > /tmp/systui.scan 2>&1
-                tui_text "Recent package activity" /tmp/systui.scan ;;
+                esac > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Recent package activity" ${SYSTUI_TMP}/scan ;;
             owns)
                 local f; f=$(tui_input "File owner" "File path (e.g. /usr/bin/vim):" "") || continue
                 [ -z "$f" ] && continue
@@ -317,8 +381,8 @@ menu_scan_queries() {
                     apk)    apk info --who-owns "$f" ;;
                     pacman) pacman -Qo "$f" ;;
                     dnf)    rpm -qf "$f" ;;
-                esac > /tmp/systui.scan 2>&1
-                tui_text "Owner of $f" /tmp/systui.scan ;;
+                esac > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Owner of $f" ${SYSTUI_TMP}/scan ;;
             files)
                 local p; p=$(tui_input "Package files" "Package name:" "") || continue
                 [ -z "$p" ] && continue
@@ -327,25 +391,25 @@ menu_scan_queries() {
                     apk)    apk info -L "$p" ;;
                     pacman) pacman -Ql "$p" ;;
                     dnf)    rpm -ql "$p" ;;
-                esac > /tmp/systui.scan 2>&1
-                tui_text "Files in $p" /tmp/systui.scan ;;
+                esac > ${SYSTUI_TMP}/scan 2>&1
+                tui_text "Files in $p" ${SYSTUI_TMP}/scan ;;
             findfile)
                 local n d
                 n=$(tui_input "Find file" "Filename or glob (e.g. sshd_config, *.conf):" "") || continue
                 [ -z "$n" ] && continue
                 d=$(tui_input "Find file" "Search under directory:" "/etc") || continue
-                find "$d" -xdev -name "$n" 2>/dev/null | head -200 > /tmp/systui.scan
-                [ -s /tmp/systui.scan ] || echo "(no matches)" > /tmp/systui.scan
-                tui_text "find $d -name $n" /tmp/systui.scan ;;
+                find "$d" -xdev -name "$n" 2>/dev/null | head -200 > ${SYSTUI_TMP}/scan
+                [ -s ${SYSTUI_TMP}/scan ] || echo "(no matches)" > ${SYSTUI_TMP}/scan
+                tui_text "find $d -name $n" ${SYSTUI_TMP}/scan ;;
             orphans)
                 case "$PM" in
                     apt)    apt-get autoremove --dry-run 2>/dev/null | grep -E '^Remv|^  ' ;;
                     pacman) pacman -Qtdq 2>/dev/null || echo "(none)" ;;
                     dnf)    dnf repoquery --unneeded 2>/dev/null ;;
                     apk)    echo "apk removes orphans automatically with 'apk del'." ;;
-                esac > /tmp/systui.scan 2>&1
-                [ -s /tmp/systui.scan ] || echo "(none)" > /tmp/systui.scan
-                tui_text "Orphaned packages" /tmp/systui.scan ;;
+                esac > ${SYSTUI_TMP}/scan 2>&1
+                [ -s ${SYSTUI_TMP}/scan ] || echo "(none)" > ${SYSTUI_TMP}/scan
+                tui_text "Orphaned packages" ${SYSTUI_TMP}/scan ;;
             back) return 0 ;;
         esac
     done
@@ -391,7 +455,7 @@ repo_add_apt_popular() { # <tag ...>
     for t in "$@"; do
         line=$(grep -m1 "^$t|" <<<"$APT_POPULAR") || continue
         IFS='|' read -r tag desc keyurl fmt repoline <<<"$line"
-        keyurl=$(eval echo "\"$keyurl\"")
+        keyurl=$(safe_template_expand "$keyurl")
         K="/etc/apt/keyrings/systui-$tag.gpg"
         if [ "$fmt" = bin ]; then
             curl -fsSL "$keyurl" -o "$K" 2>>"$LOGFILE" || { warn "$desc: key download failed."; continue; }
@@ -399,7 +463,7 @@ repo_add_apt_popular() { # <tag ...>
             curl -fsSL "$keyurl" 2>>"$LOGFILE" | gpg --dearmor --yes -o "$K" 2>>"$LOGFILE" \
                 || { warn "$desc: key import failed."; continue; }
         fi
-        repoline=$(eval echo "\"$repoline\"")
+        repoline=$(safe_template_expand "$repoline")
         echo "$repoline" > "/etc/apt/sources.list.d/systui-$tag.list"
         log "repo: added $tag -> $repoline"
     done
@@ -669,8 +733,8 @@ repo_sources_listd() {
             back     "Back") || return 0
         
         case "$c" in
-            mainview) touch /etc/apt/sources.list; cat /etc/apt/sources.list > /tmp/systui.listd; tui_text "/etc/apt/sources.list" /tmp/systui.listd ;;
-            mainedit) touch /etc/apt/sources.list; cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%s)"; "${EDITOR:-nano}" /etc/apt/sources.list || true ;;
+            mainview) touch /etc/apt/sources.list; cat /etc/apt/sources.list > ${SYSTUI_TMP}/listd; tui_text "/etc/apt/sources.list" ${SYSTUI_TMP}/listd ;;
+            mainedit) touch /etc/apt/sources.list; cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%s)"; safe_edit /etc/apt/sources.list || true ;;
             list)
                 {
                     echo "=== Files in /etc/apt/sources.list.d ==="
@@ -690,8 +754,8 @@ repo_sources_listd() {
                     echo "=== Lines in /etc/apt/sources.list (main) ==="
                     grep -v '^\s*#' /etc/apt/sources.list 2>/dev/null | grep -v '^\s*$' \
                         || echo "(file is empty or commented out)"
-                } > /tmp/systui.listd
-                tui_text "sources.list.d inventory" /tmp/systui.listd ;;
+                } > ${SYSTUI_TMP}/listd
+                tui_text "sources.list.d inventory" ${SYSTUI_TMP}/listd ;;
             
             view)
                 local files=() f args=()
@@ -704,13 +768,14 @@ repo_sources_listd() {
                 [ ${#files[@]} -eq 0 ] && { tui_msg "None" "No files in sources.list.d"; continue; }
                 local sel
                 sel=$(tui_menu "View file" "Choose a file:" "${args[@]}") || continue
-                cat "$sel" > /tmp/systui.listd
-                tui_text "$(basename "$sel")" /tmp/systui.listd ;;
+                cat "$sel" > ${SYSTUI_TMP}/listd
+                tui_text "$(basename "$sel")" ${SYSTUI_TMP}/listd ;;
             
             add)
                 local name url comps
                 name=$(tui_input "New repo file" "Short name (e.g., docker):" "") || continue
                 [ -z "$name" ] && continue
+                valid_safe_name "$name" || { tui_msg "Invalid name" "Use letters, numbers, dots, underscores, or hyphens only."; continue; }
                 [ -f "/etc/apt/sources.list.d/$name.list" ] && {
                     tui_msg "Exists" "File $name.list already exists."; continue
                 }
@@ -779,8 +844,8 @@ repo_sources_listd() {
                     echo "1. Type SPACE to add a new line (format: deb [opts] URL release components)"
                     echo "2. Or manually edit the file in your preferred editor"
                     echo "3. After changes, this will auto-refresh apt"
-                } > /tmp/systui.edit.hint
-                tui_text "$(basename "$sel")" /tmp/systui.edit.hint
+                } > ${SYSTUI_TMP}/edit.hint
+                tui_text "$(basename "$sel")" ${SYSTUI_TMP}/edit.hint
                 
                 local add_line
                 add_line=$(tui_input "Add line" "Add a new repository line (leave empty to skip):" "") || continue
@@ -1021,8 +1086,8 @@ repo_manage() {
                 esac
                 i=$((i+3))
             done
-            dnf repolist > /tmp/systui.repo 2>&1
-            tui_text "Repositories now" /tmp/systui.repo ;;
+            dnf repolist > ${SYSTUI_TMP}/repo 2>&1
+            tui_text "Repositories now" ${SYSTUI_TMP}/repo ;;
         pacman)
             local args=() s
             for s in $(grep -oE '^\[[a-z0-9-]+\]' /etc/pacman.conf | tr -d '[]' | grep -v options); do
@@ -1209,7 +1274,7 @@ install_official_distro_keyring() {
     }
     fmt=${spec%%|*}
     url=${spec#*|}
-    tmp=$(mktemp -d /tmp/systui-keyring.XXXXXX) || return 1
+    tmp=$(mktemp -d ${SYSTUI_TMP}/keyring.XXXXXX) || return 1
     payload="$tmp/${url##*/}"
     extract="$tmp/root"
     target="/usr/share/keyrings/systui-$distro"
@@ -1372,8 +1437,8 @@ menu_ppa_repos() {
                 run_cmd "Refreshing APT indexes" apt-get update
                 ;;
             list)
-                { grep -rHEn '^[[:space:]]*deb .*ppa\.launchpad(content)?\.net|^[[:space:]]*URIs: .*ppa\.launchpad(content)?\.net' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || echo '(no PPAs configured)'; } > /tmp/systui.ppa
-                tui_text "Configured PPAs" /tmp/systui.ppa ;;
+                { grep -rHEn '^[[:space:]]*deb .*ppa\.launchpad(content)?\.net|^[[:space:]]*URIs: .*ppa\.launchpad(content)?\.net' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || echo '(no PPAs configured)'; } > ${SYSTUI_TMP}/ppa
+                tui_text "Configured PPAs" ${SYSTUI_TMP}/ppa ;;
             disable|enable|remove)
                 tags=()
                 if [ "$c" = enable ]; then files=$(find /etc/apt/sources.list.d -maxdepth 1 -type f \( -name '*ppa*.disabled' -o -name '*launchpad*.disabled' \) 2>/dev/null | sort)
@@ -1413,8 +1478,8 @@ menu_repos() {
                     apk)    cat /etc/apk/repositories ;;
                     pacman) grep -A2 '^\[' /etc/pacman.conf | grep -v '^--' ;;
                     dnf)    dnf repolist --all ;;
-                esac > /tmp/systui.repo 2>&1
-                tui_text "Repositories" /tmp/systui.repo ;;
+                esac > ${SYSTUI_TMP}/repo 2>&1
+                tui_text "Repositories" ${SYSTUI_TMP}/repo ;;
             manage)  repo_manage ;;
             listd)   repo_sources_listd ;;
             distro)  menu_distro_repos ;;
@@ -1463,7 +1528,7 @@ menu_repos() {
                     apt)
                         local ka
                         ka=$(tui_menu "APT Keys" "Signing-key tools:" missing "Download distro keyrings from official repositories (SPACE-to-select)" import "Import key from URL" list "List installed keyrings" back "Back") || continue
-                        case "$ka" in missing) apt_missing_keyrings_menu; continue;; list) find /etc/apt/keyrings /usr/share/keyrings -maxdepth 1 -type f 2>/dev/null | sort > /tmp/systui.keys; tui_text "APT keyrings" /tmp/systui.keys; continue;; back|"") continue;; esac
+                        case "$ka" in missing) apt_missing_keyrings_menu; continue;; list) find /etc/apt/keyrings /usr/share/keyrings -maxdepth 1 -type f 2>/dev/null | sort > ${SYSTUI_TMP}/keys; tui_text "APT keyrings" ${SYSTUI_TMP}/keys; continue;; back|"") continue;; esac
                         local url name
                         url=$(tui_input "apt key" "Key URL (.gpg or .asc):" "") || continue
                         [ -z "$url" ] && continue
@@ -1578,7 +1643,7 @@ pkg_catalogue_cli() {
         [ -z "${sel// }" ] && continue
         local mapped; mapped=$(local_pkg_map $sel)
         show_warnings
-        [ -n "${mapped// }" ] && pm_install $mapped
+        if [ -n "${mapped// }" ]; then local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"; fi
     done
 }
 
@@ -1888,10 +1953,10 @@ Status  : $stat" \
             install) [ "$stat" = installed ] && tui_msg "Installed" "$name is already installed." || pm_install "$native" ;;
             remove) [ "$stat" = available ] && tui_msg "Not installed" "$name is not installed." || { tui_yesno "Remove" "Remove $name ($native)?" && pm_remove "$native"; } ;;
             reinstall) [ "$stat" = installed ] && pkg_reinstall "$native" || tui_msg "Not installed" "$name must be installed first." ;;
-            details) pkg_show_info "$native" > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "No repository metadata found." > /tmp/systui.pkg; tui_text "$name — metadata" /tmp/systui.pkg ;;
-            files) pkg_list_files "$native" > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "Package is not installed or no file list is available." > /tmp/systui.pkg; tui_text "$name — installed files" /tmp/systui.pkg ;;
+            details) pkg_show_info "$native" > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No repository metadata found." > ${SYSTUI_TMP}/pkg; tui_text "$name — metadata" ${SYSTUI_TMP}/pkg ;;
+            files) pkg_list_files "$native" > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "Package is not installed or no file list is available." > ${SYSTUI_TMP}/pkg; tui_text "$name — installed files" ${SYSTUI_TMP}/pkg ;;
             hold) pkg_hold_toggle "$native" ;;
-            verify) case "$PM" in apt) dpkg -V "$native" ;; apk) apk audit "$native" ;; pacman) pacman -Qkk "$native" ;; dnf) rpm -V "$native" ;; esac > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "No integrity problems reported." > /tmp/systui.pkg; tui_text "$name — integrity" /tmp/systui.pkg ;;
+            verify) case "$PM" in apt) dpkg -V "$native" ;; apk) apk audit "$native" ;; pacman) pacman -Qkk "$native" ;; dnf) rpm -V "$native" ;; esac > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No integrity problems reported." > ${SYSTUI_TMP}/pkg; tui_text "$name — integrity" ${SYSTUI_TMP}/pkg ;;
             back) return 0 ;;
         esac
         show_warnings
@@ -1918,7 +1983,7 @@ browse_category() {
                 while IFS='|' read -r key name desc; do [ -z "$key" ] && continue; [ "$(app_status "$key")" = installed ] && st=on || st=off; cargs+=("$key" "$name" "$st"); done <<< "$data"
                 picks=$(tui_check "Bulk install" "SPACE toggles; ENTER installs:" "${cargs[@]}") || continue
                 picks=${picks//\"/}; for k in $picks; do is_pkg_installed "$(app_native_name "$k")" || natives+=" $(app_native_name "$k")"; done
-                [ -n "${natives// }" ] && pm_install $natives; show_warnings ;;
+                if [ -n "${natives// }" ]; then local -a _pkgs=(); parse_package_input "$natives" _pkgs && pm_install "${_pkgs[@]}"; fi; show_warnings ;;
             *) line=$(grep -m1 "^$sel|" <<< "$data"); [ -n "$line" ] && app_page "$sel" "$(cut -d'|' -f2 <<<"$line")" "$(cut -d'|' -f3- <<<"$line")" ;;
         esac
     done
@@ -1936,7 +2001,7 @@ catalogue_collections() {
         local keys="${CAT_COLLECTIONS[$c]:-}" mapped="" k n
         [ -z "$keys" ] && continue
         for k in $keys; do n=$(app_native_name "$k"); [ "$n" != SKIP ] && mapped+=" $n"; done
-        tui_yesno "Install collection" "Install $(wc -w <<< "$mapped") packages from $(cat_title "$c")?\n\n$mapped" && pm_install $mapped
+        tui_yesno "Install collection" "Install $(wc -w <<< "$mapped") packages from $(cat_title "$c")?\n\n$mapped" && local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"
         show_warnings
     done
 }
@@ -1953,10 +2018,10 @@ catalogue_bulk_manage() {
             local f; f=$(tui_input "Import package list" "Path to text file (one package per line):" "") || return 0
             [ -f "$f" ] || { tui_msg "Error" "File not found: $f"; return; }
             local pkgs; pkgs=$(grep -Ev '^[[:space:]]*(#|$)' "$f" | tr '\n' ' ')
-            [ -n "$pkgs" ] && pm_install $pkgs ;;
+            if [ -n "$pkgs" ]; then local -a _pkgs=(); parse_package_input "$pkgs" _pkgs && pm_install "${_pkgs[@]}"; fi ;;
         remove)
             local p; p=$(tui_input "Bulk remove" "Packages to remove (space-separated):" "") || return 0
-            [ -n "$p" ] && tui_yesno "Confirm removal" "Remove these packages?\n\n$p" && pm_remove $p ;;
+            if [ -n "$p" ] && tui_yesno "Confirm removal" "Remove these packages?\n\n$p"; then local -a _pkgs=(); parse_package_input "$p" _pkgs && pm_remove "${_pkgs[@]}"; fi ;;
     esac
 }
 
@@ -1965,9 +2030,9 @@ catalogue_health() {
         local c
         c=$(tui_menu "Package Health" "Inspect and repair package state:" broken "Broken dependencies" orphans "Orphaned / unused packages" verify "Verify installed packages" clean "Clean caches and unused packages" back "Back") || return 0
         case "$c" in
-            broken) case "$PM" in apt) dpkg --audit; apt-get check ;; apk) apk audit --system ;; pacman) pacman -Dk ;; dnf) dnf check ;; esac > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "No broken package state detected." > /tmp/systui.pkg; tui_text "Broken dependencies" /tmp/systui.pkg ;;
-            orphans) case "$PM" in apt) apt-mark showauto | while read -r p; do apt-mark showmanual | grep -qx "$p" || echo "$p"; done ;; apk) apk info -W 2>/dev/null ;; pacman) pacman -Qtdq ;; dnf) dnf repoquery --unneeded ;; esac > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "No orphaned packages found." > /tmp/systui.pkg; tui_text "Orphaned packages" /tmp/systui.pkg ;;
-            verify) case "$PM" in apt) dpkg -C ;; apk) apk audit --system ;; pacman) pacman -Qkk ;; dnf) rpm -Va ;; esac > /tmp/systui.pkg 2>&1; [ -s /tmp/systui.pkg ] || echo "No integrity problems reported." > /tmp/systui.pkg; tui_text "Package verification" /tmp/systui.pkg ;;
+            broken) case "$PM" in apt) dpkg --audit; apt-get check ;; apk) apk audit --system ;; pacman) pacman -Dk ;; dnf) dnf check ;; esac > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No broken package state detected." > ${SYSTUI_TMP}/pkg; tui_text "Broken dependencies" ${SYSTUI_TMP}/pkg ;;
+            orphans) case "$PM" in apt) apt-mark showauto | while read -r p; do apt-mark showmanual | grep -qx "$p" || echo "$p"; done ;; apk) apk info -W 2>/dev/null ;; pacman) pacman -Qtdq ;; dnf) dnf repoquery --unneeded ;; esac > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No orphaned packages found." > ${SYSTUI_TMP}/pkg; tui_text "Orphaned packages" ${SYSTUI_TMP}/pkg ;;
+            verify) case "$PM" in apt) dpkg -C ;; apk) apk audit --system ;; pacman) pacman -Qkk ;; dnf) rpm -Va ;; esac > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No integrity problems reported." > ${SYSTUI_TMP}/pkg; tui_text "Package verification" ${SYSTUI_TMP}/pkg ;;
             clean) pm_clean ;;
             back) return 0 ;;
         esac
@@ -1980,19 +2045,19 @@ catalogue_updates() {
         apk) apk update >/dev/null 2>&1; apk version -l '<' 2>/dev/null ;;
         pacman) pacman -Sy >/dev/null 2>&1; pacman -Qu 2>/dev/null ;;
         dnf) dnf check-update 2>/dev/null | awk 'NF==3' ;;
-    esac > /tmp/systui.pkg
-    if [ -s /tmp/systui.pkg ]; then local n; n=$(wc -l < /tmp/systui.pkg); tui_text "Updates available ($n)" /tmp/systui.pkg; tui_yesno "Upgrade" "Install all $n updates now?" && pm_update; else tui_msg "Up to date" "No updates available."; fi
+    esac > ${SYSTUI_TMP}/pkg
+    if [ -s ${SYSTUI_TMP}/pkg ]; then local n; n=$(wc -l < ${SYSTUI_TMP}/pkg); tui_text "Updates available ($n)" ${SYSTUI_TMP}/pkg; tui_yesno "Upgrade" "Install all $n updates now?" && pm_update; else tui_msg "Up to date" "No updates available."; fi
 }
 
 catalogue_installed() {
-    { echo "Catalogue applications installed:"; echo; local cat key name desc; for cat in $CAT_ORDER; do while IFS='|' read -r key name desc; do [ -z "$key" ] && continue; is_pkg_installed "$(app_native_name "$key")" && printf "%-24s %s\n" "$name" "($(app_native_name "$key"))"; done <<< "${CAT_APPS[$cat]}"; done; } > /tmp/systui.pkg
-    tui_text "Installed catalogue software" /tmp/systui.pkg
+    { echo "Catalogue applications installed:"; echo; local cat key name desc; for cat in $CAT_ORDER; do while IFS='|' read -r key name desc; do [ -z "$key" ] && continue; is_pkg_installed "$(app_native_name "$key")" && printf "%-24s %s\n" "$name" "($(app_native_name "$key"))"; done <<< "${CAT_APPS[$cat]}"; done; } > ${SYSTUI_TMP}/pkg
+    tui_text "Installed catalogue software" ${SYSTUI_TMP}/pkg
 }
 
 catalogue_search() {
     local t; t=$(tui_input "Search" "Search package repositories:" "") || return 0; [ -z "$t" ] && return
-    pm_search "$t" 2>&1 | head -150 > /tmp/systui.pkg; [ -s /tmp/systui.pkg ] || echo "No results." > /tmp/systui.pkg
-    tui_text "Search: $t" /tmp/systui.pkg
+    pm_search "$t" 2>&1 | head -150 > ${SYSTUI_TMP}/pkg; [ -s ${SYSTUI_TMP}/pkg ] || echo "No results." > ${SYSTUI_TMP}/pkg
+    tui_text "Search: $t" ${SYSTUI_TMP}/pkg
     tui_yesno "Install" "Install a package from these results?" || return 0
     local p; p=$(tui_input "Install" "Exact package name:" "") || return 0; [ -n "$p" ] && pm_install "$p"
 }
@@ -2053,13 +2118,13 @@ pm_edit_file() {
     local f="$1"
     mkdir -p "$(dirname "$f")"
     touch "$f"
-    "${EDITOR:-nano}" "$f"
+    safe_edit "$f"
 }
 
 pm_show_command() {
     local title="$1"; shift
-    "$@" > /tmp/systui.pkg 2>&1 || true
-    tui_text "$title" /tmp/systui.pkg
+    "$@" > ${SYSTUI_TMP}/pkg 2>&1 || true
+    tui_text "$title" ${SYSTUI_TMP}/pkg
 }
 
 pm_generic_health() {
@@ -2068,8 +2133,8 @@ pm_generic_health() {
         echo "Executable: $(command -v "$cmd" 2>/dev/null || echo missing)"
         echo
         "$cmd" "$version_arg" 2>&1 || true
-    } > /tmp/systui.pkg
-    tui_text "$cmd health" /tmp/systui.pkg
+    } > ${SYSTUI_TMP}/pkg
+    tui_text "$cmd health" ${SYSTUI_TMP}/pkg
 }
 
 menu_cfg_apt() {
@@ -2087,7 +2152,7 @@ menu_cfg_apt() {
             verify) run_cmd "Verify dpkg database" dpkg --audit ;;
             repair) run_cmd "Repair APT/dpkg" bash -c 'dpkg --configure -a && apt-get -f install -y' ;;
             cache) run_cmd "Clean APT caches" bash -c 'apt-get clean && apt-get autoclean && apt-get autoremove -y' ;;
-            history) { zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:|End-Date)' /var/log/apt/history.log* 2>/dev/null | tail -250 || true; } > /tmp/systui.pkg; tui_text "APT history" /tmp/systui.pkg ;;
+            history) { zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:|End-Date)' /var/log/apt/history.log* 2>/dev/null | tail -250 || true; } > ${SYSTUI_TMP}/pkg; tui_text "APT history" ${SYSTUI_TMP}/pkg ;;
             reset) rm -f /etc/apt/apt.conf.d/90systui-tune /etc/apt/apt.conf.d/90systui-custom; tui_msg "Reset" "SysTUI APT configuration removed." ;;
             back|"") return 0 ;;
         esac
@@ -2151,7 +2216,7 @@ menu_cfg_cli_manager() { # id command config install-package
                     go) find "${GOBIN:-$HOME/go/bin}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null ;;
                     brew) brew list --versions ;;
                     nix) nix profile list ;;
-                esac > /tmp/systui.pkg 2>&1; tui_text "$id installed" /tmp/systui.pkg ;;
+                esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$id installed" ${SYSTUI_TMP}/pkg ;;
             cache)
                 case "$id" in
                     pip) pip3 cache info; tui_yesno "pip cache" "Purge pip cache?" && pip3 cache purge ;;
@@ -2181,7 +2246,7 @@ menu_cfg_cli_manager() { # id command config install-package
                     go) go env ;;
                     brew) brew doctor ;;
                     nix) nix config show 2>/dev/null || nix show-config ;;
-                esac > /tmp/systui.pkg 2>&1; tui_text "$id diagnostics" /tmp/systui.pkg ;;
+                esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$id diagnostics" ${SYSTUI_TMP}/pkg ;;
             back|"") return 0 ;;
         esac
     done
@@ -2233,9 +2298,9 @@ menu_cfg_native_full() {
             update) pm_update ;;
             cache) pm_clean ;;
             verify)
-                case "$PM" in apt) dpkg --audit;; pacman) pacman -Dk;; dnf) dnf check;; yum) yum check;; zypper) zypper verify;; apk) apk audit --system;; xbps) xbps-pkgdb -a;; emerge) equery check '*' 2>/dev/null;; esac > /tmp/systui.pkg 2>&1; tui_text "$PM verification" /tmp/systui.pkg ;;
+                case "$PM" in apt) dpkg --audit;; pacman) pacman -Dk;; dnf) dnf check;; yum) yum check;; zypper) zypper verify;; apk) apk audit --system;; xbps) xbps-pkgdb -a;; emerge) equery check '*' 2>/dev/null;; esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$PM verification" ${SYSTUI_TMP}/pkg ;;
             history)
-                case "$PM" in apt) zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:)' /var/log/apt/history.log* 2>/dev/null;; pacman) tail -250 /var/log/pacman.log;; dnf|yum) "$PM" history;; zypper) tail -250 /var/log/zypp/history;; apk) echo 'apk does not record transaction history by default.';; xbps) tail -250 /var/log/socklog/xbps/current 2>/dev/null;; emerge) tail -250 /var/log/emerge.log;; esac > /tmp/systui.pkg 2>&1; tui_text "$PM history" /tmp/systui.pkg ;;
+                case "$PM" in apt) zgrep -hE '^(Start-Date|Commandline|Install:|Upgrade:|Remove:)' /var/log/apt/history.log* 2>/dev/null;; pacman) tail -250 /var/log/pacman.log;; dnf|yum) "$PM" history;; zypper) tail -250 /var/log/zypp/history;; apk) echo 'apk does not record transaction history by default.';; xbps) tail -250 /var/log/socklog/xbps/current 2>/dev/null;; emerge) tail -250 /var/log/emerge.log;; esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$PM history" ${SYSTUI_TMP}/pkg ;;
             edit)
                 case "$PM" in apt) pm_edit_file /etc/apt/apt.conf.d/90systui-custom;; pacman) pm_edit_file /etc/pacman.conf;; dnf) pm_edit_file /etc/dnf/dnf.conf;; yum) pm_edit_file /etc/yum.conf;; zypper) pm_edit_file /etc/zypp/zypp.conf;; apk) pm_edit_file /etc/apk/repositories;; xbps) pm_edit_file /etc/xbps.d/00-repository-main.conf;; emerge) pm_edit_file /etc/portage/make.conf;; esac ;;
             back|"") return ;;
@@ -2292,11 +2357,11 @@ menu_package_operations() {
         local c p t a
         c=$(tui_menu "Packages [$PM]" "Native package operations:" install "Install" remove "Remove" search "Search" info "Info" listinst "List installed" hold "Hold/unhold" update "Update/upgrade" clean "Clean" back "Back") || return 0
         case "$c" in
-            install) p=$(tui_input "Install" "Packages:" "") || continue; [ -n "$p" ] && pm_install $p ;;
-            remove) p=$(tui_input "Remove" "Packages:" "") || continue; [ -n "$p" ] && pm_remove $p ;;
-            search) t=$(tui_input "Search" "Term:" "") || continue; [ -n "$t" ] || continue; pm_search "$t" > /tmp/systui.pkg 2>&1; tui_text "Search" /tmp/systui.pkg ;;
-            info) p=$(tui_input "Info" "Package:" "") || continue; case "$PM" in apt) apt-cache show "$p";; apk) apk info -a "$p";; pacman) pacman -Si "$p" 2>/dev/null || pacman -Qi "$p";; dnf) dnf info "$p";; zypper) zypper info "$p";; emerge) emerge --search "$p";; esac > /tmp/systui.pkg 2>&1; tui_text "Info" /tmp/systui.pkg ;;
-            listinst) case "$PM" in apt) dpkg-query -W;; apk) apk info -v;; pacman) pacman -Q;; dnf) dnf list installed;; zypper) zypper search -i;; emerge) qlist -Iv;; esac > /tmp/systui.pkg 2>&1; tui_text "Installed" /tmp/systui.pkg ;;
+            install) p=$(tui_input "Install" "Packages:" "") || continue; if [ -n "$p" ]; then local -a _pkgs=(); parse_package_input "$p" _pkgs && pm_install "${_pkgs[@]}"; fi ;;
+            remove) p=$(tui_input "Remove" "Packages:" "") || continue; if [ -n "$p" ]; then local -a _pkgs=(); parse_package_input "$p" _pkgs && pm_remove "${_pkgs[@]}"; fi ;;
+            search) t=$(tui_input "Search" "Term:" "") || continue; [ -n "$t" ] || continue; pm_search "$t" > ${SYSTUI_TMP}/pkg 2>&1; tui_text "Search" ${SYSTUI_TMP}/pkg ;;
+            info) p=$(tui_input "Info" "Package:" "") || continue; case "$PM" in apt) apt-cache show "$p";; apk) apk info -a "$p";; pacman) pacman -Si "$p" 2>/dev/null || pacman -Qi "$p";; dnf) dnf info "$p";; zypper) zypper info "$p";; emerge) emerge --search "$p";; esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "Info" ${SYSTUI_TMP}/pkg ;;
+            listinst) case "$PM" in apt) dpkg-query -W;; apk) apk info -v;; pacman) pacman -Q;; dnf) dnf list installed;; zypper) zypper search -i;; emerge) qlist -Iv;; esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "Installed" ${SYSTUI_TMP}/pkg ;;
             hold) a=$(tui_radio "Hold" "Action:" hold "Hold" on unhold "Unhold" off) || continue; p=$(tui_input "Hold" "Package:" "") || continue; case "$PM" in apt) apt-mark "$a" "$p";; zypper) zypper "$([ "$a" = hold ] && echo addlock || echo removelock)" "$p";; dnf) pm_install 'dnf-command(versionlock)' 2>/dev/null; dnf versionlock "$([ "$a" = hold ] && echo add || echo delete)" "$p";; *) tui_msg "N/A" "Hold unavailable for $PM.";; esac ;;
             update) pm_update;; clean) pm_clean;; back|"") return 0;;
         esac
@@ -2366,7 +2431,7 @@ aptfast_optimize_official_mirrors() {
     [ "$count" -ge 1 ] 2>/dev/null || count=1
     [ "$count" -le 20 ] 2>/dev/null || count=20
 
-    tmp="$(mktemp -d /tmp/systui-aptfast.XXXXXX)" || return 1
+    tmp="$(mktemp -d ${SYSTUI_TMP}/aptfast.XXXXXX)" || return 1
     raw="$tmp/mirrors.raw"; candidates="$tmp/candidates"; results="$tmp/results"
     trap 'rm -rf "$tmp"' RETURN
 
@@ -2490,11 +2555,11 @@ menu_cfg_nala() {
                 local n; n=$(tui_input "nala fetch" "How many top mirrors to keep:" "3") || continue
                 run_cmd "nala fetch (fastest $n mirrors)" nala fetch --auto --fetches "${n:-3}" -y ;;
             history)
-                nala history > /tmp/systui.pkg 2>&1
-                tui_text "nala history" /tmp/systui.pkg ;;
+                nala history > ${SYSTUI_TMP}/pkg 2>&1
+                tui_text "nala history" ${SYSTUI_TMP}/pkg ;;
             show)
-                { cat /etc/nala/nala.conf 2>/dev/null || echo "(no config file — defaults in use)"; } > /tmp/systui.pkg
-                tui_text "nala config" /tmp/systui.pkg ;;
+                { cat /etc/nala/nala.conf 2>/dev/null || echo "(no config file — defaults in use)"; } > ${SYSTUI_TMP}/pkg
+                tui_text "nala config" ${SYSTUI_TMP}/pkg ;;
             back) return 0 ;;
         esac
     done
@@ -2667,7 +2732,7 @@ menu_omz() { # <user> <home>
         case "$c" in
             install)
                 run_cmd "Installing oh-my-zsh for $u" su - "$u" -c \
-                    "curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh | sh -s -- --unattended" ;;
+                    'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-omz.XXXXXX") || exit 1; trap '"'"'rm -f "$tmp_script"'"'"' EXIT; curl -fL --proto "=https" --tlsv1.2 https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o "$tmp_script" && chmod 700 "$tmp_script" && RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh "$tmp_script" --unattended' ;;
             uninstall)
                 [ -d "$ozsh" ] || { tui_msg "Missing" "oh-my-zsh is not installed for $u."; continue; }
                 tui_yesno "Uninstall oh-my-zsh" \
@@ -2747,8 +2812,8 @@ be restored as .zshrc." || continue
                     echo
                     echo "Custom plugins cloned:"
                     ls -1 "$ozsh/custom/plugins" 2>/dev/null | sed 's/^/  /'
-                } > /tmp/systui.sh2
-                tui_text "Current OMZ config — $u" /tmp/systui.sh2 ;;
+                } > ${SYSTUI_TMP}/sh2
+                tui_text "Current OMZ config — $u" ${SYSTUI_TMP}/sh2 ;;
             back) return 0 ;;
         esac
     done
@@ -2793,8 +2858,8 @@ menu_zinit() { # <user> <home>
                 chown "$u" "$rc" 2>/dev/null
                 tui_msg "Done" "zinit block updated in $rc\nPlugins download on next zsh start." ;;
             current)
-                grep -n "zinit" "$rc" 2>/dev/null > /tmp/systui.sh2 || echo "(none)" > /tmp/systui.sh2
-                tui_text "zinit lines — $u" /tmp/systui.sh2 ;;
+                grep -n "zinit" "$rc" 2>/dev/null > ${SYSTUI_TMP}/sh2 || echo "(none)" > ${SYSTUI_TMP}/sh2
+                tui_text "zinit lines — $u" ${SYSTUI_TMP}/sh2 ;;
             uninstall)
                 [ -d "$zdir" ] || { tui_msg "Missing" "zinit is not installed for $u."; continue; }
                 tui_yesno "Uninstall zinit" \
@@ -2901,7 +2966,7 @@ menu_fisher() { # <user> <home>
             install)
                 command -v fish >/dev/null || pm_install fish
                 run_cmd "Installing fisher for $u" su - "$u" -c \
-                    "fish -c 'curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source && fisher install jorgebucaran/fisher'" ;;
+                    'tmp_fisher=$(mktemp "${TMPDIR:-/tmp}/systui-fisher.XXXXXX") || exit 1; trap '"'"'rm -f "$tmp_fisher"'"'"' EXIT; curl -fL --proto "=https" --tlsv1.2 https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish -o "$tmp_fisher" && fish -c "source $tmp_fisher; fisher install jorgebucaran/fisher"' ;;
             plugins)
                 su - "$u" -c "fish -c 'type -q fisher'" 2>/dev/null || { tui_msg "Missing" "Install fisher first."; continue; }
                 local installed args=() repo desc state
@@ -2933,8 +2998,8 @@ menu_fisher() { # <user> <home>
                     i=$((i+3))
                 done ;;
             list)
-                su - "$u" -c "fish -c 'fisher list'" > /tmp/systui.sh2 2>&1 || echo "(fisher not installed)" > /tmp/systui.sh2
-                tui_text "fisher plugins — $u" /tmp/systui.sh2 ;;
+                su - "$u" -c "fish -c 'fisher list'" > ${SYSTUI_TMP}/sh2 2>&1 || echo "(fisher not installed)" > ${SYSTUI_TMP}/sh2
+                tui_text "fisher plugins — $u" ${SYSTUI_TMP}/sh2 ;;
             update)
                 run_cmd "fisher update" su - "$u" -c "fish -c 'fisher update'" ;;
             uninstall)
@@ -2993,8 +3058,8 @@ menu_tpm() { # <user> <home>
                 chown "$u" "$conf" 2>/dev/null
                 tui_msg "Done" "Block updated. Inside tmux: prefix + I to install,\nprefix + alt + u to remove unlisted plugins." ;;
             current)
-                grep -n "@plugin\|tpm" "$conf" 2>/dev/null > /tmp/systui.sh2 || echo "(none)" > /tmp/systui.sh2
-                tui_text ".tmux.conf plugin lines — $u" /tmp/systui.sh2 ;;
+                grep -n "@plugin\|tpm" "$conf" 2>/dev/null > ${SYSTUI_TMP}/sh2 || echo "(none)" > ${SYSTUI_TMP}/sh2
+                tui_text ".tmux.conf plugin lines — $u" ${SYSTUI_TMP}/sh2 ;;
             uninstall)
                 [ -d "$home_dir/.tmux/plugins" ] || { tui_msg "Missing" "TPM is not installed for $u."; continue; }
                 tui_yesno "Uninstall TPM" \
@@ -3035,8 +3100,8 @@ menu_blesh() { # <user> <home>
 install_blesh() { # <user>
     local u="$1"
     run_cmd "Installing ble.sh for $u" su - "$u" -c \
-        "mkdir -p ~/.local/share && curl -fsSL https://github.com/akinomyoga/ble.sh/releases/download/nightly/ble-nightly.tar.xz -o /tmp/ble.tar.xz && \
-         tar -xJf /tmp/ble.tar.xz -C ~/.local/share/ && rm -rf ~/.local/share/blesh && mv ~/.local/share/ble-nightly ~/.local/share/blesh && rm -f /tmp/ble.tar.xz"
+        "mkdir -p ~/.local/share && curl -fsSL https://github.com/akinomyoga/ble.sh/releases/download/nightly/ble-nightly.tar.xz -o ${SYSTUI_TMP}/ble.tar.xz && \
+         tar -xJf ${SYSTUI_TMP}/ble.tar.xz -C ~/.local/share/ && rm -rf ~/.local/share/blesh && mv ~/.local/share/ble-nightly ~/.local/share/blesh && rm -f ${SYSTUI_TMP}/ble.tar.xz"
     local home_dir; home_dir=$(user_home "$u")
     grep -q 'blesh/ble.sh' "$home_dir/.bashrc" 2>/dev/null || {
         echo '[[ $- == *i* ]] && source ~/.local/share/blesh/ble.sh' >> "$home_dir/.bashrc"
@@ -3054,9 +3119,9 @@ menu_shell_hierarchy() {
     while true; do
         sh_=$(tui_radio "Shell Managers — $u" "SPACE selects a shell:" bash "Bash $(st bash)" "$([ "$cur_shell" = bash ] && echo on || echo off)" zsh "Zsh $(st zsh)" "$([ "$cur_shell" = zsh ] && echo on || echo off)" fish "Fish $(st fish)" "$([ "$cur_shell" = fish ] && echo on || echo off)" tmux "tmux plugins" off) || return 0
         case "$sh_" in
-            bash) m=$(tui_menu "Bash Manager" "Install, remove or configure:" install "Install/reinstall Bash" uninstall "Uninstall Bash" omb "oh-my-bash" bashit "Bash-it" blesh "ble.sh" back "Back") || continue; case "$m" in install) pm_install bash;; uninstall) tui_yesno "Confirm" "Remove Bash?" && pm_remove bash;; omb) menu_omb "$u" "$home_dir";; bashit) menu_bashit "$u" "$home_dir";; blesh) menu_blesh "$u" "$home_dir";; esac;;
-            zsh) m=$(tui_menu "Zsh Manager" "Install, remove or configure:" install "Install/reinstall Zsh" uninstall "Uninstall Zsh" omz "oh-my-zsh" zinit "zinit" back "Back") || continue; case "$m" in install) pm_install zsh;; uninstall) tui_yesno "Confirm" "Remove Zsh?" && pm_remove zsh;; omz) menu_omz "$u" "$home_dir";; zinit) menu_zinit "$u" "$home_dir";; esac;;
-            fish) m=$(tui_menu "Fish Manager" "Install, remove or configure:" install "Install/reinstall Fish" uninstall "Uninstall Fish" fisher "Fisher" back "Back") || continue; case "$m" in install) pm_install fish;; uninstall) tui_yesno "Confirm" "Remove Fish?" && pm_remove fish;; fisher) menu_fisher "$u" "$home_dir";; esac;;
+            bash) m=$(tui_menu "Bash Manager" "Install, remove or configure:" install "Install/reinstall Bash" uninstall "Uninstall Bash" omb "oh-my-bash" bashit "Bash-it" blesh "ble.sh" back "Back") || continue; case "$m" in install) pm_install bash;; uninstall) safe_remove_shell bash;; omb) menu_omb "$u" "$home_dir";; bashit) menu_bashit "$u" "$home_dir";; blesh) menu_blesh "$u" "$home_dir";; esac;;
+            zsh) m=$(tui_menu "Zsh Manager" "Install, remove or configure:" install "Install/reinstall Zsh" uninstall "Uninstall Zsh" omz "oh-my-zsh" zinit "zinit" back "Back") || continue; case "$m" in install) pm_install zsh;; uninstall) safe_remove_shell zsh;; omz) menu_omz "$u" "$home_dir";; zinit) menu_zinit "$u" "$home_dir";; esac;;
+            fish) m=$(tui_menu "Fish Manager" "Install, remove or configure:" install "Install/reinstall Fish" uninstall "Uninstall Fish" fisher "Fisher" back "Back") || continue; case "$m" in install) pm_install fish;; uninstall) safe_remove_shell fish;; fisher) menu_fisher "$u" "$home_dir";; esac;;
             tmux) menu_tpm "$u" "$home_dir";;
         esac
     done
@@ -3122,9 +3187,9 @@ menu_vim_plugins() {
                 run_cmd "vim :PlugInstall" su - "$u" -c \
                     "vim -es -u ~/.vimrc -i NONE -c 'PlugInstall --sync' -c 'qa' </dev/null || true" ;;
             current)
-                sed -n '/^# >>> systui vim plugins >>>/,/^# <<< systui vim plugins <<</p' "$rc" 2>/dev/null > /tmp/systui.ed
-                [ -s /tmp/systui.ed ] || echo "(no systui plugin block yet)" > /tmp/systui.ed
-                tui_text ".vimrc plugin block — $u" /tmp/systui.ed ;;
+                sed -n '/^# >>> systui vim plugins >>>/,/^# <<< systui vim plugins <<</p' "$rc" 2>/dev/null > ${SYSTUI_TMP}/ed
+                [ -s ${SYSTUI_TMP}/ed ] || echo "(no systui plugin block yet)" > ${SYSTUI_TMP}/ed
+                tui_text ".vimrc plugin block — $u" ${SYSTUI_TMP}/ed ;;
             back) return 0 ;;
         esac
     done
@@ -3253,15 +3318,15 @@ rc.write_text('\n'.join(lines).rstrip()+'\n'+block)
 PYOMB
     chown "$u" "$rc" 2>/dev/null || true
 
-    if su - "$u" -c "HOME='$home_dir' bash --noprofile --rcfile '$rc' -i -c exit" >/tmp/systui-omb-check.$$ 2>&1; then
-        rm -f /tmp/systui-omb-check.$$
+    if su - "$u" -c "HOME='$home_dir' bash --noprofile --rcfile '$rc' -i -c exit" >${SYSTUI_TMP}/omb-check.$$ 2>&1; then
+        rm -f ${SYSTUI_TMP}/omb-check.$$
         tui_msg "Installed" "Oh My Bash is configured for $u.\n\nExisting config backup: $backup\nThe generated loader supports legacy and current Bash syntax."
         return 0
     fi
 
     local validation
-    validation=$(tail -20 /tmp/systui-omb-check.$$ 2>/dev/null)
-    rm -f /tmp/systui-omb-check.$$
+    validation=$(tail -20 ${SYSTUI_TMP}/omb-check.$$ 2>/dev/null)
+    rm -f ${SYSTUI_TMP}/omb-check.$$
     cp -p "$backup" "$rc"
     chown "$u" "$rc" 2>/dev/null || true
     tui_msg "Validation failed" "The previous .bashrc was restored.\n\n$validation"
@@ -3363,8 +3428,8 @@ restored; otherwise the OMB lines in .bashrc are commented out." || continue
                     ls -1 "$osh/aliases" 2>/dev/null | sed 's/\.aliases\.sh//'
                     echo; echo "=== Themes ==="
                     ls -1 "$osh/themes" 2>/dev/null | column 2>/dev/null || ls -1 "$osh/themes"
-                } > /tmp/systui.omb 2>&1
-                tui_text "oh-my-bash inventory — $u" /tmp/systui.omb ;;
+                } > ${SYSTUI_TMP}/omb 2>&1
+                tui_text "oh-my-bash inventory — $u" ${SYSTUI_TMP}/omb ;;
             current)
                 {
                     echo "User    : $u"
@@ -3372,8 +3437,8 @@ restored; otherwise the OMB lines in .bashrc are commented out." || continue
                     echo
                     grep -E '^(OSH_THEME|plugins|completions|aliases)=' "$home_dir/.bashrc" 2>/dev/null \
                         || echo "(no OMB configuration found in .bashrc)"
-                } > /tmp/systui.omb
-                tui_text "Current OMB config — $u" /tmp/systui.omb ;;
+                } > ${SYSTUI_TMP}/omb
+                tui_text "Current OMB config — $u" ${SYSTUI_TMP}/omb ;;
             back) return 0 ;;
         esac
     done
@@ -3429,8 +3494,8 @@ plugin_show_status() {
             printf '%-5s : %s\n' "$sh" "$rc"
             grep -n "$pattern" "$rc" 2>/dev/null || echo "        no integration found"
         done
-    } > /tmp/systui.plugin-status
-    tui_text "$name status" /tmp/systui.plugin-status
+    } > ${SYSTUI_TMP}/plugin-status
+    tui_text "$name status" ${SYSTUI_TMP}/plugin-status
 }
 
 menu_plugin_starship() {
@@ -3446,7 +3511,7 @@ menu_plugin_starship() {
             status "Show installation and shell integration status" \
             back "Back") || return 0
         case "$c" in
-            install) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c "curl -sS https://starship.rs/install.sh | sh" ;;
+            install) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c 'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-starship.XXXXXX") || exit 1; trap '"'"'rm -f "$tmp_script"'"'"' EXIT; curl -fL --proto "=https" --tlsv1.2 https://starship.rs/install.sh -o "$tmp_script" && chmod 700 "$tmp_script" && sh "$tmp_script" -y' ;;
             integrate)
                 shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
                 for sh in $shells; do
@@ -3485,7 +3550,7 @@ truncate_to_repo = false
 disabled = false
 EOF
                 chown -R "$u" "$home_dir/.config/starship.toml" 2>/dev/null || true ;;
-            edit) mkdir -p "$home_dir/.config"; touch "$home_dir/.config/starship.toml"; "${EDITOR:-nano}" "$home_dir/.config/starship.toml" || true ;;
+            edit) mkdir -p "$home_dir/.config"; touch "$home_dir/.config/starship.toml"; safe_edit "$home_dir/.config/starship.toml" || true ;;
             disable)
                 shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
                 for sh in $shells; do rc=$(plugin_rc_file "$sh" "$home_dir"); plugin_remove_match "$rc" 'starship init'; done ;;
@@ -3513,7 +3578,7 @@ menu_plugin_fzf() {
                     fish) plugin_add_line "$rc" 'fzf --fish | source' "$u" ;;
                 esac; done ;;
             options) opts=$(tui_input "fzf options" "FZF_DEFAULT_OPTS:" "--height=40% --layout=reverse --border") || continue; plugin_add_line "$home_dir/.profile" "export FZF_DEFAULT_OPTS='$opts'" "$u" ;;
-            edit) "${EDITOR:-nano}" "$home_dir/.profile" || true ;;
+            edit) safe_edit "$home_dir/.profile" || true ;;
             disable) for rc in "$home_dir/.bashrc" "$home_dir/.zshrc" "$home_dir/.config/fish/config.fish" "$home_dir/.profile"; do plugin_remove_match "$rc" 'fzf'; plugin_remove_match "$rc" 'FZF_DEFAULT_OPTS'; done ;;
             remove) pm_remove fzf ;;
             status) plugin_show_status "fzf" fzf "$home_dir" 'fzf' ;;
@@ -3538,7 +3603,7 @@ menu_plugin_simple_init() { # title command package init-bash init-zsh init-fish
             edit)
                 [ -n "$cfg" ] || cfg="$home_dir/.profile"
                 mkdir -p "$(dirname "$cfg")"; touch "$cfg"; chown "$u" "$cfg" 2>/dev/null || true
-                "${EDITOR:-nano}" "$cfg" || true ;;
+                safe_edit "$cfg" || true ;;
             disable) for rc in "$home_dir/.bashrc" "$home_dir/.zshrc" "$home_dir/.config/fish/config.fish"; do plugin_remove_match "$rc" "$cmd"; done ;;
             remove) pm_remove "$pkg" ;;
             status) plugin_show_status "$title" "$cmd" "$home_dir" "$cmd" ;;
@@ -3556,10 +3621,10 @@ menu_plugin_completions() {
             zshcfg "Configure Zsh completion system" \
             remove "Remove selected completion packages" status "Show status" back "Back") || return 0
         case "$c" in
-            install) sel=$(tui_check "Completion packages" "SPACE selects:" bash-completion "Bash completion" on zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_install $sel ;;
+            install) sel=$(tui_check "Completion packages" "SPACE selects:" bash-completion "Bash completion" on zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; if [ -n "${sel// }" ]; then local -a _pkgs=(); parse_package_input "$sel" _pkgs && pm_install "${_pkgs[@]}"; fi ;;
             bashcfg) plugin_add_line "$home_dir/.bashrc" '[[ $- == *i* ]] && [ -r /usr/share/bash-completion/bash_completion ] && source /usr/share/bash-completion/bash_completion' "$u" ;;
             zshcfg) plugin_add_line "$home_dir/.zshrc" 'autoload -Uz compinit && compinit' "$u" ;;
-            remove) sel=$(tui_check "Remove completions" "SPACE selects:" bash-completion "Bash completion" off zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; [ -n "${sel// }" ] && pm_remove $sel ;;
+            remove) sel=$(tui_check "Remove completions" "SPACE selects:" bash-completion "Bash completion" off zsh-completions "Zsh completions" off) || continue; sel=${sel//\"/}; if [ -n "${sel// }" ]; then local -a _pkgs=(); parse_package_input "$sel" _pkgs && pm_remove "${_pkgs[@]}"; fi ;;
             status) plugin_show_status "Completions" bash "$home_dir" 'compinit\|bash_completion' ;;
             back|"") return 0 ;;
         esac
@@ -3612,7 +3677,7 @@ menu_shell_github_plugins() {
                     rc="$h/.zshrc"; plugin_add_line "$rc" "${init/#\~/$h}" "$u" ;;
                 fish)
                     command -v fish >/dev/null 2>&1 || pm_install fish
-                    fm_as_user "$u" "fish -lc 'type -q fisher; or curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source; $init'" ;;
+                    fm_as_user "$u" "fish -lc 'type -q fisher; or begin; set t (mktemp); curl -fL --proto =https --tlsv1.2 https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish -o \"\$t\"; source \"\$t\"; rm -f \"\$t\"; end; $init'" ;;
             esac
         done < <(shell_github_catalog)
     done
@@ -3791,7 +3856,7 @@ menu_shell_config() {
             case "$c" in
                 populate) shellcfg_populated_entries "$k" "$f" "$u" ;;
                 add) line=$(tui_input "Add entry" "Enter the exact configuration line:" "") || continue; [ -n "$line" ] && plugin_add_line "$f" "$line" "$u" ;;
-                edit) mkdir -p "$(dirname "$f")"; touch "$f"; chown "$u" "$f" 2>/dev/null || true; "${EDITOR:-nano}" "$f" || true ;;
+                edit) mkdir -p "$(dirname "$f")"; touch "$f"; chown "$u" "$f" 2>/dev/null || true; safe_edit "$f" || true ;;
                 view) [ -f "$f" ] && tui_text "$f" "$f" || tui_msg "Shell config" "$f does not exist yet." ;;
                 validate) shellcfg_validate "$k" "$f" ;;
                 backup) shellcfg_backup "$f" "$u" ;;
@@ -3886,11 +3951,11 @@ menu_aliases() {
             add) n=$(tui_input "Alias name" "Name:" "ll") || continue; cmd=$(tui_input "Alias command" "Command executed by '$n':" "ls -alF") || continue; alias_set "$f" "$n" "$cmd" "$u" && aliases_write_fish "$f" "$ff" "$u" ;;
             remove) n=$(tui_input "Remove alias" "Alias name to remove:" "") || continue; [ -n "$n" ] && alias_remove "$f" "$n"; aliases_write_fish "$f" "$ff" "$u" ;;
             list) [ -s "$f" ] && tui_text "Managed aliases — $u" "$f" || tui_msg "Alias manager" "No managed aliases are defined." ;;
-            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true; chown "$u" "$f" 2>/dev/null || true; aliases_write_fish "$f" "$ff" "$u" ;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; safe_edit "$f" || true; chown "$u" "$f" 2>/dev/null || true; aliases_write_fish "$f" "$ff" "$u" ;;
             import) src=$(tui_input "Import aliases" "Path to a shell file containing alias lines:" "$home_dir/.bash_aliases") || continue; if [ -f "$src" ]; then grep '^alias [A-Za-z_.][A-Za-z0-9_.-]*=' "$src" >> "$f" || true; awk '!seen[$0]++' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; chown "$u" "$f" 2>/dev/null || true; aliases_write_fish "$f" "$ff" "$u"; else tui_msg "Import failed" "$src was not found."; fi ;;
             sync) aliases_write_fish "$f" "$ff" "$u"; tui_msg "Done" "Fish aliases regenerated at $ff" ;;
             enable) aliases_enable "$u" "$home_dir"; tui_msg "Done" "Managed aliases are sourced by Bash, Zsh, POSIX profile and Fish." ;;
-            validate) if bash -n "$f" >/tmp/systui-alias-check 2>&1; then tui_msg "Validation passed" "$f contains no Bash syntax errors."; else tui_text "Alias validation" /tmp/systui-alias-check; fi; rm -f /tmp/systui-alias-check ;;
+            validate) if bash -n "$f" >${SYSTUI_TMP}/alias-check 2>&1; then tui_msg "Validation passed" "$f contains no Bash syntax errors."; else tui_text "Alias validation" ${SYSTUI_TMP}/alias-check; fi; rm -f ${SYSTUI_TMP}/alias-check ;;
             user) target=$(shellcfg_target) || continue; u=${target%%|*}; home_dir=${target#*|}; f=$(alias_file_for "$home_dir"); ff="$home_dir/.config/systui/aliases.fish"; aliases_enable "$u" "$home_dir" ;;
             back|"") return 0 ;;
         esac
@@ -3935,7 +4000,7 @@ menu_shell_mappings() {
                 [ -n "$key" ] && [ -n "$action" ] || continue
                 case "$tool" in bash|global) line="\"$key\": $action";; zsh) line="bindkey '$key' '$action'";; fish) line="bind $key $action";; esac
                 keymap_append_block "$f" '# systui-keymaps begin' '# systui-keymaps end' "$line" "$u";;
-            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; safe_edit "$f" || true;;
             show) [ -f "$f" ] && tui_text "$tool mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
         esac
     done
@@ -3960,7 +4025,7 @@ menu_editor_mappings() {
                 elif [ "$e" = helix ]; then grep -q '^\[keys.normal\]' "$f" || printf '\n[keys.normal]\n' >> "$f"; printf '%s\n' "$line" >> "$f"
                 else printf '\n%s\n' "$line" >> "$f"; fi
                 chown -R "$u":"$(id -gn "$u")" "$(dirname "$f")" 2>/dev/null || true;;
-            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; safe_edit "$f" || true;;
             show) [ -f "$f" ] && tui_text "$e mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
         esac
     done
@@ -3979,7 +4044,7 @@ menu_file_manager_mappings() {
                 case "$fm" in lf|ranger|vifm) line="map $key $action";; yazi) line="[[manager.prepend_keymap]]\non = [ \"$key\" ]\nrun = \"$action\"\ndesc = \"systui custom mapping\"";; xplr) line="xplr.config.modes.builtin.default.key_bindings.on_key['$key'] = { help = 'custom', messages = { '$action' } }";; tere|nnn|broot) line="# $key -> $action";; esac
                 mkdir -p "$(dirname "$f")"; touch "$f"; printf '\n# systui-custom-keymap begin\n%b\n# systui-custom-keymap end\n' "$line" >> "$f"; chown -R "$u":"$(id -gn "$u")" "$(dirname "$f")" 2>/dev/null || true
                 [ "$fm" = tere ] || [ "$fm" = nnn ] || [ "$fm" = broot ] && tui_msg "Mapping note" "$fm does not expose a stable universal per-key config syntax in all packaged versions. The mapping was recorded in $f for manual adaptation.";;
-            edit) mkdir -p "$(dirname "$f")"; touch "$f"; "${EDITOR:-nano}" "$f" || true;;
+            edit) mkdir -p "$(dirname "$f")"; touch "$f"; safe_edit "$f" || true;;
             show) [ -f "$f" ] && tui_text "$fm mappings" "$f" || tui_msg "Mappings" "$f does not exist.";;
             reset) [ -f "$f" ] && sed -i '/^# systui-custom-keymap begin$/,/^# systui-custom-keymap end$/d' "$f";;
             back|"") return 0;;
@@ -4005,7 +4070,7 @@ menu_shells() {
             mappings) menu_shell_mappings ;;
             plugins) menu_shell_plugins ;;
             history) tui_msg "History" "Use Shell config files → Populate common configuration entries to manage persistent history." ;;
-            readline) "${EDITOR:-nano}" /etc/inputrc || true ;;
+            readline) safe_edit /etc/inputrc || true ;;
             bashopts) menu_shell_config ;;
             default) local u sh; u=$(tui_input "User" "Username:" "${SUDO_USER:-root}") || continue; sh=$(tui_radio "Default shell" "SPACE selects:" bash "Bash" on zsh "Zsh" off fish "Fish" off) || continue; chsh -s "$(command -v "$sh")" "$u" ;;
             advanced) menu_shells_advanced ;;
@@ -4041,7 +4106,7 @@ menu_editors() {
                 [ -z "${s// }" ] && continue
                 local mapped; mapped=$(local_pkg_map $s)
                 show_warnings
-                [ -n "${mapped// }" ] && pm_install $mapped ;;
+                if [ -n "${mapped// }" ]; then local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"; fi ;;
             nanocfg)
                 touch /etc/nanorc
                 local opts
@@ -4173,7 +4238,7 @@ menu_ssh_server() {
             restart "Restart SSH service" back "Back") || return 0
         case "$a" in
             install) pm_install "$(local_pkg_map openssh-server)"; ssh-keygen -A 2>/dev/null || true; svc enable sshd 2>/dev/null || svc enable ssh; svc restart sshd 2>/dev/null || svc restart ssh ;;
-            status) { svc status sshd 2>&1 || svc status ssh 2>&1; echo; ss -lntp 2>/dev/null | grep -E 'sshd|:22|:2222|:22000' || true; } > /tmp/systui.ssh; tui_text "SSH status" /tmp/systui.ssh ;;
+            status) { svc status sshd 2>&1 || svc status ssh 2>&1; echo; ss -lntp 2>/dev/null | grep -E 'sshd|:22|:2222|:22000' || true; } > ${SYSTUI_TMP}/ssh; tui_text "SSH status" ${SYSTUI_TMP}/ssh ;;
             harden) mkdir -p /etc/ssh/sshd_config.d; cat > /etc/ssh/sshd_config.d/90-systui-hardening.conf <<'EOF'
 PermitRootLogin prohibit-password
 MaxAuthTries 3
@@ -4185,20 +4250,20 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 UseDNS no
 EOF
-                if sshd -t 2>/tmp/systui.ssherr; then tui_msg "SSH" "Hardening drop-in installed and validated."; else rm -f /etc/ssh/sshd_config.d/90-systui-hardening.conf; tui_text "Validation failed; changes reverted" /tmp/systui.ssherr; fi ;;
+                if sshd -t 2>${SYSTUI_TMP}/ssherr; then tui_msg "SSH" "Hardening drop-in installed and validated."; else rm -f /etc/ssh/sshd_config.d/90-systui-hardening.conf; tui_text "Validation failed; changes reverted" ${SYSTUI_TMP}/ssherr; fi ;;
             port) p=$(tui_input "SSH port" "Listen port (1-65535):" "22") || continue; case "$p" in ''|*[!0-9]*) tui_msg "Invalid" "Port must be numeric."; continue;; esac; [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || { tui_msg "Invalid" "Port must be 1-65535."; continue; }; mkdir -p /etc/ssh/sshd_config.d; printf 'Port %s\n' "$p" > /etc/ssh/sshd_config.d/20-systui-listen.conf; sshd -t && tui_msg "SSH" "Port set to $p. Restart to apply." ;;
             auth) v=$(tui_check "SSH authentication" "SPACE selects enabled methods:" password "PasswordAuthentication" on pubkey "PubkeyAuthentication" on pam "UsePAM" on keyboard "KbdInteractiveAuthentication" off) || continue; mkdir -p /etc/ssh/sshd_config.d; { for f in password pubkey pam keyboard; do case " $v " in *" $f "*) x=yes;; *) x=no;; esac; case "$f" in password) echo "PasswordAuthentication $x";; pubkey) echo "PubkeyAuthentication $x";; pam) echo "UsePAM $x";; keyboard) echo "KbdInteractiveAuthentication $x";; esac; done; } > /etc/ssh/sshd_config.d/30-systui-auth.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/30-systui-auth.conf ;;
             rootlogin) v=$(tui_radio "Root login" "Select policy:" no "Disable root SSH login" on prohibit-password "Allow root with keys only" off yes "Allow root with password" off forced-commands-only "Only forced commands" off) || continue; mkdir -p /etc/ssh/sshd_config.d; echo "PermitRootLogin $v" > /etc/ssh/sshd_config.d/31-systui-root.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/31-systui-root.conf ;;
             users) v=$(tui_input "SSH access control" "AllowUsers list (blank removes managed rule):" "") || continue; mkdir -p /etc/ssh/sshd_config.d; [ -n "$v" ] && echo "AllowUsers $v" > /etc/ssh/sshd_config.d/40-systui-users.conf || rm -f /etc/ssh/sshd_config.d/40-systui-users.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/40-systui-users.conf ;;
-            keys) u=$(tui_input "SSH keys" "User:" "${SUDO_USER:-root}") || continue; h=$(user_home "$u"); [ -n "$h" ] || continue; mkdir -p "$h/.ssh"; touch "$h/.ssh/authorized_keys"; chmod 700 "$h/.ssh"; chmod 600 "$h/.ssh/authorized_keys"; chown -R "$u":"$(id -gn "$u")" "$h/.ssh"; "${EDITOR:-nano}" "$h/.ssh/authorized_keys" ;;
+            keys) u=$(tui_input "SSH keys" "User:" "${SUDO_USER:-root}") || continue; h=$(user_home "$u"); [ -n "$h" ] || continue; mkdir -p "$h/.ssh"; touch "$h/.ssh/authorized_keys"; chmod 700 "$h/.ssh"; chmod 600 "$h/.ssh/authorized_keys"; chown -R "$u":"$(id -gn "$u")" "$h/.ssh"; safe_edit "$h/.ssh/authorized_keys" ;;
             forwarding) v=$(tui_check "SSH forwarding" "SPACE selects enabled forwarding:" x11 "X11Forwarding" off tcp "AllowTcpForwarding" on agent "AllowAgentForwarding" on gateway "GatewayPorts" off) || continue; mkdir -p /etc/ssh/sshd_config.d; { for f in x11 tcp agent gateway; do case " $v " in *" $f "*) x=yes;; *) x=no;; esac; case "$f" in x11) echo "X11Forwarding $x";; tcp) echo "AllowTcpForwarding $x";; agent) echo "AllowAgentForwarding $x";; gateway) echo "GatewayPorts $x";; esac; done; } > /etc/ssh/sshd_config.d/50-systui-forwarding.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/50-systui-forwarding.conf ;;
-            keepalive) p=$(tui_input "Keepalive" "ClientAliveInterval seconds:" "300") || continue; v=$(tui_input "Keepalive" "ClientAliveCountMax:" "2") || continue; mkdir -p /etc/ssh/sshd_config.d; printf 'ClientAliveInterval %s\nClientAliveCountMax %s\nTCPKeepAlive yes\n' "$p" "$v" > /etc/ssh/sshd_config.d/60-systui-keepalive.conf ;;
+            keepalive) p=$(tui_input "Keepalive" "ClientAliveInterval seconds:" "300") || continue; v=$(tui_input "Keepalive" "ClientAliveCountMax:" "2") || continue; valid_uint "$p" && valid_uint "$v" && [ "$p" -le 86400 ] && [ "$v" -le 100 ] || { tui_msg "Invalid" "Keepalive values must be non-negative integers in range."; continue; }; mkdir -p /etc/ssh/sshd_config.d; tmp="$SYSTUI_TMP/ssh-keepalive.conf"; printf 'ClientAliveInterval %s\nClientAliveCountMax %s\nTCPKeepAlive yes\n' "$p" "$v" > "$tmp"; atomic_install_file "$tmp" /etc/ssh/sshd_config.d/60-systui-keepalive.conf; sshd -t 2>"$SYSTUI_TMP/ssherr" || { rm -f /etc/ssh/sshd_config.d/60-systui-keepalive.conf; tui_text "SSH validation failed" "$SYSTUI_TMP/ssherr"; } ;;
             sftp) mkdir -p /etc/ssh/sshd_config.d; echo 'Subsystem sftp internal-sftp' > /etc/ssh/sshd_config.d/70-systui-sftp.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/70-systui-sftp.conf ;;
-            banners) f=$(tui_input "SSH banner" "Banner file (blank disables):" "/etc/issue.net") || continue; mkdir -p /etc/ssh/sshd_config.d; if [ -n "$f" ]; then touch "$f"; "${EDITOR:-nano}" "$f"; echo "Banner $f" > /etc/ssh/sshd_config.d/80-systui-banner.conf; else rm -f /etc/ssh/sshd_config.d/80-systui-banner.conf; fi ;;
-            hostkeys) ssh-keygen -A; ls -l /etc/ssh/ssh_host_* > /tmp/systui.ssh 2>&1; tui_text "SSH host keys" /tmp/systui.ssh ;;
-            test) sshd -t > /tmp/systui.ssh 2>&1 && echo "Configuration valid." > /tmp/systui.ssh; tui_text "sshd validation" /tmp/systui.ssh ;;
-            effective) sshd -T 2>/dev/null | sort > /tmp/systui.ssh; tui_text "Effective sshd configuration" /tmp/systui.ssh ;;
-            logs) { journalctl -u ssh -u sshd -n 150 --no-pager 2>/dev/null || tail -n 150 /var/log/auth.log 2>/dev/null || tail -n 150 /var/log/secure 2>/dev/null; } > /tmp/systui.ssh; tui_text "SSH logs" /tmp/systui.ssh ;;
+            banners) f=$(tui_input "SSH banner" "Banner file (blank disables):" "/etc/issue.net") || continue; mkdir -p /etc/ssh/sshd_config.d; if [ -n "$f" ]; then case "$f" in /etc/*) ;; *) tui_msg "Invalid path" "SSH banners must be stored under /etc/."; continue;; esac; [ ! -L "$f" ] || { tui_msg "Invalid path" "Refusing to edit a symbolic link."; continue; }; touch "$f"; safe_edit "$f"; echo "Banner $f" > /etc/ssh/sshd_config.d/80-systui-banner.conf; else rm -f /etc/ssh/sshd_config.d/80-systui-banner.conf; fi ;;
+            hostkeys) ssh-keygen -A; ls -l /etc/ssh/ssh_host_* > ${SYSTUI_TMP}/ssh 2>&1; tui_text "SSH host keys" ${SYSTUI_TMP}/ssh ;;
+            test) sshd -t > ${SYSTUI_TMP}/ssh 2>&1 && echo "Configuration valid." > ${SYSTUI_TMP}/ssh; tui_text "sshd validation" ${SYSTUI_TMP}/ssh ;;
+            effective) sshd -T 2>/dev/null | sort > ${SYSTUI_TMP}/ssh; tui_text "Effective sshd configuration" ${SYSTUI_TMP}/ssh ;;
+            logs) { journalctl -u ssh -u sshd -n 150 --no-pager 2>/dev/null || tail -n 150 /var/log/auth.log 2>/dev/null || tail -n 150 /var/log/secure 2>/dev/null; } > ${SYSTUI_TMP}/ssh; tui_text "SSH logs" ${SYSTUI_TMP}/ssh ;;
             restart) sshd -t && { svc restart sshd 2>/dev/null || svc restart ssh; } ;;
             back) return 0 ;;
         esac
@@ -4247,8 +4312,8 @@ EOF
                         svc enable fail2ban; svc restart fail2ban
                         tui_msg "Done" "fail2ban enabled with an sshd jail\n(5 failures in 10 min = 1 h ban)." ;;
                     status)
-                        { fail2ban-client status; echo; fail2ban-client status sshd; } > /tmp/systui.net 2>&1
-                        tui_text "fail2ban status" /tmp/systui.net ;;
+                        { fail2ban-client status; echo; fail2ban-client status sshd; } > ${SYSTUI_TMP}/net 2>&1
+                        tui_text "fail2ban status" ${SYSTUI_TMP}/net ;;
                     unban)
                         local ip; ip=$(tui_input "Unban" "IP address to unban:" "") || continue
                         [ -n "$ip" ] && run_cmd "Unbanning $ip" fail2ban-client set sshd unbanip "$ip" ;;
@@ -4285,7 +4350,7 @@ EOF
                     allow)   local p; p=$(tui_input "Allow port" "Port (e.g. 8080/tcp):" "") && [ -n "$p" ] && run_cmd "ufw allow $p" ufw allow "$p" ;;
                     deny)    local p; p=$(tui_input "Deny port" "Port (e.g. 23/tcp):" "") && [ -n "$p" ] && run_cmd "ufw deny $p" ufw deny "$p" ;;
                     delete)  local n; n=$(tui_input "Delete rule" "Rule number (see status):" "") && [ -n "$n" ] && run_cmd "ufw delete $n" bash -c "yes | ufw delete $n" ;;
-                    status)  ufw status numbered > /tmp/systui.net 2>&1; tui_text "ufw status" /tmp/systui.net ;;
+                    status)  ufw status numbered > ${SYSTUI_TMP}/net 2>&1; tui_text "ufw status" ${SYSTUI_TMP}/net ;;
                 esac ;;
             dns)
                 local d
@@ -4390,8 +4455,8 @@ EOF
                             pm_install chrony && { svc enable chronyd 2>/dev/null || svc enable chrony; svc start chronyd 2>/dev/null || svc start chrony; }
                         fi ;;
                     show)
-                        { timedatectl 2>/dev/null || date; } > /tmp/systui.net
-                        tui_text "Time status" /tmp/systui.net ;;
+                        { timedatectl 2>/dev/null || date; } > ${SYSTUI_TMP}/net
+                        tui_text "Time status" ${SYSTUI_TMP}/net ;;
                 esac ;;
             hostname)
                 local h; h=$(tui_input "Hostname" "New hostname:" "$(hostname)") || continue
@@ -4401,11 +4466,11 @@ EOF
             hosts)
                 tui_text "/etc/hosts" /etc/hosts ;;
             ports)
-                { ss -tulnp 2>/dev/null || netstat -tulnp; } > /tmp/systui.net 2>&1
-                tui_text "Listening ports" /tmp/systui.net ;;
+                { ss -tulnp 2>/dev/null || netstat -tulnp; } > ${SYSTUI_TMP}/net 2>&1
+                tui_text "Listening ports" ${SYSTUI_TMP}/net ;;
             info)
-                ip addr > /tmp/systui.net 2>&1 || ifconfig -a > /tmp/systui.net 2>&1
-                tui_text "Interfaces" /tmp/systui.net ;;
+                ip addr > ${SYSTUI_TMP}/net 2>&1 || ifconfig -a > ${SYSTUI_TMP}/net 2>&1
+                tui_text "Interfaces" ${SYSTUI_TMP}/net ;;
             advanced) menu_net_advanced ;;
             back) return 0 ;;
         esac
@@ -4437,29 +4502,29 @@ menu_services() {
             back) return 0 ;;
             list)
                 case "$INIT" in
-                    systemd)  systemctl list-units --type=service --no-pager > /tmp/systui.svc ;;
-                    openrc)   rc-status -a > /tmp/systui.svc ;;
-                    runit)    ls -1 /var/service /run/runit/service 2>/dev/null > /tmp/systui.svc ;;
-                    sysvinit) service --status-all > /tmp/systui.svc 2>&1 ;;
+                    systemd)  systemctl list-units --type=service --no-pager > ${SYSTUI_TMP}/svc ;;
+                    openrc)   rc-status -a > ${SYSTUI_TMP}/svc ;;
+                    runit)    ls -1 /var/service /run/runit/service 2>/dev/null > ${SYSTUI_TMP}/svc ;;
+                    sysvinit) service --status-all > ${SYSTUI_TMP}/svc 2>&1 ;;
                 esac
-                tui_text "Services ($INIT)" /tmp/systui.svc ;;
+                tui_text "Services ($INIT)" ${SYSTUI_TMP}/svc ;;
             failed)
                 case "$INIT" in
-                    systemd)  systemctl --failed --no-pager > /tmp/systui.svc ;;
-                    openrc)   rc-status -c > /tmp/systui.svc 2>&1 ;;
-                    *)        echo "Failed-unit listing supported on systemd/OpenRC only." > /tmp/systui.svc ;;
+                    systemd)  systemctl --failed --no-pager > ${SYSTUI_TMP}/svc ;;
+                    openrc)   rc-status -c > ${SYSTUI_TMP}/svc 2>&1 ;;
+                    *)        echo "Failed-unit listing supported on systemd/OpenRC only." > ${SYSTUI_TMP}/svc ;;
                 esac
-                tui_text "Failed services" /tmp/systui.svc ;;
+                tui_text "Failed services" ${SYSTUI_TMP}/svc ;;
             logs)
                 local s; s=$(tui_input "Logs" "Service name:" "") || continue
                 [ -z "$s" ] && continue
                 if [ "$INIT" = systemd ]; then
-                    journalctl -u "$s" -n 100 --no-pager > /tmp/systui.svc 2>&1
+                    journalctl -u "$s" -n 100 --no-pager > ${SYSTUI_TMP}/svc 2>&1
                 else
-                    { tail -100 "/var/log/$s.log" 2>/dev/null || grep -h "$s" /var/log/messages /var/log/syslog 2>/dev/null | tail -100; } > /tmp/systui.svc
-                    [ -s /tmp/systui.svc ] || echo "(no logs found for $s)" > /tmp/systui.svc
+                    { tail -100 "/var/log/$s.log" 2>/dev/null || grep -h "$s" /var/log/messages /var/log/syslog 2>/dev/null | tail -100; } > ${SYSTUI_TMP}/svc
+                    [ -s ${SYSTUI_TMP}/svc ] || echo "(no logs found for $s)" > ${SYSTUI_TMP}/svc
                 fi
-                tui_text "Logs: $s" /tmp/systui.svc ;;
+                tui_text "Logs: $s" ${SYSTUI_TMP}/svc ;;
             mask)
                 [ "$INIT" != systemd ] && { tui_msg "N/A" "Masking is a systemd concept."; continue; }
                 local s a
@@ -4472,12 +4537,12 @@ menu_services() {
                 local s; s=$(tui_input "Unit file" "Service name:" "") || continue
                 [ -z "$s" ] && continue
                 case "$INIT" in
-                    systemd)  systemctl cat "$s" > /tmp/systui.svc 2>&1 ;;
-                    openrc)   cat "/etc/init.d/$s" > /tmp/systui.svc 2>&1 ;;
-                    runit)    cat "/etc/sv/$s/run" "/etc/runit/sv/$s/run" > /tmp/systui.svc 2>&1 ;;
-                    sysvinit) cat "/etc/init.d/$s" > /tmp/systui.svc 2>&1 ;;
+                    systemd)  systemctl cat "$s" > ${SYSTUI_TMP}/svc 2>&1 ;;
+                    openrc)   cat "/etc/init.d/$s" > ${SYSTUI_TMP}/svc 2>&1 ;;
+                    runit)    cat "/etc/sv/$s/run" "/etc/runit/sv/$s/run" > ${SYSTUI_TMP}/svc 2>&1 ;;
+                    sysvinit) cat "/etc/init.d/$s" > ${SYSTUI_TMP}/svc 2>&1 ;;
                 esac
-                tui_text "Unit: $s" /tmp/systui.svc ;;
+                tui_text "Unit: $s" ${SYSTUI_TMP}/svc ;;
             create)
                 [ "$INIT" != systemd ] && { tui_msg "N/A" "Unit generator is systemd-only.\nFor OpenRC/runit/sysvinit, write scripts manually."; continue; }
                 local n d x u
@@ -4504,15 +4569,15 @@ EOF
                     && run_cmd "Enabling $n" systemctl enable --now "$n" ;;
             analyze)
                 [ "$INIT" != systemd ] && { tui_msg "N/A" "systemd-analyze requires systemd."; continue; }
-                { systemd-analyze; echo; systemd-analyze blame | head -25; } > /tmp/systui.svc 2>&1
-                tui_text "Boot analysis" /tmp/systui.svc ;;
+                { systemd-analyze; echo; systemd-analyze blame | head -25; } > ${SYSTUI_TMP}/svc 2>&1
+                tui_text "Boot analysis" ${SYSTUI_TMP}/svc ;;
             initswap) initswap_current ;;
             advanced) menu_svc_advanced ;;
             *)
                 local s; s=$(tui_input "Service" "Service name:" "") || continue
                 [ -z "$s" ] && continue
                 if [ "$c" = status ]; then
-                    svc status "$s" > /tmp/systui.svc 2>&1; tui_text "Status: $s" /tmp/systui.svc
+                    svc status "$s" > ${SYSTUI_TMP}/svc 2>&1; tui_text "Status: $s" ${SYSTUI_TMP}/svc
                 else
                     run_cmd "$c $s ($INIT)" svc "$c" "$s"
                 fi ;;
@@ -4607,8 +4672,8 @@ menu_users() {
                 mx=$(tui_input "Aging" "Max password age in days (-1 = never expires):" "-1") || continue
                 wn=$(tui_input "Aging" "Warn this many days before expiry:" "7") || continue
                 run_cmd "chage $u" chage -M "$mx" -W "$wn" "$u"
-                chage -l "$u" > /tmp/systui.usr 2>&1
-                tui_text "Aging policy: $u" /tmp/systui.usr ;;
+                chage -l "$u" > ${SYSTUI_TMP}/usr 2>&1
+                tui_text "Aging policy: $u" ${SYSTUI_TMP}/usr ;;
             expire)
                 local u; u=$(tui_input "Expire" "Force password change for user:" "") || continue
                 [ -n "$u" ] && run_cmd "passwd -e $u" passwd -e "$u" ;;
@@ -4664,8 +4729,8 @@ menu_users() {
                 [ -z "$u" ] && continue
                 { id "$u"; echo; getent passwd "$u"; echo
                   command -v chage >/dev/null && chage -l "$u" 2>/dev/null
-                  echo; echo "Last logins:"; last -n 5 "$u" 2>/dev/null; } > /tmp/systui.usr 2>&1
-                tui_text "Details: $u" /tmp/systui.usr ;;
+                  echo; echo "Last logins:"; last -n 5 "$u" 2>/dev/null; } > ${SYSTUI_TMP}/usr 2>&1
+                tui_text "Details: $u" ${SYSTUI_TMP}/usr ;;
             defaults)
                 command -v useradd >/dev/null || { tui_msg "N/A" "useradd defaults not available (busybox adduser)."; continue; }
                 local sh_
@@ -4674,8 +4739,8 @@ menu_users() {
                 [ -n "$sh_" ] && run_cmd "useradd -D -s $sh_" useradd -D -s "$sh_"
                 tui_msg "Note" "Files in /etc/skel are copied into every new user's home;\ndrop rc files there to pre-configure new accounts." ;;
             list)
-                awk -F: '$3>=1000 && $3<65534 {printf "%-16s uid=%-6s %s\n",$1,$3,$7}' /etc/passwd > /tmp/systui.usr
-                tui_text "Human users" /tmp/systui.usr ;;
+                awk -F: '$3>=1000 && $3<65534 {printf "%-16s uid=%-6s %s\n",$1,$3,$7}' /etc/passwd > ${SYSTUI_TMP}/usr
+                tui_text "Human users" ${SYSTUI_TMP}/usr ;;
             advanced) menu_user_advanced ;;
             back) return 0 ;;
         esac
@@ -4703,8 +4768,8 @@ menu_storage() {
             back    "Back") || return 0
         case "$c" in
             list)
-                { lsblk -o NAME,SIZE,FSTYPE,LABEL,TYPE,MOUNTPOINTS 2>/dev/null || lsblk; echo; findmnt -t nodevfs 2>/dev/null | head -40; } > /tmp/systui.stor
-                tui_text "Block devices" /tmp/systui.stor ;;
+                { lsblk -o NAME,SIZE,FSTYPE,LABEL,TYPE,MOUNTPOINTS 2>/dev/null || lsblk; echo; findmnt -t nodevfs 2>/dev/null | head -40; } > ${SYSTUI_TMP}/stor
+                tui_text "Block devices" ${SYSTUI_TMP}/stor ;;
             mount)
                 local dev mp
                 dev=$(tui_input "Mount" "Device (e.g. /dev/sdb1):" "") || continue
@@ -4805,11 +4870,11 @@ menu_storage() {
             smart)
                 command -v smartctl >/dev/null || pm_install smartmontools
                 local dev; dev=$(tui_input "SMART" "Disk (e.g. /dev/sda, /dev/nvme0):" "/dev/sda") || continue
-                { smartctl -H "$dev"; echo; smartctl -A "$dev" | head -30; } > /tmp/systui.stor 2>&1
-                tui_text "SMART: $dev" /tmp/systui.stor ;;
+                { smartctl -H "$dev"; echo; smartctl -A "$dev" | head -30; } > ${SYSTUI_TMP}/stor 2>&1
+                tui_text "SMART: $dev" ${SYSTUI_TMP}/stor ;;
             usage)
-                df -hT -x tmpfs -x devtmpfs > /tmp/systui.stor 2>/dev/null || df -h > /tmp/systui.stor
-                tui_text "Disk usage" /tmp/systui.stor ;;
+                df -hT -x tmpfs -x devtmpfs > ${SYSTUI_TMP}/stor 2>/dev/null || df -h > ${SYSTUI_TMP}/stor
+                tui_text "Disk usage" ${SYSTUI_TMP}/stor ;;
             advanced) menu_storage_advanced ;;
             back) return 0 ;;
         esac
@@ -4841,7 +4906,7 @@ EOF
     case " $opts " in *" core "*) printf '* soft core 0\n* hard core 0\n' > /etc/security/limits.d/91-systui-no-core.conf 2>/dev/null || true ;; esac
     case " $opts " in *" python "*) echo 'export PYTHONDONTWRITEBYTECODE=1' > /etc/profile.d/91-systui-python.sh ;; esac
     case " $opts " in *" git "*) git config --system fetch.prune true 2>/dev/null || true; git config --system fetch.writeCommitGraph false 2>/dev/null || true ;; esac
-    case " $opts " in *" status "*) { uname -a; echo; cat /etc/os-release 2>/dev/null; echo; mount; echo; df -h; echo; free -h 2>/dev/null || true; echo; command -v ip >/dev/null && ip addr 2>&1 || true; } > /tmp/systui.ishaok; tui_text "iSH-AOK capability report" /tmp/systui.ishaok ;; esac
+    case " $opts " in *" status "*) { uname -a; echo; cat /etc/os-release 2>/dev/null; echo; mount; echo; df -h; echo; free -h 2>/dev/null || true; echo; command -v ip >/dev/null && ip addr 2>&1 || true; } > ${SYSTUI_TMP}/ishaok; tui_text "iSH-AOK capability report" ${SYSTUI_TMP}/ishaok ;; esac
     tui_msg "Done" "Selected iSH-AOK tuning options were applied. Unsupported kernel features were skipped safely."
 }
 
@@ -5310,8 +5375,8 @@ menu_svc_advanced() {
                 systemctl daemon-reload
                 tui_msg "Done" "Limits drop-in written for $s.\nRestart the service to apply." ;;
             timers)
-                systemctl list-timers --all --no-pager > /tmp/systui.svc 2>&1
-                tui_text "systemd timers" /tmp/systui.svc ;;
+                systemctl list-timers --all --no-pager > ${SYSTUI_TMP}/svc 2>&1
+                tui_text "systemd timers" ${SYSTUI_TMP}/svc ;;
             mktimer)
                 local n cal x
                 n=$(tui_input "Timer 1/3" "Task name (no spaces):" "mytask") || continue
@@ -5338,8 +5403,8 @@ WantedBy=timers.target
 EOF
                 systemctl daemon-reload
                 run_cmd "Enabling $n.timer" systemctl enable --now "$n.timer"
-                systemctl list-timers "$n.timer" --no-pager > /tmp/systui.svc 2>&1
-                tui_text "Timer scheduled" /tmp/systui.svc ;;
+                systemctl list-timers "$n.timer" --no-pager > ${SYSTUI_TMP}/svc 2>&1
+                tui_text "Timer scheduled" ${SYSTUI_TMP}/svc ;;
             target)
                 local t
                 t=$(tui_radio "Default target" "Boot into (SPACE to select):\nCurrent: $(systemctl get-default 2>/dev/null)" \
@@ -5384,11 +5449,11 @@ menu_user_advanced() {
                 sed -i -E "s/^UMASK[[:space:]]+.*/UMASK\t\t$m/" /etc/login.defs
                 tui_msg "Done" "UMASK $m set in login.defs." ;;
             sessions)
-                { w; echo; echo "--- loginctl ---"; loginctl list-sessions 2>/dev/null; } > /tmp/systui.usr 2>&1
-                tui_text "Active sessions" /tmp/systui.usr ;;
+                { w; echo; echo "--- loginctl ---"; loginctl list-sessions 2>/dev/null; } > ${SYSTUI_TMP}/usr 2>&1
+                tui_text "Active sessions" ${SYSTUI_TMP}/usr ;;
             lastlog)
-                { last -n 25 2>/dev/null; echo; lastlog 2>/dev/null | head -25; } > /tmp/systui.usr 2>&1
-                tui_text "Recent logins" /tmp/systui.usr ;;
+                { last -n 25 2>/dev/null; echo; lastlog 2>/dev/null | head -25; } > ${SYSTUI_TMP}/usr 2>&1
+                tui_text "Recent logins" ${SYSTUI_TMP}/usr ;;
             back) return 0 ;;
         esac
     done
@@ -5452,9 +5517,9 @@ menu_storage_advanced() {
                 case "$a" in
                     list)
                         local mp; mp=$(tui_input "Btrfs" "Btrfs mountpoint:" "/") || continue
-                        btrfs subvolume list "$mp" > /tmp/systui.stor 2>&1 \
-                            || echo "Not a btrfs filesystem (or btrfs-progs missing)." > /tmp/systui.stor
-                        tui_text "Subvolumes: $mp" /tmp/systui.stor ;;
+                        btrfs subvolume list "$mp" > ${SYSTUI_TMP}/stor 2>&1 \
+                            || echo "Not a btrfs filesystem (or btrfs-progs missing)." > ${SYSTUI_TMP}/stor
+                        tui_text "Subvolumes: $mp" ${SYSTUI_TMP}/stor ;;
                     create)
                         local pth; pth=$(tui_input "Btrfs" "New subvolume path (on a btrfs fs):" "") || continue
                         [ -n "$pth" ] && run_cmd "btrfs subvolume create $pth" btrfs subvolume create "$pth" ;;
@@ -5471,8 +5536,8 @@ menu_storage_advanced() {
                 awk -v mp="$mp" 'BEGIN{OFS="\t"} $2==mp {$4=$4",noatime"} {print}' /etc/fstab > /etc/fstab.new \
                     && mv /etc/fstab.new /etc/fstab
                 mount -o remount "$mp" 2>>"$LOGFILE"
-                grep -E "[[:space:]]${mp}[[:space:]]" /etc/fstab > /tmp/systui.stor
-                tui_text "Updated entry" /tmp/systui.stor ;;
+                grep -E "[[:space:]]${mp}[[:space:]]" /etc/fstab > ${SYSTUI_TMP}/stor
+                tui_text "Updated entry" ${SYSTUI_TMP}/stor ;;
             smarttst)
                 command -v smartctl >/dev/null || pm_install smartmontools
                 local dev
@@ -5493,12 +5558,12 @@ menu_storage_advanced() {
                         fi
                     fi
                     echo; echo "--- Write (/tmp, 512 MiB, fdatasync) ---"
-                    dd if=/dev/zero of=/tmp/systui.bench bs=1M count=512 conv=fdatasync 2>&1 | tail -1
-                    rm -f /tmp/systui.bench
+                    dd if=/dev/zero of=${SYSTUI_TMP}/bench bs=1M count=512 conv=fdatasync 2>&1 | tail -1
+                    rm -f ${SYSTUI_TMP}/bench
                     echo; echo "Note: write test measures the /tmp filesystem;"
                     echo "results vary with caching, load, and disk type."
-                } > /tmp/systui.stor 2>&1
-                tui_text "Benchmark results" /tmp/systui.stor ;;
+                } > ${SYSTUI_TMP}/stor 2>&1
+                tui_text "Benchmark results" ${SYSTUI_TMP}/stor ;;
             back) return 0 ;;
         esac
     done
@@ -5570,17 +5635,17 @@ menu_perf_cpu() {
                 tui_msg "Done" "sched_autogroup: $v (persisted)." ;;
             mitig)
                 grep -r . /sys/devices/system/cpu/vulnerabilities/ 2>/dev/null \
-                    | sed 's|/sys/devices/system/cpu/vulnerabilities/||' > /tmp/systui.perf
+                    | sed 's|/sys/devices/system/cpu/vulnerabilities/||' > ${SYSTUI_TMP}/perf
                 {
-                    cat /tmp/systui.perf
+                    cat ${SYSTUI_TMP}/perf
                     echo
                     echo "Mitigations can be disabled with the kernel parameter"
                     echo "'mitigations=off' for extra performance, at a real"
                     echo "security cost. systui intentionally does not automate"
                     echo "that — edit your bootloader config manually if you"
                     echo "accept the risk."
-                } > /tmp/systui.perf2 && mv /tmp/systui.perf2 /tmp/systui.perf
-                tui_text "CPU vulnerabilities" /tmp/systui.perf ;;
+                } > ${SYSTUI_TMP}/perf2 && mv ${SYSTUI_TMP}/perf2 ${SYSTUI_TMP}/perf
+                tui_text "CPU vulnerabilities" ${SYSTUI_TMP}/perf ;;
             back) return 0 ;;
         esac
     done
@@ -6419,7 +6484,7 @@ fm_edit_config() {
         xplr) f="$h/.config/xplr/init.lua" ;;
     esac
     mkdir -p "$(dirname "$f")"; touch "$f"; chown "$u":"$(id -gn "$u")" "$f" 2>/dev/null || true
-    "${EDITOR:-nano}" "$f"
+    safe_edit "$f"
 }
 
 fm_plugin_catalog() { # tag|description|repo|destination-relative
@@ -6557,7 +6622,7 @@ menu_fm_plugins() {
             update  "Update all managed Git repositories" \
             status  "Show installed managed add-ons" \
             back    "Back") || return 0
-        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; update) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git -print0 2>/dev/null | while IFS= read -r -d "" g; do fm_as_user "$u" "git -C '${g%/.git}' pull --ff-only"; done; tui_msg "Updated" "Managed repositories were updated.";; status) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git 2>/dev/null | sed 's#/.git$##' > /tmp/systui.fmplugins; [ -s /tmp/systui.fmplugins ] || echo "(none)" > /tmp/systui.fmplugins; tui_text "$fm managed add-ons" /tmp/systui.fmplugins;; back) return 0;; esac
+        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; update) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git -print0 2>/dev/null | while IFS= read -r -d "" g; do fm_as_user "$u" "git -C '${g%/.git}' pull --ff-only"; done; tui_msg "Updated" "Managed repositories were updated.";; status) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git 2>/dev/null | sed 's#/.git$##' > ${SYSTUI_TMP}/fmplugins; [ -s ${SYSTUI_TMP}/fmplugins ] || echo "(none)" > ${SYSTUI_TMP}/fmplugins; tui_text "$fm managed add-ons" ${SYSTUI_TMP}/fmplugins;; back) return 0;; esac
     done
 }
 
@@ -6612,6 +6677,621 @@ menu_file_managers() {
             vifm) menu_file_manager_one vifm "Vifm" ;;
             broot) menu_file_manager_one broot "Broot" ;;
             xplr) menu_file_manager_one xplr "xplr" ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+# ---- Awesome Linux Software catalogue --------------------------------------
+# Source: https://github.com/luong-komorebi/Awesome-Linux-Software
+# The upstream list is intentionally synchronized at runtime so every listed
+# application remains available without embedding a stale, hand-maintained copy.
+AWESOME_LINUX_REPO_URL="https://github.com/luong-komorebi/Awesome-Linux-Software"
+AWESOME_LINUX_RAW_URL="https://raw.githubusercontent.com/luong-komorebi/Awesome-Linux-Software/master/README.md"
+
+awesome_linux_cache_dir() {
+    if [ "$(id -u)" -eq 0 ]; then
+        printf '%s\n' "${SYSTUI_AWESOME_CACHE:-/var/cache/systui/awesome-linux}"
+    else
+        printf '%s\n' "${SYSTUI_AWESOME_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/systui/awesome-linux}"
+    fi
+}
+
+awesome_linux_download() { # <destination>
+    local dst="$1" tmp="${dst}.tmp.$$"
+    mkdir -p "$(dirname "$dst")" || return 1
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 --connect-timeout 15 --max-time 120 \
+            --proto '=https' --tlsv1.2 "$AWESOME_LINUX_RAW_URL" -o "$tmp" >>"$LOGFILE" 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --https-only --timeout=120 -O "$tmp" "$AWESOME_LINUX_RAW_URL" >>"$LOGFILE" 2>&1
+    else
+        tui_msg "Missing downloader" "Install curl or wget before synchronizing Awesome Linux."
+        return 1
+    fi
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$dst"
+}
+
+awesome_linux_parse() { # <README> <catalog TSV>
+    local src="$1" out="$2" tmp="${out}.tmp.$$"
+    # Output: id<TAB>category<TAB>name<TAB>homepage<TAB>source<TAB>description
+    awk '
+    function clean(x) {
+        gsub(/\r/, "", x); gsub(/\t/, " ", x); gsub(/  +/, " ", x)
+        sub(/^ +/, "", x); sub(/ +$/, "", x); return x
+    }
+    function stripmd(x) {
+        gsub(/!\[[^]]*\]\([^)]*\)/, "", x)
+        gsub(/\[[^]]*\]\[[^]]*\]/, "", x)
+        gsub(/[*_`]/, "", x); return clean(x)
+    }
+    function slug(x, y) {
+        y=tolower(x); gsub(/[^a-z0-9]+/, "-", y); gsub(/^-|-$/, "", y)
+        if (y == "") y="item"; return y
+    }
+    BEGIN { h2=""; h3=""; h4=""; n=0; skip=0; started=0 }
+    /^## /  {
+        h2=stripmd(substr($0,4)); h3=""; h4=""
+        low=tolower(h2)
+        if (low == "applications") started=1
+        skip=(low == "unsure how to contribute?" || low == "contributors" || low == "guidelines to contribute" || low == "license" || low ~ /^linux news/ || low == "reddit")
+        next
+    }
+    /^### / { h3=stripmd(substr($0,5)); h4=""; next }
+    /^#### /{ h4=stripmd(substr($0,6)); next }
+    /^- / {
+        if (!started || skip) next
+        line=substr($0,3)
+        if (line !~ /\[[^]]+\]\(https?:\/\//) next
+        desc=""; splitpos=index(line," - ")
+        if (splitpos>0) { desc=substr(line,splitpos+3); left=substr(line,1,splitpos-1) } else left=line
+        # Select the last normal markdown link; badges/source links precede it.
+        rest=left; name=""; url=""; source=""
+        while (match(rest,/\[[^]]+\]\(https?:\/\/[^)]+\)/)) {
+            token=substr(rest,RSTART,RLENGTH)
+            closepos=index(token,"](")
+            tname=substr(token,2,closepos-2)
+            turl=substr(token,closepos+2,length(token)-closepos-2)
+            if (tname !~ /^!/ && tname !~ /Open.Source|Non.Free|Freeware|oss icon|money icon|freeware icon/) {
+                if (name=="") { name=tname; url=turl } else { source=url; name=tname; url=turl }
+            }
+            rest=substr(rest,RSTART+RLENGTH)
+        }
+        name=stripmd(name); desc=stripmd(desc)
+        if (name=="" || url=="") next
+        cat=h2; if (h3!="") cat=cat " / " h3; if (h4!="") cat=cat " / " h4
+        cat=clean(cat); if (cat=="") cat="Other"
+        n++; id=sprintf("a%05d-%s",n,slug(name))
+        gsub(/\t/," ",desc); gsub(/\t/," ",cat)
+        print id "\t" cat "\t" name "\t" url "\t" source "\t" desc
+    }' "$src" > "$tmp" || { rm -f "$tmp"; return 1; }
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$out"
+}
+
+awesome_linux_generate_catalog_installers() { # <catalog.tsv>
+    local catalog="$1" dir id category name url source desc github pkg script slug
+    dir=$(awesome_linux_installer_dir) || return 1
+    while IFS=$'\t' read -r id category name url source desc; do
+        [ -n "$name" ] || continue
+        slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._+-]+/-/g; s/^-+|-+$//g')
+        script="$dir/${slug}-install.sh"
+        pkg=$(awesome_linux_pkg_guess "$name")
+        github=$(awesome_linux_github_url "$url" "$source" 2>/dev/null || true)
+        cat > "$script" <<EOF
+#!/bin/sh
+set -eu
+NAME=$(printf %s "$name" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")
+HOMEPAGE=$(printf %s "$url" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")
+GITHUB=$(printf %s "$github" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")
+PACKAGE=$(printf %s "$pkg" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")
+SOURCE_ROOT=\${SYSTUI_SOURCE_DIR:-/opt/systui-sources}
+SLUG='$slug'
+DEST="\$SOURCE_ROOT/\$SLUG"
+
+usage() {
+  cat <<USAGE
+Install \$NAME
+Usage: \$0 [auto|native|flatpak|snap|github|show-guide|homepage]
+
+  auto        Try native, Flatpak, Snap, then GitHub
+  native      Install from the active distribution repository
+  flatpak     Search Flathub and install the closest application match
+  snap        Install the guessed Snap package
+  github      Clone/update GitHub, inspect project guides, detect build system, install
+  show-guide  Clone/update GitHub and print installation-guide commands
+  homepage    Print the official project page
+USAGE
+}
+
+as_root() { if [ "\$(id -u)" -eq 0 ]; then "\$@"; elif command -v sudo >/dev/null 2>&1; then sudo "\$@"; else echo "Root privileges required" >&2; return 1; fi; }
+install_native() {
+  if command -v apt-get >/dev/null 2>&1; then apt-cache show "\$PACKAGE" >/dev/null 2>&1 && as_root apt-get install -y "\$PACKAGE"
+  elif command -v apk >/dev/null 2>&1; then apk search -e "\$PACKAGE" | grep -q . && as_root apk add "\$PACKAGE"
+  elif command -v pacman >/dev/null 2>&1; then pacman -Si "\$PACKAGE" >/dev/null 2>&1 && as_root pacman -S --needed --noconfirm "\$PACKAGE"
+  elif command -v dnf >/dev/null 2>&1; then dnf -q list available "\$PACKAGE" >/dev/null 2>&1 && as_root dnf install -y "\$PACKAGE"
+  elif command -v zypper >/dev/null 2>&1; then as_root zypper --non-interactive install "\$PACKAGE"
+  else return 1; fi
+}
+install_flatpak() {
+  command -v flatpak >/dev/null 2>&1 || return 1
+  ref=\$(flatpak remote-ls --app --columns=application,name 2>/dev/null | awk -F '\\t' -v n="\$NAME" 'BEGIN{IGNORECASE=1} index(\$2,n)||index(n,\$2){print \$1; exit}')
+  [ -n "\$ref" ] || return 1
+  flatpak install -y flathub "\$ref"
+}
+install_snap() { command -v snap >/dev/null 2>&1 && snap info "\$PACKAGE" >/dev/null 2>&1 && as_root snap install "\$PACKAGE"; }
+clone_source() {
+  [ -n "\$GITHUB" ] || { echo "No GitHub repository is listed for \$NAME" >&2; return 1; }
+  command -v git >/dev/null 2>&1 || { echo "git is required" >&2; return 1; }
+  mkdir -p "\$(dirname "\$DEST")"
+  if [ -d "\$DEST/.git" ]; then git -C "\$DEST" pull --ff-only; else git clone --recursive "\$GITHUB" "\$DEST"; fi
+  git -C "\$DEST" submodule update --init --recursive
+}
+show_guide() {
+  clone_source
+  guide=""
+  for f in INSTALL.md INSTALL README.md README.rst README.txt README; do [ -s "\$DEST/\$f" ] && { guide="\$DEST/\$f"; break; }; done
+  [ -n "\$guide" ] || guide=\$(find "\$DEST/docs" -maxdepth 2 -type f \( -iname '*install*.md' -o -iname '*build*.md' \) 2>/dev/null | head -n 1 || true)
+  [ -n "\$guide" ] || { echo "No installation guide detected"; return 1; }
+  echo "Guide: \$guide"
+  awk 'BEGIN{IGNORECASE=1; active=0; fence=0} /^#{1,6}[[:space:]].*(install|build|compile|setup)/{active=1;next} active&&/^#{1,6}[[:space:]]/{active=0} active&&/^```/{fence=!fence;next} active&&fence{print}' "\$guide"
+}
+install_github() {
+  clone_source
+  cd "\$DEST"
+  show_guide > .systui-install-guide.txt 2>/dev/null || true
+  if [ -x ./install.sh ]; then as_root ./install.sh
+  elif [ -x ./autogen.sh ]; then ./autogen.sh && ./configure && make -j"\$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && as_root make install
+  elif [ -x ./configure ]; then ./configure && make -j"\$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && as_root make install
+  elif [ -f CMakeLists.txt ]; then cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"\$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && as_root cmake --install build
+  elif [ -f meson.build ]; then meson setup build --buildtype=release && meson compile -C build && as_root meson install -C build
+  elif [ -f Cargo.toml ]; then cargo install --path . --locked --root "\${HOME}/.local"
+  elif [ -f pyproject.toml ] || [ -f setup.py ]; then python3 -m pip install --user .
+  elif [ -f package.json ]; then npm ci 2>/dev/null || npm install; npm run build --if-present; npm install -g .
+  elif [ -f go.mod ]; then go install ./...
+  elif [ -f Makefile ] || [ -f makefile ]; then make -j"\$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && as_root make install
+  else echo "No supported automatic build system detected. Run '\$0 show-guide' and follow the project guide." >&2; return 2; fi
+}
+method=\${1:-auto}
+case "\$method" in
+  auto) install_native || install_flatpak || install_snap || install_github ;;
+  native) install_native ;;
+  flatpak) install_flatpak ;;
+  snap) install_snap ;;
+  github) install_github ;;
+  show-guide) show_guide ;;
+  homepage) printf '%s\\n' "\$HOMEPAGE" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
+EOF
+        chmod 700 "$script"
+    done < "$catalog"
+}
+
+awesome_linux_sync() {
+    local dir readme catalog count
+    dir=$(awesome_linux_cache_dir); readme="$dir/README.md"; catalog="$dir/catalog.tsv"
+    mkdir -p "$dir" || { tui_msg "Awesome Linux" "Unable to create cache directory:\n$dir"; return 1; }
+    if ! awesome_linux_download "$readme"; then
+        [ -s "$catalog" ] && { tui_msg "Offline catalogue" "Refresh failed; keeping the existing cached catalogue."; return 0; }
+        tui_msg "Download failed" "Could not retrieve the Awesome Linux Software README.\nCheck networking and $LOGFILE."
+        return 1
+    fi
+    if ! awesome_linux_parse "$readme" "$catalog"; then
+        tui_msg "Parse failed" "The downloaded README did not produce a usable catalogue."
+        return 1
+    fi
+    count=$(wc -l < "$catalog" | tr -d ' ')
+    awesome_linux_generate_catalog_installers "$catalog" || {
+        tui_msg "Installer generation warning" "The catalogue was updated, but one or more standalone installer scripts could not be generated."
+    }
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$dir/last-sync"
+    tui_msg "Awesome Linux synchronized" "$count projects imported from the upstream repository."
+}
+
+awesome_linux_catalog() {
+    local dir catalog
+    dir=$(awesome_linux_cache_dir); catalog="$dir/catalog.tsv"
+    if [ ! -s "$catalog" ]; then
+        awesome_linux_sync || return 1
+    fi
+    printf '%s\n' "$catalog"
+}
+
+awesome_linux_pkg_guess() {
+    local name="$1" guess
+    guess=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9+.-]+/-/g; s/^-+|-+$//g')
+    case "$guess" in
+        visual-studio-code) guess=code ;; sublime-text) guess=sublime-text ;;
+        gnome-terminal) guess=gnome-terminal ;; libre-office|libreoffice-*) guess=libreoffice ;;
+        vlc-media-player) guess=vlc ;; mozilla-firefox) guess=firefox ;;
+        chromium-browser) guess=chromium ;; neovim) guess=neovim ;;
+        android-studio) guess=android-studio ;; docker-ce) guess=docker ;;
+    esac
+    printf '%s\n' "$guess"
+}
+
+awesome_linux_native_available() { # <package>
+    local pkg="$1"
+    case "$PM" in
+        apt) apt-cache show -- "$pkg" >/dev/null 2>&1 ;;
+        apk) apk search -e -- "$pkg" 2>/dev/null | grep -q . ;;
+        pacman) pacman -Si -- "$pkg" >/dev/null 2>&1 ;;
+        dnf|yum) "$PM" -q list available "$pkg" >/dev/null 2>&1 || rpm -q "$pkg" >/dev/null 2>&1 ;;
+        zypper) zypper --non-interactive search -x "$pkg" 2>/dev/null | grep -q "$pkg" ;;
+        xbps) xbps-query -Rs "^${pkg}-" 2>/dev/null | grep -q . ;;
+        emerge) emerge --search-exact "$pkg" 2>/dev/null | grep -q . ;;
+        *) return 1 ;;
+    esac
+}
+
+awesome_linux_open_url() { # <url>
+    local url="$1"
+    if command -v xdg-open >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        (xdg-open "$url" >/dev/null 2>&1 &) || true
+    else
+        tui_msg "Project URL" "$url"
+    fi
+}
+
+awesome_linux_flatpak_ref() { # <name>; print best matching app id
+    local name="$1" q
+    command -v flatpak >/dev/null 2>&1 || return 1
+    q=$(flatpak remote-ls --app --columns=application,name 2>/dev/null | \
+        awk -F '\t' -v n="$name" 'BEGIN{IGNORECASE=1} index($2,n)||index(n,$2){print $1; exit}')
+    [ -n "$q" ] || return 1; printf '%s\n' "$q"
+}
+
+awesome_linux_snap_name() { # <name>
+    local name="$1" guess
+    command -v snap >/dev/null 2>&1 || return 1
+    guess=$(awesome_linux_pkg_guess "$name")
+    snap info "$guess" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$guess"
+}
+
+awesome_linux_github_url() { # <homepage> <source>
+    local homepage="$1" source="$2"
+    case "$source" in https://github.com/*) printf '%s\n' "${source%.git}"; return 0;; esac
+    case "$homepage" in https://github.com/*) printf '%s\n' "${homepage%.git}"; return 0;; esac
+    return 1
+}
+
+awesome_linux_source_dir() { # <name>
+    local name="$1" slug
+    slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._+-]+/-/g; s/^-+|-+$//g')
+    printf '%s\n' "${SYSTUI_SOURCE_DIR:-/opt/systui-sources}/$slug"
+}
+
+awesome_linux_github_clone() { # <name> <github-url>
+    local name="$1" github="$2" dst
+    command -v git >/dev/null 2>&1 || { tui_msg "Git unavailable" "Install git before using GitHub installation."; return 1; }
+    dst=$(awesome_linux_source_dir "$name")
+    mkdir -p "$(dirname "$dst")" || return 1
+    if [ -d "$dst/.git" ]; then
+        run_cmd "Updating GitHub source for $name" git -C "$dst" pull --ff-only
+    elif [ -e "$dst" ]; then
+        tui_msg "Destination exists" "$dst exists but is not a Git repository. Move or remove it first."
+        return 1
+    else
+        run_cmd "Cloning $name from GitHub" git clone --depth 1 "$github" "$dst"
+    fi
+}
+
+awesome_linux_installer_dir() {
+    local dir
+    dir="$(awesome_linux_cache_dir)/installers"
+    mkdir -p "$dir" || return 1
+    printf '%s\n' "$dir"
+}
+
+awesome_linux_installer_path() { # <name>
+    local name="$1" slug dir
+    slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._+-]+/-/g; s/^-+|-+$//g')
+    dir=$(awesome_linux_installer_dir) || return 1
+    printf '%s/%s-install.sh\n' "$dir" "$slug"
+}
+
+awesome_linux_detect_guide() { # <repository-directory>
+    local dst="$1" f
+    for f in INSTALL.md INSTALL README.md README.rst README.txt README; do
+        [ -s "$dst/$f" ] && { printf '%s\n' "$dst/$f"; return 0; }
+    done
+    find "$dst/docs" -maxdepth 2 -type f \( -iname '*install*.md' -o -iname '*build*.md' \) 2>/dev/null | head -n 1
+}
+
+awesome_linux_guide_excerpt() { # <guide>
+    local guide="$1"
+    [ -s "$guide" ] || return 0
+    awk '
+      BEGIN{IGNORECASE=1; active=0; fence=0; n=0}
+      /^#{1,6}[[:space:]].*(install|build|compile|setup)/ {active=1; n=0; next}
+      active && /^#{1,6}[[:space:]]/ {active=0}
+      active && /^```/ {fence=!fence; next}
+      active && fence && /(^|[[:space:]])(git|cmake|meson|make|ninja|cargo|python3?|pip3?|npm|pnpm|yarn|go|\.\/configure|\.\/install\.sh)([[:space:]]|$)/ {
+          gsub(/^[[:space:]]*\$[[:space:]]*/, ""); print; if (++n >= 30) exit
+      }
+    ' "$guide"
+}
+
+awesome_linux_generate_github_installer() { # <name> <github-url>
+    local name="$1" github="$2" dst script guide method deps="" build="" excerpt
+    awesome_linux_github_clone "$name" "$github" || return 1
+    dst=$(awesome_linux_source_dir "$name")
+    script=$(awesome_linux_installer_path "$name") || return 1
+    guide=$(awesome_linux_detect_guide "$dst" 2>/dev/null || true)
+
+    if [ -x "$dst/install.sh" ]; then
+        method="Project install.sh"; build='./install.sh'
+    elif [ -x "$dst/autogen.sh" ]; then
+        method="Autotools (autogen.sh)"; deps="autoconf automake libtool pkg-config make gcc g++"; build='./autogen.sh && ./configure && make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && make install'
+    elif [ -x "$dst/configure" ]; then
+        method="Autotools (configure)"; deps="make gcc g++ pkg-config"; build='./configure && make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && make install'
+    elif [ -f "$dst/CMakeLists.txt" ]; then
+        method="CMake"; deps="cmake make gcc g++ pkg-config"; build='cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && cmake --install build'
+    elif [ -f "$dst/meson.build" ]; then
+        method="Meson"; deps="meson ninja-build gcc g++ pkg-config"; build='meson setup build --buildtype=release && meson compile -C build && meson install -C build'
+    elif [ -f "$dst/Cargo.toml" ]; then
+        method="Cargo"; deps="cargo rustc pkg-config"; build='cargo install --path . --locked --root /usr/local'
+    elif [ -f "$dst/pyproject.toml" ] || [ -f "$dst/setup.py" ]; then
+        method="Python package"; deps="python3 python3-pip python3-venv"; build='python3 -m pip install --break-system-packages . 2>/dev/null || python3 -m pip install .'
+    elif [ -f "$dst/package.json" ]; then
+        method="Node.js package"; deps="nodejs npm"; build='npm ci 2>/dev/null || npm install; npm run build --if-present; npm install -g .'
+    elif [ -f "$dst/go.mod" ]; then
+        method="Go module"; deps="golang-go"; build='go build ./... && go install ./...'
+    elif [ -f "$dst/Makefile" ] || [ -f "$dst/makefile" ]; then
+        method="Make"; deps="make gcc g++ pkg-config"; build='make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" && make install'
+    else
+        method="Documentation-guided/manual"
+        build='echo "No supported automatic build system was detected." >&2; echo "Review the installation guide shown in this script." >&2; exit 2'
+    fi
+    excerpt=$(awesome_linux_guide_excerpt "$guide" 2>/dev/null || true)
+
+    cat > "$script" <<EOF
+#!/bin/sh
+set -eu
+# Generated by systui Awesome Linux for: $name
+# Repository: $github
+# Detected method: $method
+# Documentation: ${guide:-not detected}
+# Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+#
+# Commands extracted from the project installation/build guide for review:
+$(printf '%s\n' "$excerpt" | sed 's/^/#   /')
+
+REPO=$(printf '%s' "$github" | sed 's/["\\]/\\&/g')
+DEST=$(printf '%s' "$dst" | sed 's/["\\]/\\&/g')
+
+install_dependencies() {
+    [ -n "$deps" ] || return 0
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y $deps
+    elif command -v apk >/dev/null 2>&1; then
+        apk_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++/build-base/g; s/gcc/build-base/g')
+        apk add --no-cache $apk_deps
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++//g')
+        pacman -S --needed --noconfirm $pacman_deps
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja-build/g; s/golang-go/golang/g')
+        dnf install -y $dnf_deps
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install $deps
+    else
+        echo "Install these build dependencies manually: $deps" >&2
+    fi
+}
+
+command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
+mkdir -p "\$(dirname "\$DEST")"
+if [ -d "\$DEST/.git" ]; then
+    git -C "\$DEST" pull --ff-only
+elif [ -e "\$DEST" ]; then
+    echo "Destination exists and is not a Git repository: \$DEST" >&2
+    exit 1
+else
+    git clone --recursive "\$REPO" "\$DEST"
+fi
+git -C "\$DEST" submodule update --init --recursive
+install_dependencies
+cd "\$DEST"
+$build
+EOF
+    chmod 700 "$script"
+    tui_msg "Installer generated" "Project-specific installer created from repository documentation and detected build files:\n\n$script\n\nDetected method: $method"
+    printf '%s\n' "$script"
+}
+
+awesome_linux_view_installer() { # <name>
+    local script
+    script=$(awesome_linux_installer_path "$1") || return 1
+    [ -s "$script" ] || { tui_msg "Installer unavailable" "Generate the GitHub installer first."; return 1; }
+    if command -v less >/dev/null 2>&1; then less "$script"
+    elif command -v more >/dev/null 2>&1; then more "$script"
+    else tui_textbox "Generated installer" "$script"; fi
+}
+
+awesome_linux_run_installer() { # <name> <github-url>
+    local name="$1" github="$2" script
+    script=$(awesome_linux_installer_path "$name") || return 1
+    if [ ! -s "$script" ]; then
+        awesome_linux_generate_github_installer "$name" "$github" >/dev/null || return 1
+        script=$(awesome_linux_installer_path "$name") || return 1
+    fi
+    tui_yesno "Run generated installer" "Review is recommended before execution. Run:\n\n$script" || return 0
+    run_cmd "Installing $name from its generated GitHub guide" /bin/sh "$script"
+}
+
+awesome_linux_github_build() { # compatibility wrapper
+    awesome_linux_run_installer "$@"
+}
+
+awesome_linux_project_menu() { # TSV fields
+    local id="$1" category="$2" name="$3" url="$4" source="$5" desc="$6"
+    local c pkg flat snap status github
+    pkg=$(awesome_linux_pkg_guess "$name")
+    github=$(awesome_linux_github_url "$url" "$source" 2>/dev/null || true)
+    while true; do
+        status="not detected"
+        case "$PM" in apt) dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' && status="native installed";;
+            apk) apk info -e "$pkg" >/dev/null 2>&1 && status="native installed";;
+            pacman) pacman -Q "$pkg" >/dev/null 2>&1 && status="native installed";;
+            dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1 && status="native installed";;
+            xbps) xbps-query "$pkg" >/dev/null 2>&1 && status="native installed";;
+        esac
+        c=$(tui_menu "$name  [$status]" "$category\n\n${desc:-No description available}" \
+            install  "Install from available sources" \
+            update   "Update managed installation" \
+            remove   "Remove managed installation" \
+            homepage "Open project page" \
+            back     "Back") || return 0
+        case "$c" in
+            install)
+                local methods=(native "Distribution repository: $pkg" flatpak "Flatpak / Flathub" snap "Snap Store") m
+                [ -n "$github" ] && methods+=(github-generate "GitHub: generate project installer" github-view "GitHub: review generated installer" github-build "GitHub: run generated installer" github-clone "GitHub: clone or update source")
+                methods+=(web "Official installation page" back "Back")
+                m=$(tui_menu "Install $name" "Choose an installation source. Each method is verified before changes are made:" "${methods[@]}") || continue
+                case "$m" in
+                    native) awesome_linux_native_available "$pkg" && pm_install "$pkg" || tui_msg "Package unavailable" "'$pkg' was not found in the active $PM repositories." ;;
+                    flatpak) flat=$(awesome_linux_flatpak_ref "$name") && run_cmd "Installing $flat" flatpak install -y flathub "$flat" || tui_msg "Flatpak unavailable" "No matching configured Flatpak application was found." ;;
+                    snap) snap=$(awesome_linux_snap_name "$name") && run_cmd "Installing snap $snap" snap install "$snap" || tui_msg "Snap unavailable" "No exact Snap package match was found." ;;
+                    github-generate) awesome_linux_generate_github_installer "$name" "$github" >/dev/null ;;
+                    github-view) awesome_linux_view_installer "$name" ;;
+                    github-clone) awesome_linux_github_clone "$name" "$github" ;;
+                    github-build) awesome_linux_run_installer "$name" "$github" ;;
+                    web) awesome_linux_open_url "$url" ;;
+                esac ;;
+            update)
+                if case "$PM" in apt) dpkg-query -W "$pkg" >/dev/null 2>&1;; apk) apk info -e "$pkg" >/dev/null 2>&1;; pacman) pacman -Q "$pkg" >/dev/null 2>&1;; dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1;; xbps) xbps-query "$pkg" >/dev/null 2>&1;; *) false;; esac; then pm_install "$pkg"
+                elif flat=$(awesome_linux_flatpak_ref "$name") && flatpak info "$flat" >/dev/null 2>&1; then run_cmd "Updating $flat" flatpak update -y "$flat"
+                elif snap=$(awesome_linux_snap_name "$name") && snap list "$snap" >/dev/null 2>&1; then run_cmd "Refreshing $snap" snap refresh "$snap"
+                elif [ -n "$github" ] && [ -d "$(awesome_linux_source_dir "$name")/.git" ]; then awesome_linux_github_clone "$name" "$github"
+                else tui_msg "Not managed" "No installed package method was detected."; fi ;;
+            remove)
+                if case "$PM" in apt) dpkg-query -W "$pkg" >/dev/null 2>&1;; apk) apk info -e "$pkg" >/dev/null 2>&1;; pacman) pacman -Q "$pkg" >/dev/null 2>&1;; dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1;; xbps) xbps-query "$pkg" >/dev/null 2>&1;; *) false;; esac; then pm_remove "$pkg"
+                elif flat=$(awesome_linux_flatpak_ref "$name") && flatpak info "$flat" >/dev/null 2>&1; then run_cmd "Removing $flat" flatpak uninstall -y "$flat"
+                elif snap=$(awesome_linux_snap_name "$name") && snap list "$snap" >/dev/null 2>&1; then run_cmd "Removing $snap" snap remove "$snap"
+                elif [ -d "$(awesome_linux_source_dir "$name")/.git" ]; then
+                    tui_yesno "Remove source" "Delete cloned source directory?\n$(awesome_linux_source_dir "$name")" && rm -rf --one-file-system "$(awesome_linux_source_dir "$name")"
+                else tui_msg "Not detected" "No managed installation of $name was detected."; fi ;;
+            homepage) awesome_linux_open_url "$url" ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+awesome_linux_browse_file() { # filtered TSV
+    local file="$1" title="$2" page=0 per=35 total start end c line
+    total=$(wc -l < "$file" | tr -d ' '); [ "$total" -gt 0 ] || { tui_msg "No results" "No matching projects were found."; return 0; }
+    while true; do
+        start=$((page*per+1)); end=$((start+per-1)); [ "$end" -gt "$total" ] && end=$total
+        local args=() id category name url source desc
+        while IFS=$'\t' read -r id category name url source desc; do
+            [ -n "$id" ] && args+=("$id" "$name — ${desc:-No description available}")
+        done < <(sed -n "${start},${end}p" "$file")
+        [ "$end" -lt "$total" ] && args+=(__next "Next page")
+        [ "$page" -gt 0 ] && args+=(__prev "Previous page")
+        args+=(__back "Back")
+        c=$(tui_menu_no_tags "$title" "Projects $start-$end of $total:" "${args[@]}") || return 0
+        case "$c" in __next) page=$((page+1));; __prev) page=$((page-1));; __back) return 0;;
+            *) line=$(awk -F '\t' -v id="$c" '$1==id{print; exit}' "$file"); [ -n "$line" ] || continue; IFS=$'\t' read -r id category name url source desc <<< "$line"; awesome_linux_project_menu "$id" "$category" "$name" "$url" "$source" "$desc";;
+        esac
+    done
+}
+
+awesome_linux_category_level() { # <catalog> <prefix> <title>
+    local catalog="$1" prefix="${2:-}" title="${3:-Categories}"
+    local map="${SYSTUI_TMP}/awesome-category-map.$$" c tag label path filtered exact children
+    local args=() n=0
+    : > "$map"
+
+    # Build only the immediate children beneath the requested category path.
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ -n "$prefix" ]; then
+            case "$path" in "$prefix"|"$prefix / "*) ;; *) continue ;; esac
+            path=${path#"$prefix"}
+            path=${path# / }
+        fi
+        [ -n "$path" ] || continue
+        label=${path%% / *}
+        printf '%s\n' "$label"
+    done < <(awk -F '\t' '{print $2}' "$catalog") | sort -fu > "${map}.labels"
+    while IFS= read -r label; do
+        [ -n "$label" ] || continue
+        n=$((n+1)); tag=$(printf 'c%04d' "$n")
+        if [ -n "$prefix" ]; then path="$prefix / $label"; else path="$label"; fi
+        exact=$(awk -F '\t' -v p="$path" '$2==p{n++} END{print n+0}' "$catalog")
+        children=$(awk -F '\t' -v p="$path / " 'index($2,p)==1{n++} END{print n+0}' "$catalog")
+        if [ "$children" -gt 0 ] && [ "$exact" -gt 0 ]; then
+            args+=("$tag" "$label ($exact projects, subcategories)")
+        elif [ "$children" -gt 0 ]; then
+            args+=("$tag" "$label (subcategories)")
+        else
+            args+=("$tag" "$label ($exact projects)")
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$tag" "$path" "$exact" "$children" >> "$map"
+    done < "${map}.labels"
+    rm -f "${map}.labels"
+
+    # If the category itself contains entries, expose them separately.
+    if [ -n "$prefix" ]; then
+        exact=$(awk -F '\t' -v p="$prefix" '$2==p{n++} END{print n+0}' "$catalog")
+        [ "$exact" -gt 0 ] && args=(__projects "Projects directly in this category ($exact)" "${args[@]}")
+    fi
+    args+=(__back "Back")
+
+    while true; do
+        c=$(tui_menu_no_tags "Awesome Linux — $title" "Select a category:" "${args[@]}") || return 0
+        case "$c" in
+            __back) return 0 ;;
+            __projects)
+                filtered="${SYSTUI_TMP}/awesome-category-direct.tsv"
+                awk -F '\t' -v p="$prefix" '$2==p' "$catalog" | sort -t $'\t' -k3,3f > "$filtered"
+                awesome_linux_browse_file "$filtered" "$prefix" ;;
+            *)
+                path=$(awk -F '\t' -v t="$c" '$1==t{print $2; exit}' "$map")
+                exact=$(awk -F '\t' -v t="$c" '$1==t{print $3; exit}' "$map")
+                children=$(awk -F '\t' -v t="$c" '$1==t{print $4; exit}' "$map")
+                [ -n "$path" ] || continue
+                if [ "${children:-0}" -gt 0 ]; then
+                    awesome_linux_category_level "$catalog" "$path" "${path##* / }"
+                else
+                    filtered="${SYSTUI_TMP}/awesome-category.tsv"
+                    awk -F '\t' -v p="$path" '$2==p' "$catalog" | sort -t $'\t' -k3,3f > "$filtered"
+                    awesome_linux_browse_file "$filtered" "$path"
+                fi ;;
+        esac
+    done
+}
+
+awesome_linux_categories() {
+    awesome_linux_category_level "$1" "" "Categories"
+}
+
+menu_awesome_linux() {
+    local catalog c term filtered dir count synced
+    while true; do
+        catalog=$(awesome_linux_catalog) || return 0
+        dir=$(awesome_linux_cache_dir)
+        count=$(wc -l < "$catalog" | tr -d ' ')
+        synced=$(cat "$dir/last-sync" 2>/dev/null || echo "unknown")
+        c=$(tui_menu "Awesome Linux" "$count projects — last refresh: $synced" \
+            categories "Browse by category" \
+            search     "Search software" \
+            refresh    "Refresh catalogue" \
+            back       "Back") || return 0
+        case "$c" in
+            categories) awesome_linux_categories "$catalog" ;;
+            search)
+                term=$(tui_input "Search Awesome Linux" "Software name, category, or description:" "") || continue
+                [ -n "$term" ] || continue
+                filtered="${SYSTUI_TMP}/awesome-filter.tsv"
+                awk -F '\t' -v q="$term" 'BEGIN{IGNORECASE=1} index($0,q){print}' "$catalog" | sort -t $'\t' -k3,3f > "$filtered"
+                awesome_linux_browse_file "$filtered" "Search: $term" ;;
+            refresh) awesome_linux_sync ;;
             back) return 0 ;;
         esac
     done

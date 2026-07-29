@@ -1,6 +1,6 @@
 # ROOTFS BUILDER — expanded
 #
-# Distros: Debian/Devuan (debootstrap), Ubuntu (qemu-debootstrap), Alpine (apk.static),
+# Distros: Debian/Devuan/Ubuntu (debootstrap), Alpine (apk.static),
 #          Arch (pacstrap/tarball), Fedora (dnf --installroot + repofrompath),
 #          Void (official ROOTFS tarball).
 # Extras : build presets, foreign-arch builds via qemu-user-static + binfmt,
@@ -57,10 +57,241 @@ setup_qemu_chroot() { # setup_qemu_chroot <target> <debarch>
     return 0
 }
 
+
+
+rootfs_valid_package_name() {
+    # Common package syntax across supported managers: names, versions, slots,
+    # repository qualifiers and architecture suffixes. Shell metacharacters,
+    # paths and option-like values are intentionally rejected.
+    local p="$1"
+    [ -n "$p" ] && [ "${p#-}" = "$p" ] &&
+        printf '%s' "$p" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9+_.:@%~^=-]*$'
+}
+
+rootfs_sanitize_packages() { # <space-separated list>
+    local input="$1" p out=""
+    for p in $input; do
+        if rootfs_valid_package_name "$p"; then
+            case " $out " in *" $p "*) ;; *) out="$out $p" ;; esac
+        else
+            warn "Rejected unsafe or invalid package name: $p"
+            return 1
+        fi
+    done
+    printf '%s\n' "${out# }"
+}
+
+rootfs_valid_hostname() {
+    [ ${#1} -le 253 ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'
+}
+rootfs_valid_username() { printf '%s' "$1" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$'; }
+rootfs_valid_port() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+rootfs_valid_timezone() {
+    case "$1" in ''|/*|*..*|*[!A-Za-z0-9_+./-]*) return 1;; esac
+    return 0
+}
+rootfs_valid_locale() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_@.-]+$'; }
+
+rootfs_target_arch() { # <target>
+    local t="$1" a
+    a=$(rootfs_state_get "$t" ARCH 2>/dev/null || true)
+    [ -n "$a" ] || a=$(sed -nE 's/^Architecture:[[:space:]]*//p' "$t/var/lib/dpkg/status" 2>/dev/null | head -n1)
+    [ -n "$a" ] || a=$(host_debarch)
+    printf '%s\n' "$a"
+}
+
+rootfs_exec_raw() { # <target> <command> [args...]
+    local t="$1" cmd="$2" arch qbin; shift 2
+    arch=$(rootfs_target_arch "$t")
+    if needs_qemu "$arch"; then
+        qbin=$(qemu_bin_for "$arch")
+        [ -n "$qbin" ] || return 126
+        [ -x "$t/usr/bin/$qbin" ] || setup_qemu_chroot "$t" "$arch" || return 126
+        chroot "$t" "/usr/bin/$qbin" "$cmd" "$@"
+    else
+        chroot "$t" "$cmd" "$@"
+    fi
+}
+
+# Persistent interactive chroot-entry settings.
+rootfs_chroot_options_file() { printf '%s/etc/systui-chroot.conf\n' "$1"; }
+rootfs_chroot_option_get() { # <target> <key> <default>
+    local f key value
+    f=$(rootfs_chroot_options_file "$1"); key="$2"
+    value=$(awk -F= -v k="$key" '$1==k{sub(/^[^=]*=/,""); gsub(/^"|"$/,""); print; exit}' "$f" 2>/dev/null || true)
+    printf '%s\n' "${value:-$3}"
+}
+rootfs_chroot_option_set() { # <target> <key> <value>
+    local f key value tmp
+    f=$(rootfs_chroot_options_file "$1"); key="$2"; value="$3"; tmp="${f}.tmp.$$"
+    mkdir -p "$(dirname "$f")"
+    [ -f "$f" ] && awk -F= -v k="$key" '$1!=k{print}' "$f" > "$tmp" || : > "$tmp"
+    printf '%s="%s"\n' "$key" "$(printf '%s' "$value" | tr '\n\r"' '   ')" >> "$tmp"
+    mv -f "$tmp" "$f"
+}
+rootfs_shell_path() { # <target> <shell-name-or-path>
+    local t="$1" shv="$2" p
+    case "$shv" in /*) p="$shv";; bash|sh|dash|ash|zsh|ksh) p="/bin/$shv";; fish) p="/usr/bin/fish";; *) p="/bin/sh";; esac
+    [ -x "$t$p" ] && printf '%s\n' "$p" || printf '/bin/sh\n'
+}
+
+rootfs_chroot_options_menu() { # <target>
+    local t="$1" c mount_aok shell workdir launch_cmd boot_cmd
+    while true; do
+        mount_aok=$(rootfs_chroot_option_get "$t" MOUNT_AOK yes)
+        shell=$(rootfs_chroot_option_get "$t" SHELL /bin/bash)
+        workdir=$(rootfs_chroot_option_get "$t" WORKDIR /root)
+        launch_cmd=$(rootfs_chroot_option_get "$t" LAUNCH_CMD "")
+        boot_cmd=$(rootfs_chroot_option_get "$t" BOOT_CMD "")
+        c=$(tui_menu "Chroot entry options" "Configure settings applied before entering $(basename "$t"):" \
+            aok "Mount host /AOK at /AOK: $mount_aok" \
+            shell "Interactive shell: $shell" \
+            defaultshell "Set account default shell" \
+            workdir "Starting directory: $workdir" \
+            launchcmd "Launch command: ${launch_cmd:-default Bash login shell}" \
+            bootcmd "Boot command: ${boot_cmd:-disabled}" \
+            config "Open full rootfs configuration menu" \
+            back "Back") || return 0
+        case "$c" in
+            aok)
+                mount_aok=$(tui_radio "Mount /AOK" "Bind-mount the host /AOK directory inside the chroot:" yes Enabled $([ "$mount_aok" = yes ] && echo on || echo off) no Disabled $([ "$mount_aok" != yes ] && echo on || echo off)) || continue
+                rootfs_chroot_option_set "$t" MOUNT_AOK "$mount_aok" ;;
+            shell)
+                local shv
+                shv=$(tui_radio "Chroot shell" "Shell used when entering the rootfs:" bash "/bin/bash" on sh "/bin/sh (portable)" off zsh "/bin/zsh" off fish "/usr/bin/fish" off custom "Custom path" off) || continue
+                if [ "$shv" = custom ]; then shv=$(tui_input "Shell path" "Absolute shell path inside the rootfs:" "$shell") || continue; fi
+                shv=$(rootfs_shell_path "$t" "$shv")
+                rootfs_chroot_option_set "$t" SHELL "$shv" ;;
+            defaultshell)
+                local user shv path
+                user=$(tui_input "Account" "Account whose login shell should change:" root) || continue
+                rootfs_valid_username "$user" || { tui_msg "Invalid account" "Enter a valid local account name."; continue; }
+                shv=$(tui_radio "Default shell" "Select the account login shell:" bash "/bin/bash" on sh "/bin/sh" off zsh "/bin/zsh" off fish "/usr/bin/fish" off) || continue
+                path=$(rootfs_shell_path "$t" "$shv")
+                rootfs_chroot_exec "$t" "Set default shell for $user" "chsh -s '$path' '$user'" && rootfs_chroot_option_set "$t" SHELL "$path" ;;
+            workdir)
+                workdir=$(tui_input "Starting directory" "Absolute directory inside the rootfs:" "$workdir") || continue
+                case "$workdir" in /*) ;; *) tui_msg "Invalid directory" "Use an absolute path such as /root or /AOK."; continue;; esac
+                mkdir -p "$t$workdir" || { tui_msg "Failed" "Could not create $workdir in the rootfs."; continue; }
+                rootfs_chroot_option_set "$t" WORKDIR "$workdir" ;;
+            launchcmd)
+                launch_cmd=$(tui_input "Launch command" "Command executed when entering the rootfs. Leave empty to start the configured Bash login shell:" "$launch_cmd") || continue
+                rootfs_chroot_option_set "$t" LAUNCH_CMD "$launch_cmd" ;;
+            bootcmd)
+                boot_cmd=$(tui_input "Boot command" "Optional command executed before the launch command on every chroot entry. Leave empty to disable:" "$boot_cmd") || continue
+                rootfs_chroot_option_set "$t" BOOT_CMD "$boot_cmd" ;;
+            config) rootfs_cfg_menu "$t" ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+# Best-effort virtual filesystem setup for chroot operations. Restricted hosts
+# such as iSH-AOK may reject one or more mount types; those failures must not
+# trip the global ERR trap. The list of mounts created by this invocation is
+# returned through ROOTFS_ACTIVE_MOUNTS for precise cleanup.
+rootfs_mount_chroot_fs() { # <target>
+    local t="$1"
+    ROOTFS_ACTIVE_MOUNTS=""
+    ROOTFS_DNS_BACKUP=""
+    mkdir -p "$t/proc" "$t/sys" "$t/dev" "$t/dev/pts" "$t/etc" || return 1
+    if ! mountpoint -q "$t/proc" 2>/dev/null; then
+        mount -t proc proc "$t/proc" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/proc $ROOTFS_ACTIVE_MOUNTS" || warn "Could not mount proc in $t"
+    fi
+    if ! mountpoint -q "$t/sys" 2>/dev/null; then
+        mount -t sysfs sysfs "$t/sys" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/sys $ROOTFS_ACTIVE_MOUNTS" || warn "Could not mount sysfs in $t"
+    fi
+    if ! mountpoint -q "$t/dev" 2>/dev/null; then
+        mount --bind /dev "$t/dev" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/dev $ROOTFS_ACTIVE_MOUNTS" || warn "Could not bind-mount /dev in $t"
+    fi
+    if [ -d /dev/pts ] && ! mountpoint -q "$t/dev/pts" 2>/dev/null; then
+        mount --bind /dev/pts "$t/dev/pts" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/dev/pts $ROOTFS_ACTIVE_MOUNTS" || warn "Could not bind-mount /dev/pts in $t"
+    fi
+    if [ "$(rootfs_chroot_option_get "$t" MOUNT_AOK yes)" = yes ]; then
+        if [ -d /AOK ]; then
+            mkdir -p "$t/AOK"
+            if ! mountpoint -q "$t/AOK" 2>/dev/null; then
+                mount --bind /AOK "$t/AOK" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/AOK $ROOTFS_ACTIVE_MOUNTS" || warn "Could not bind-mount /AOK in $t"
+            fi
+        else
+            warn "Mount /AOK is enabled, but /AOK does not exist on the host."
+        fi
+    fi
+    if [ -r /etc/resolv.conf ]; then
+        ROOTFS_DNS_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/systui-dns.XXXXXX" 2>/dev/null || true)
+        if [ -n "$ROOTFS_DNS_BACKUP" ]; then
+            if [ -L "$t/etc/resolv.conf" ]; then
+                readlink "$t/etc/resolv.conf" > "$ROOTFS_DNS_BACKUP/link"
+            elif [ -e "$t/etc/resolv.conf" ]; then
+                cp -a "$t/etc/resolv.conf" "$ROOTFS_DNS_BACKUP/file" 2>/dev/null || true
+            else
+                : > "$ROOTFS_DNS_BACKUP/missing"
+            fi
+        fi
+        rm -f "$t/etc/resolv.conf" 2>/dev/null || true
+        cp -L /etc/resolv.conf "$t/etc/resolv.conf" 2>>"$LOGFILE" || warn "Could not copy DNS configuration into $t"
+    fi
+    export ROOTFS_ACTIVE_MOUNTS ROOTFS_DNS_BACKUP
+    return 0
+}
+
+rootfs_unmount_chroot_fs() { # [mount-list]
+    local mounts="${1:-${ROOTFS_ACTIVE_MOUNTS:-}}" m
+    for m in $mounts; do
+        umount -l "$m" 2>>"$LOGFILE" || true
+    done
+    ROOTFS_ACTIVE_MOUNTS=""
+    if [ -n "${ROOTFS_DNS_BACKUP:-}" ] && [ -d "$ROOTFS_DNS_BACKUP" ]; then
+        local t=""
+        for m in $mounts; do t=${m%/proc}; t=${t%/sys}; t=${t%/dev/pts}; t=${t%/dev}; [ -d "$t/etc" ] && break; done
+        if [ -n "$t" ]; then
+            rm -f "$t/etc/resolv.conf" 2>/dev/null || true
+            if [ -f "$ROOTFS_DNS_BACKUP/link" ]; then ln -s "$(cat "$ROOTFS_DNS_BACKUP/link")" "$t/etc/resolv.conf" 2>/dev/null || true
+            elif [ -e "$ROOTFS_DNS_BACKUP/file" ]; then cp -a "$ROOTFS_DNS_BACKUP/file" "$t/etc/resolv.conf" 2>/dev/null || true
+            fi
+        fi
+        rm -rf "$ROOTFS_DNS_BACKUP"
+    fi
+    ROOTFS_DNS_BACKUP=""
+    export ROOTFS_ACTIVE_MOUNTS ROOTFS_DNS_BACKUP
+}
+
+rootfs_qemu_chroot_exec_raw() { # <target> <arch> <command> [args...]
+    local t="$1" arch="$2" cmd="$3" qbin; shift 3
+    qbin=$(qemu_bin_for "$arch")
+    [ -n "$qbin" ] && [ -x "$t/usr/bin/$qbin" ] || return 126
+    chroot "$t" "/usr/bin/$qbin" "$cmd" "$@"
+}
+
+rootfs_run_second_stage() { # <target> <arch> <use_qemu>
+    local t="$1" arch="$2" use_qemu="$3" mounts="" rc=1
+    rootfs_mount_chroot_fs "$t" || true
+    mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
+    if chroot "$t" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
+        rc=0
+    elif [ "$use_qemu" = 1 ]; then
+        setup_qemu_chroot "$t" "$arch" || { rootfs_unmount_chroot_fs "$mounts"; return 1; }
+        if rootfs_qemu_chroot_exec_raw "$t" "$arch" /bin/sh /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
+            rc=0
+        fi
+    fi
+    rootfs_unmount_chroot_fs "$mounts"
+    return "$rc"
+}
+
+rootfs_validate_debootstrap_suite() { # <suite>
+    local suite="$1" d="${DEBOOTSTRAP_DIR:-/usr/share/debootstrap}"
+    [ -r "$d/scripts/$suite" ] && return 0
+    # Some suites are accepted through a script symlink or a vendor-provided
+    # script outside the conventional path; debootstrap --print-debs is the
+    # authoritative lightweight validation when available.
+    debootstrap --print-debs "$suite" 2>>"$LOGFILE" | grep -q .
+}
+
 # Run a command inside the rootfs, best effort. Usage: in_chroot <target> <cmd...>
 in_chroot() {
     local target="$1"; shift
-    chroot "$target" "$@" 2>>"$LOGFILE"
+    rootfs_exec_raw "$target" "$@" 2>>"$LOGFILE"
 }
 
 # Discover releases directly from distribution repositories. Falls back to
@@ -424,7 +655,7 @@ rootfs_package_catalog() { # distro existing-packages -> final package string
                 case " $added " in *" diagnostics "*) selected+=" htop btop sysstat iotop iftop nethogs lsof ncdu tree jq pciutils usbutils lshw lm-sensors smartmontools" ;; esac
                 ;;
             search) added=$(rootfs_catalog_search) || added=""; selected+=" ${added//\"/}" ;;
-            manual) manual=$(tui_input "Native package names" "Space-separated package names for $distro:" "") || manual=""; selected+=" $manual" ;;
+            manual) manual=$(tui_input "Native package names" "Space-separated package names for $distro:" "") || manual=""; if [ -n "$manual" ]; then manual=$(rootfs_sanitize_packages "$manual") || { tui_msg "Invalid package" "Package names may not contain shell syntax, paths, whitespace escapes, or leading options."; manual=""; }; fi; selected+=" $manual" ;;
             review)
                 local review_text
                 review_text=$(printf '%s\n' "$selected" | xargs -n1 2>/dev/null | sed '/^$/d' | sort -u)
@@ -477,21 +708,22 @@ rootfs_state_get() { # <target> <key>
     sed -nE "s/^${key}=\\\"?([^\\\"]*)\\\"?$/\\1/p" "$f" | tail -n1
 }
 
+rootfs_state_escape() { printf '%s' "$1" | tr '\n\r' '  ' | sed 's/["\\]/_/g'; }
 rootfs_write_build_state() {
     local target="$1"; shift
     mkdir -p "$target"
     cat > "$(rootfs_state_file "$target")" <<EOF
-DISTRO="$1"
-RELEASE="$2"
-ARCH="$3"
-MIRROR="$4"
-PACKAGES="$5"
-USE_QEMU="$6"
-INIT="$7"
-PRESET="$8"
-HOSTNAME="$9"
-POSTCFG="${10}"
-TIMEZONE="${11}"
+DISTRO="$(rootfs_state_escape "$1")"
+RELEASE="$(rootfs_state_escape "$2")"
+ARCH="$(rootfs_state_escape "$3")"
+MIRROR="$(rootfs_state_escape "$4")"
+PACKAGES="$(rootfs_state_escape "$5")"
+USE_QEMU="$(rootfs_state_escape "$6")"
+INIT="$(rootfs_state_escape "$7")"
+PRESET="$(rootfs_state_escape "$8")"
+HOSTNAME="$(rootfs_state_escape "$9")"
+POSTCFG="$(rootfs_state_escape "${10}")"
+TIMEZONE="$(rootfs_state_escape "${11}")"
 STAGE="configured"
 EOF
 }
@@ -567,9 +799,12 @@ rootfs_continue_generation() { # <target>
 
     case " $action " in *" second "*)
         if [ -x "$t/debootstrap/debootstrap" ]; then
-            [ "$use_qemu" = 1 ] && setup_qemu_chroot "$t" "$arch" || true
-            rootfs_chroot_exec "$t" "Complete debootstrap second stage" "/debootstrap/debootstrap --second-stage" || return 0
-            rootfs_set_build_stage "$t" bootstrap-complete
+            if run_cmd "Complete debootstrap second stage" rootfs_run_second_stage "$t" "$arch" "$use_qemu"; then
+                rootfs_set_build_stage "$t" bootstrap-complete
+            else
+                rootfs_set_build_stage "$t" bootstrap-second-stage-failed
+                return 0
+            fi
         fi ;;
     esac
     case " $action " in *" repair "*)
@@ -580,8 +815,7 @@ rootfs_continue_generation() { # <target>
     esac
     case " $action " in *" packages "*)
         if [ -n "${pkgs//[[:space:]]/}" ] && [ "$(rootfs_detect_pm "$t")" = apt ]; then
-            rootfs_chroot_exec "$t" "Install remaining rootfs packages" \
-                "export DEBIAN_FRONTEND=noninteractive; apt-get install -y $pkgs" || true
+            rootfs_install_deb_packages "$t" "$pkgs" || true
         fi ;;
     esac
     rootfs_set_build_stage "$t" recovered
@@ -597,7 +831,7 @@ rootfs_builder() {
     distro=$(tui_radio "Rootfs Builder 1/12" "Distribution (SPACE to select, ENTER to confirm):" \
         debian "Debian (debootstrap)" on \
         devuan "Devuan (debootstrap, no systemd)" off \
-        ubuntu "Ubuntu (qemu-debootstrap)" off \
+        ubuntu "Ubuntu (debootstrap; QEMU only for foreign arch)" off \
         alpine "Alpine Linux (apk.static)" off \
         arch   "Arch Linux (pacstrap / bootstrap tarball)" off \
         fedora "Fedora (dnf --installroot)" off \
@@ -857,27 +1091,34 @@ Proceed?" || return 0
     rootfs_postconfig "$target" "$distro" "$release" "$arch" "$init_choice" "$preset" \
         "$hostname_v" "$rootpw" "$mkuser" "$userpw" "$usersudo" "$postcfg" "$tz" "$pkgs" "$use_qemu" \
         "$locale_v" "$shell_v" "$editor_v" "$ssh_port" \
-        || warn "One or more post-build configuration steps failed."
+        || { rootfs_set_build_stage "$target" postconfig-failed; tui_msg "Configuration failed" "The base rootfs was created, but required post-configuration failed. Review $LOGFILE."; return 0; }
 
+    if ! rootfs_validate_integrity "$target"; then
+        rootfs_set_build_stage "$target" validation-failed
+        tui_msg "Validation failed" "The rootfs did not pass final integrity checks. Review $LOGFILE."
+        return 0
+    fi
     rootfs_set_build_stage "$target" complete
     show_warnings
 
     # ---- archive ----
     if [ "$comp" != none ]; then
-        local ext tool
+        local ext
         case "$comp" in
-            zst) ext="tar.zst"; tool="zstd -T0 -f -o" ;;
-            gz)  ext="tar.gz";  tool="gzip -c >" ;;
-            xz)  ext="tar.xz";  tool="xz -T0 -c >" ;;
+            zst) ext="tar.zst" ;;
+            gz)  ext="tar.gz" ;;
+            xz)  ext="tar.xz" ;;
         esac
         local archive="${target%/}.$ext"
         if [ "$comp" = zst ] && ! command -v zstd >/dev/null; then
             warn "zstd not installed — skipping compression."
             show_warnings
         else
-            run_cmd "Compressing rootfs -> $archive" bash -c \
-                "tar -C '$target' --numeric-owner -c . | $tool '$archive'" \
-                && tui_msg "Done" "Archive written:\n$archive"
+            case "$comp" in
+                gz)  run_cmd "Compressing rootfs -> $archive" tar -C "$target" --numeric-owner -czf "$archive" . ;;
+                xz)  run_cmd "Compressing rootfs -> $archive" tar -C "$target" --numeric-owner -cJf "$archive" . ;;
+                zst) run_cmd "Compressing rootfs -> $archive" tar --zstd -C "$target" --numeric-owner -cf "$archive" . ;;
+            esac && tui_msg "Done" "Archive written:\n$archive"
         fi
     fi
 
@@ -890,6 +1131,12 @@ rootfs_postconfig() {
     local hostname_v="$7" rootpw="$8" mkuser="$9" userpw="${10}" usersudo="${11}"
     local postcfg="${12}" tz="${13}" pkgs="${14}" use_qemu="${15}"
     local locale_v="${16:-C.UTF-8}" shell_v="${17:-bash}" editor_v="${18:-nano}" ssh_port="${19:-22}"
+    rootfs_valid_hostname "$hostname_v" || { warn "Invalid hostname: $hostname_v"; return 1; }
+    [ -z "$mkuser" ] || rootfs_valid_username "$mkuser" || { warn "Invalid username: $mkuser"; return 1; }
+    rootfs_valid_port "$ssh_port" || { warn "Invalid SSH port: $ssh_port"; return 1; }
+    rootfs_valid_locale "$locale_v" || { warn "Invalid locale: $locale_v"; return 1; }
+    [ -z "$tz" ] || rootfs_valid_timezone "$tz" || { warn "Invalid timezone: $tz"; return 1; }
+    pkgs=$(rootfs_sanitize_packages "$pkgs") || return 1
 
     echo "$hostname_v" > "$target/etc/hostname"
 
@@ -963,6 +1210,14 @@ rootfs_postconfig() {
                             || warn "Could not update-rc.d ssh in rootfs." ;;
                 esac ;;
             *) warn "sshd enable requested but openssh-server wasn't in the package list." ;;
+        esac ;;
+    esac
+    case " $postcfg " in *" services "*)
+        case "$init_choice" in
+            systemd) for svc in cron crond rsyslog chrony chronyd; do in_chroot "$target" systemctl enable "$svc" >/dev/null 2>&1 || true; done ;;
+            openrc) for svc in crond syslog chronyd; do in_chroot "$target" rc-update add "$svc" default >/dev/null 2>&1 || true; done ;;
+            sysvinit) for svc in cron rsyslog chrony; do in_chroot "$target" update-rc.d "$svc" defaults >/dev/null 2>&1 || true; done ;;
+            runit) for svc in cron crond rsyslog chronyd; do [ -d "$target/etc/sv/$svc" ] && ln -sfn "/etc/sv/$svc" "$target/etc/runit/runsvdir/default/$svc"; done ;;
         esac ;;
     esac
     case " $postcfg " in *" manifest "*)
@@ -1084,28 +1339,92 @@ EOF
     printf '%s\n' "$f"
 }
 
+rootfs_prepare_ubuntu_apt() { # target release arch mirror
+    local target="$1" release="$2" arch="$3" mirror="${4%/}"
+    mkdir -p "$target/etc/apt/apt.conf.d" "$target/etc/apt/sources.list.d"
+    cat >"$target/etc/apt/apt.conf.d/99systui-force-ipv4" <<'EOF'
+// iSH-AOK may resolve IPv6 addresses without providing an IPv6 route.
+Acquire::ForceIPv4 "true";
+Acquire::Retries "3";
+Dpkg::Use-Pty "0";
+EOF
+    # Ensure selected catalogue packages from universe/multiverse are visible.
+    # Keep initial package installation on the base pocket. Update/security
+    # pockets can be enabled later and may not exist for development/EOL suites.
+    cat >"$target/etc/apt/sources.list" <<EOF
+deb $mirror $release main restricted universe multiverse
+EOF
+}
+
+rootfs_install_deb_packages() { # target "space separated packages"
+    local target="$1" pkgs="$2" script="$target/tmp/systui-install-packages.sh"
+    [ -n "${pkgs//[[:space:]]/}" ] || return 0
+    mkdir -p "$target/tmp" "$target/usr/sbin"
+    cat >"$target/usr/sbin/policy-rc.d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+    chmod 755 "$target/usr/sbin/policy-rc.d"
+    cat >"$script" <<'EOF'
+#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+apt-get -o Acquire::ForceIPv4=true update
+available=""
+skipped=""
+for pkg in "$@"; do
+    [ -n "$pkg" ] || continue
+    if apt-cache show "$pkg" >/dev/null 2>&1; then
+        available="$available $pkg"
+    else
+        skipped="$skipped $pkg"
+    fi
+done
+if [ -n "$skipped" ]; then
+    printf '%s\n' "$skipped" > /var/log/systui-skipped-packages.log
+fi
+if [ -n "$available" ]; then
+    apt-get -o Acquire::ForceIPv4=true \
+        -o Dpkg::Options::=--force-confold \
+        --no-install-recommends install -y $available
+fi
+dpkg --configure -a
+apt-get -f install -y
+EOF
+    chmod 755 "$script"
+    pkgs=$(rootfs_sanitize_packages "$pkgs") || return 1
+    local pkg_args=() pkg
+    for pkg in $pkgs; do pkg_args+=("$pkg"); done
+    rootfs_chroot_exec_args "$target" "Install selected Debian-family packages" \
+        /tmp/systui-install-packages.sh "${pkg_args[@]}"
+    local rc=$?
+    rm -f "$script" "$target/usr/sbin/policy-rc.d"
+    if [ -s "$target/var/log/systui-skipped-packages.log" ]; then
+        warn "Some packages are unavailable for this release/architecture: $(xargs < "$target/var/log/systui-skipped-packages.log")"
+    fi
+    return $rc
+}
+
 build_debfamily() { # distro release arch mirror target pkgs use_qemu
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6" use_qemu="$7"
     local wgetrc="" selected_mirror=""
 
-    # Derive foreign/native mode from the actual host and target architectures
-    # at execution time. Ubuntu uses qemu-debootstrap below; this flag controls
-    # the remaining Debian-family builders.
+    # Derive foreign/native mode from the actual host and target architectures.
+    # Native Ubuntu builds must use plain debootstrap. QEMU is only introduced
+    # for a genuinely foreign target architecture.
     if needs_qemu "$arch"; then
         use_qemu=1
     else
         use_qemu=0
     fi
-    local bootstrap_tool="debootstrap"
-    if [ "$distro" = ubuntu ]; then
-        bootstrap_tool="qemu-debootstrap"
+    if ! command -v debootstrap >/dev/null 2>&1; then
+        tui_msg "Missing tool" "debootstrap is required for $distro rootfs builds.\nInstall debootstrap with the host package manager and retry."
+        return 1
     fi
-    if ! command -v "$bootstrap_tool" >/dev/null 2>&1; then
-        if [ "$distro" = ubuntu ]; then
-            tui_msg "Missing tool" "qemu-debootstrap is required for Ubuntu rootfs builds.\nInstall qemu-user-static (and binfmt-support where available), then retry."
-        else
-            tui_msg "Missing tool" "debootstrap is required for $distro.\nInstall it with your host package manager and retry."
-        fi
+    if ! rootfs_validate_debootstrap_suite "$release"; then
+        tui_msg "Unsupported release" "The installed debootstrap does not support suite '$release'.\n\nUpdate debootstrap or select a supported release."
+        rootfs_set_build_stage "$target" unsupported-release
         return 1
     fi
 
@@ -1120,7 +1439,9 @@ Check that iSH-AOK has network access and DNS resolution, then retry. The builde
         [ "$selected_mirror" = "$mirror" ] || log "rootfs: using reachable Ubuntu fallback mirror $selected_mirror"
         mirror="$selected_mirror"
     elif ! rootfs_probe_deb_mirror "$mirror" "$release"; then
-        warn "Repository preflight failed for $mirror; debootstrap will still be attempted."
+        tui_msg "Repository unreachable" "The repository preflight failed for:\n$mirror/dists/$release/InRelease\n\nCheck the mirror, release name, DNS, and network connectivity."
+        rootfs_set_build_stage "$target" mirror-preflight-failed
+        return 1
     fi
 
     wgetrc=$(rootfs_ipv4_wgetrc 2>/dev/null || true)
@@ -1151,7 +1472,8 @@ Check that iSH-AOK has network access and DNS resolution, then retry. The builde
 
     if [ -z "$keyring" ] && [ -n "$keyring_pkg" ] && command -v apt-get >/dev/null 2>&1; then
         log "rootfs: attempting to install missing keyring package $keyring_pkg"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$keyring_pkg" >>"$LOGFILE" 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true update >>"$LOGFILE" 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::ForceIPv4=true install -y "$keyring_pkg" >>"$LOGFILE" 2>&1 || true
         case "$distro" in
             debian) [ -r /usr/share/keyrings/debian-archive-keyring.gpg ] && keyring=/usr/share/keyrings/debian-archive-keyring.gpg ;;
             devuan)
@@ -1178,42 +1500,24 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
     [ "$distro" = ubuntu ] && opts+=(--components=main,universe)
     [ -n "$keyring" ] && opts+=(--keyring="$keyring")
 
-    local include=""
-    # Normalize repeated whitespace and produce a valid comma-separated list.
-    if [ -n "${pkgs//[[:space:]]/}" ]; then
-        include=$(printf '%s\n' "$pkgs" | xargs | tr ' ' ',')
-        [ -n "$include" ] && opts+=(--include="$include")
-    fi
-
-    if [ "$distro" = ubuntu ]; then
-        # Ubuntu builds always use qemu-debootstrap. The wrapper manages QEMU,
-        # first/second-stage execution, and the target emulator as needed.
-        # Do not pass --foreign here; qemu-debootstrap controls that internally.
-        rootfs_set_build_stage "$target" bootstrap
-        run_cmd "qemu-debootstrap ubuntu/$release ($arch)" \
-            env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
-            qemu-debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
-        rootfs_set_build_stage "$target" bootstrap-complete
-    elif [ "$use_qemu" = 1 ]; then
+    # Additional packages are intentionally not passed through --include.
+    # A missing optional package or failing maintainer script must not destroy
+    # an otherwise valid base rootfs. Extras are installed after bootstrap.
+    if [ "$use_qemu" = 1 ]; then
         opts+=(--foreign)
         rootfs_set_build_stage "$target" bootstrap-first-stage
         run_cmd "debootstrap --foreign $distro/$release ($arch)" \
             env ${wgetrc:+WGETRC="$wgetrc"} DEBOOTSTRAP_DOWNLOAD_RETRIES=3 \
             debootstrap "${opts[@]}" "$release" "$target" "$mirror" || { rm -f "$wgetrc"; return 1; }
 
-        # iSH-AOK may execute supported foreign architectures directly. Try
-        # that first; only require qemu-user-static when direct execution fails.
-        if chroot "$target" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
-            log "debootstrap: second stage completed using native/iSH-AOK execution"
+        rootfs_set_build_stage "$target" bootstrap-second-stage
+        if run_cmd "debootstrap second stage ($arch)" rootfs_run_second_stage "$target" "$arch" 1; then
             rootfs_set_build_stage "$target" bootstrap-complete
+        else
+            rootfs_set_build_stage "$target" bootstrap-second-stage-failed
             rm -f "$wgetrc"
-            return 0
+            return 1
         fi
-
-        setup_qemu_chroot "$target" "$arch" || { rm -f "$wgetrc"; return 1; }
-        run_cmd "debootstrap second stage ($arch)" \
-            chroot "$target" /debootstrap/debootstrap --second-stage || { rm -f "$wgetrc"; return 1; }
-        rootfs_set_build_stage "$target" bootstrap-complete
     else
         rootfs_set_build_stage "$target" bootstrap
         run_cmd "debootstrap $distro/$release" \
@@ -1222,14 +1526,20 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         rootfs_set_build_stage "$target" bootstrap-complete
     fi
     if [ "$distro" = ubuntu ]; then
-        mkdir -p "$target/etc/apt/apt.conf.d"
-        cat >"$target/etc/apt/apt.conf.d/99systui-force-ipv4" <<'EOF'
-// iSH-AOK may resolve IPv6 addresses without providing an IPv6 route.
-Acquire::ForceIPv4 "true";
-Acquire::Retries "3";
-EOF
+        rootfs_prepare_ubuntu_apt "$target" "$release" "$arch" "$mirror"
     fi
+
     rm -f "$wgetrc"
+
+    if [ -n "${pkgs//[[:space:]]/}" ]; then
+        rootfs_set_build_stage "$target" packages
+        if rootfs_install_deb_packages "$target" "$pkgs"; then
+            rootfs_set_build_stage "$target" packages-complete
+        else
+            rootfs_set_build_stage "$target" packages-failed
+            return 1
+        fi
+    fi
     return 0
 }
 
@@ -1254,11 +1564,12 @@ build_alpine() { # release arch mirror target pkgs
         rm -rf "$workdir"; return 1
     fi
     wget -qO "$workdir/apk-tools.apk" "$apkdir/$tools_apk" || { rm -rf "$workdir"; return 1; }
-    tar -xzf "$workdir/apk-tools.apk" -C "$workdir" 2>/dev/null
+    tar -xzf "$workdir/apk-tools.apk" -C "$workdir" 2>>"$LOGFILE" || { warn "Failed to extract apk-tools-static package"; rm -rf "$workdir"; return 1; }
+    [ -x "$workdir/sbin/apk.static" ] || { warn "apk.static missing after extraction"; rm -rf "$workdir"; return 1; }
 
     run_cmd "apk.static bootstrap (alpine $release/$arch)" \
         "$workdir/sbin/apk.static" \
-            -X "$mirror/$release/main" -U --allow-untrusted --arch "$arch" \
+            -X "$mirror/$release/main" --arch "$arch" \
             --root "$target" --initdb add alpine-base $mapped
     local rc=$?
     printf '%s/%s/main\n%s/%s/community\n' "$mirror" "$release" "$mirror" "$release" \
@@ -1276,12 +1587,13 @@ build_arch() { # mirror target pkgs
         tui_msg "pacstrap unavailable" \
 "pacstrap not found — falling back to the official bootstrap tarball.
 Note: packages beyond 'base' must be installed after chrooting."
-        local tarball="archlinux-bootstrap-x86_64.tar.zst"
+        local tarball="archlinux-bootstrap-x86_64.tar.zst" workdir; workdir=$(mktemp -d) || return 1
         run_cmd "Downloading Arch bootstrap tarball" \
-            wget -O "/tmp/$tarball" "$mirror/iso/latest/$tarball" || return 1
+            wget -O "$workdir/$tarball" "$mirror/iso/latest/$tarball" || return 1
         run_cmd "Extracting bootstrap tarball" \
             tar -C "$target" --strip-components=1 --numeric-owner \
-                -xf "/tmp/$tarball" || return 1
+                -xf "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }
+        rm -rf "$workdir"
         [ -n "${mapped// }" ] && warn "Install these inside the chroot: pacman -S $mapped"
     fi
 }
@@ -1301,7 +1613,7 @@ Then retry."
     run_cmd "dnf --installroot (fedora $release/$arch)" \
         dnf -y --installroot="$target" --releasever="$release" \
             --repofrompath="systui-fedora,$repo" \
-            --disablerepo='*' --enablerepo=systui-fedora --nogpgcheck \
+            --disablerepo='*' --enablerepo=systui-fedora \
             --setopt=install_weak_deps=False \
             install fedora-release dnf bash $mapped
 }
@@ -1309,6 +1621,7 @@ Then retry."
 
 build_opensuse() { # distro release debarch mirror target pkgs
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6"
+    local mapped; mapped=$(map_packages opensuse "$pkgs") || return 1
     command -v zypper >/dev/null 2>&1 || {
         tui_msg "Missing tool" "openSUSE bootstrapping requires zypper on the host."; return 1; }
     local suse_arch repo
@@ -1322,12 +1635,12 @@ build_opensuse() { # distro release debarch mirror target pkgs
         zypper --root "$target" --non-interactive ar -f "$repo" systui-oss || return 1
     run_cmd "Installing openSUSE base" \
         zypper --root "$target" --non-interactive --gpg-auto-import-keys install \
-        filesystem bash coreutils rpm zypper ca-certificates iproute2 $pkgs
+        filesystem bash coreutils rpm zypper ca-certificates iproute2 $mapped
 }
 
 build_gentoo() { # flavor debarch mirror target pkgs
     local flavor="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
-    local garch stage url meta tarball
+    local garch stage url meta tarball workdir; workdir=$(mktemp -d) || return 1
     case "$arch" in
         amd64) garch=amd64; stage="stage3-amd64-$flavor" ;;
         arm64) garch=arm64; stage="stage3-arm64-$flavor" ;;
@@ -1339,16 +1652,16 @@ build_gentoo() { # flavor debarch mirror target pkgs
     meta="latest-$stage.txt"
     tarball=$(wget -qO- "$url/$meta" 2>>"$LOGFILE" | awk '!/^#/ && /tar\.(xz|bz2)/ {print $1; exit}')
     [ -n "$tarball" ] || { warn "Could not discover Gentoo stage3 at $url/$meta"; return 1; }
-    run_cmd "Downloading Gentoo stage3" wget -O "/tmp/$(basename "$tarball")" "$mirror/$garch/autobuilds/$tarball" || return 1
-    run_cmd "Extracting Gentoo stage3" tar -C "$target" --numeric-owner -xpf "/tmp/$(basename "$tarball")" || return 1
+    run_cmd "Downloading Gentoo stage3" wget -O "$workdir/$(basename "$tarball")" "$mirror/$garch/autobuilds/$tarball" || return 1
+    run_cmd "Extracting Gentoo stage3" tar -C "$target" --numeric-owner -xpf "$workdir/$(basename "$tarball")" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     printf 'GENTOO_MIRRORS="%s"\n' "$mirror" >> "$target/etc/portage/make.conf"
-    [ -n "${pkgs// }" ] && warn "Gentoo extras were not installed automatically. Inside the rootfs run: emerge --sync && emerge $pkgs"
+    [ -n "${pkgs// }" ] && warn "Gentoo extras were not installed automatically. Use Rootfs > Manage > Packages after entering the rootfs."
 }
 
 build_void() { # arch mirror target pkgs use_qemu
     local arch="$1" mirror="$2" target="$3" pkgs="$4" use_qemu="$5"
     local mapped; mapped=$(map_packages void $pkgs)
-    local listing tarball
+    local listing tarball workdir; workdir=$(mktemp -d) || return 1
     listing=$(wget -qO- "$mirror/live/current/" 2>>"$LOGFILE")
     tarball=$(grep -o "void-${arch}-ROOTFS-[0-9]*\.tar\.xz" <<<"$listing" | sort -u | tail -n1)
     if [ -z "$tarball" ]; then
@@ -1356,9 +1669,9 @@ build_void() { # arch mirror target pkgs use_qemu
         return 1
     fi
     run_cmd "Downloading Void rootfs ($tarball)" \
-        wget -O "/tmp/$tarball" "$mirror/live/current/$tarball" || return 1
+        wget -O "$workdir/$tarball" "$mirror/live/current/$tarball" || return 1
     run_cmd "Extracting Void rootfs" \
-        tar -C "$target" --numeric-owner -xJf "/tmp/$tarball" || return 1
+        tar -C "$target" --numeric-owner -xJf "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     if [ -n "${mapped// }" ]; then
         # Try installing extra packages via xbps inside the (possibly qemu) chroot.
         if [ "$use_qemu" = 1 ]; then
@@ -1372,7 +1685,10 @@ build_void() { # arch mirror target pkgs use_qemu
             [ -n "$void_debarch" ] && setup_qemu_chroot "$target" "$void_debarch" >/dev/null 2>&1 || true
         fi
         printf 'nameserver 1.1.1.1\n' > "$target/etc/resolv.conf"
-        if in_chroot "$target" sh -c "xbps-install -Syu xbps && xbps-install -y $mapped"; then
+        local void_args=() vp
+        mapped=$(rootfs_sanitize_packages "$mapped") || return 1
+        for vp in $mapped; do void_args+=("$vp"); done
+        if in_chroot "$target" xbps-install -Syu xbps && in_chroot "$target" xbps-install -y "${void_args[@]}"; then
             log "void: extra packages installed in chroot"
         else
             warn "Could not install extras in the Void chroot. Inside it, run: xbps-install -Syu && xbps-install $mapped"
@@ -1380,24 +1696,55 @@ build_void() { # arch mirror target pkgs use_qemu
     fi
 }
 
+
+rootfs_validate_integrity() { # <target>
+    local t="$1" failed=0 pm
+    [ -x "$t/bin/sh" ] || { warn "Integrity: missing executable /bin/sh"; failed=1; }
+    [ -r "$t/etc/os-release" ] || { warn "Integrity: missing /etc/os-release"; failed=1; }
+    pm=$(rootfs_detect_pm "$t")
+    [ "$pm" != unknown ] || { warn "Integrity: package manager database not detected"; failed=1; }
+    if [ -x "$t/debootstrap/debootstrap" ] && [ "$(rootfs_state_get "$t" STAGE 2>/dev/null || true)" = bootstrap-second-stage-failed ]; then
+        warn "Integrity: debootstrap second stage is incomplete"; failed=1
+    fi
+    if [ "$pm" = apt ] && [ -x "$t/usr/bin/dpkg" ]; then
+        rootfs_exec_raw "$t" dpkg --audit >>"$LOGFILE" 2>&1 || failed=1
+    fi
+    [ "$failed" = 0 ]
+}
+
 # ---- Rootfs management -------------------------------------------------------
 enter_chroot() { # enter_chroot <target>
-    local t="$1"
+    local t="$1" mounts="" rc=0 shell workdir launch_cmd boot_cmd
     [ -x "$t/bin/sh" ] || { tui_msg "Error" "$t does not look like a rootfs (no /bin/sh)."; return 1; }
+    shell=$(rootfs_chroot_option_get "$t" SHELL /bin/bash)
+    shell=$(rootfs_shell_path "$t" "$shell")
+    workdir=$(rootfs_chroot_option_get "$t" WORKDIR /root)
+    launch_cmd=$(rootfs_chroot_option_get "$t" LAUNCH_CMD "")
+    boot_cmd=$(rootfs_chroot_option_get "$t" BOOT_CMD "")
+    [ -d "$t$workdir" ] || workdir=/
     clear
-    mount -t proc  proc "$t/proc" 2>/dev/null
-    mount -t sysfs sys  "$t/sys"  2>/dev/null
-    mount --bind /dev     "$t/dev"     2>/dev/null
-    mount --bind /dev/pts "$t/dev/pts" 2>/dev/null
-    cp -L /etc/resolv.conf "$t/etc/resolv.conf" 2>/dev/null
+    rootfs_mount_chroot_fs "$t" || true
+    mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
     echo "==============================================================="
     echo " Entering chroot: $t"
-    echo " /proc /sys /dev are mounted; type 'exit' to leave."
+    echo " Shell: $shell   Directory: $workdir"
+    [ "$(rootfs_chroot_option_get "$t" MOUNT_AOK yes)" = yes ] && echo " Host /AOK: mounted at /AOK when supported"
+    [ -n "$boot_cmd" ] && echo " Boot command: $boot_cmd"
+    [ -n "$launch_cmd" ] && echo " Launch command: $launch_cmd"
+    echo " Type 'exit' to leave."
     echo "==============================================================="
-    chroot "$t" /bin/sh -l
-    umount -l "$t/dev/pts" "$t/dev" "$t/sys" "$t/proc" 2>/dev/null
-    echo "Left chroot; bind mounts detached."
-    read -rp "(press Enter)" _
+    if [ -n "$boot_cmd" ]; then
+        rootfs_exec_raw "$t" "$shell" -lc "cd '$workdir' 2>/dev/null || cd /; $boot_cmd" || warn "Chroot boot command failed; continuing to launch command."
+    fi
+    if [ -n "$launch_cmd" ]; then
+        rootfs_exec_raw "$t" "$shell" -lc "cd '$workdir' 2>/dev/null || cd /; exec $launch_cmd" || rc=$?
+    else
+        rootfs_exec_raw "$t" "$shell" -lc "cd '$workdir' 2>/dev/null || cd /; exec '$shell' -l" || rc=$?
+    fi
+    rootfs_unmount_chroot_fs "$mounts"
+    echo "Left chroot; temporary mounts detached."
+    read -rp "(press Enter)" _ || true
+    return "$rc"
 }
 
 # ---- Rootfs chroot helpers ---------------------------------------------------
@@ -1429,16 +1776,25 @@ rootfs_detect_init() { # <target> -> from manifest, else filesystem heuristics
 # Run a command inside the rootfs with /proc,/sys,/dev mounted and DNS set,
 # then tear the mounts down. Output goes to the terminal via run_cmd.
 rootfs_chroot_exec() { # <target> <description> <sh -c command string>
-    local t="$1" desc="$2" cmd="$3"
-    mount -t proc  proc "$t/proc" 2>/dev/null
-    mount -t sysfs sys  "$t/sys"  2>/dev/null
-    mount --bind /dev     "$t/dev"     2>/dev/null
-    mount --bind /dev/pts "$t/dev/pts" 2>/dev/null
-    cp -L /etc/resolv.conf "$t/etc/resolv.conf" 2>/dev/null
-    run_cmd "$desc" chroot "$t" /bin/sh -c "$cmd"
-    local rc=$?
-    umount -l "$t/dev/pts" "$t/dev" "$t/sys" "$t/proc" 2>/dev/null
-    return $rc
+    local t="$1" desc="$2" cmd="$3" mounts="" rc=0
+    rootfs_mount_chroot_fs "$t" || true
+    mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
+    trap 'rootfs_unmount_chroot_fs "$mounts"' INT TERM HUP
+    run_cmd "$desc" rootfs_exec_raw "$t" /bin/sh -c "$cmd" || rc=$?
+    trap - INT TERM HUP
+    rootfs_unmount_chroot_fs "$mounts"
+    return "$rc"
+}
+rootfs_chroot_exec_args() { # <target> <description> <command> [args...]
+    local t="$1" desc="$2"; shift 2
+    local mounts="" rc=0
+    rootfs_mount_chroot_fs "$t" || true
+    mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
+    trap 'rootfs_unmount_chroot_fs "$mounts"' INT TERM HUP
+    run_cmd "$desc" rootfs_exec_raw "$t" "$@" || rc=$?
+    trap - INT TERM HUP
+    rootfs_unmount_chroot_fs "$mounts"
+    return "$rc"
 }
 
 # In-rootfs package management with the rootfs's own package manager.
@@ -1463,29 +1819,29 @@ rootfs_pkg_menu() { # <target>
         local p=""
         case "$c" in install|remove)
             p=$(tui_input "$c" "Package names (space-separated, native $rpm_ names):" "") || continue
-            [ -z "$p" ] && continue ;;
+            [ -z "$p" ] && continue; p=$(rootfs_sanitize_packages "$p") || { tui_msg "Invalid package" "Unsafe package name rejected."; continue; } ;;
         esac
         case "$rpm_:$c" in
             apt:install)    rootfs_chroot_exec "$t" "apt install $p" "apt-get update && apt-get install -y $p" ;;
             apt:remove)     rootfs_chroot_exec "$t" "apt remove $p" "apt-get remove -y $p" ;;
             apt:upgrade)    rootfs_chroot_exec "$t" "apt upgrade" "apt-get update && apt-get upgrade -y" ;;
-            apt:list)       chroot "$t" dpkg-query -W -f='${Package} ${Version}\n' > /tmp/systui.rfs 2>&1 ;;
+            apt:list)       rootfs_exec_raw "$t" dpkg-query -W -f='${Package} ${Version}\n' > /tmp/systui.rfs 2>&1 ;;
             apk:install)    rootfs_chroot_exec "$t" "apk add $p" "apk update && apk add $p" ;;
             apk:remove)     rootfs_chroot_exec "$t" "apk del $p" "apk del $p" ;;
             apk:upgrade)    rootfs_chroot_exec "$t" "apk upgrade" "apk update && apk upgrade" ;;
-            apk:list)       chroot "$t" apk info -v > /tmp/systui.rfs 2>&1 ;;
+            apk:list)       rootfs_exec_raw "$t" apk info -v > /tmp/systui.rfs 2>&1 ;;
             pacman:install) rootfs_chroot_exec "$t" "pacman -S $p" "pacman -Sy --noconfirm --needed $p" ;;
             pacman:remove)  rootfs_chroot_exec "$t" "pacman -R $p" "pacman -Rns --noconfirm $p" ;;
             pacman:upgrade) rootfs_chroot_exec "$t" "pacman -Syu" "pacman -Syu --noconfirm" ;;
-            pacman:list)    chroot "$t" pacman -Q > /tmp/systui.rfs 2>&1 ;;
+            pacman:list)    rootfs_exec_raw "$t" pacman -Q > /tmp/systui.rfs 2>&1 ;;
             dnf:install)    rootfs_chroot_exec "$t" "dnf install $p" "dnf install -y $p" ;;
             dnf:remove)     rootfs_chroot_exec "$t" "dnf remove $p" "dnf remove -y $p" ;;
             dnf:upgrade)    rootfs_chroot_exec "$t" "dnf upgrade" "dnf upgrade -y" ;;
-            dnf:list)       chroot "$t" rpm -qa > /tmp/systui.rfs 2>&1 ;;
+            dnf:list)       rootfs_exec_raw "$t" rpm -qa > /tmp/systui.rfs 2>&1 ;;
             xbps:install)   rootfs_chroot_exec "$t" "xbps-install $p" "xbps-install -Sy $p" ;;
             xbps:remove)    rootfs_chroot_exec "$t" "xbps-remove $p" "xbps-remove -y $p" ;;
             xbps:upgrade)   rootfs_chroot_exec "$t" "xbps upgrade" "xbps-install -Syu" ;;
-            xbps:list)      chroot "$t" xbps-query -l > /tmp/systui.rfs 2>&1 ;;
+            xbps:list)      rootfs_exec_raw "$t" xbps-query -l > /tmp/systui.rfs 2>&1 ;;
         esac
         [ "$c" = list ] && tui_text "Installed in $(basename "$t") ($rpm_)" /tmp/systui.rfs
     done
@@ -1525,6 +1881,7 @@ rootfs_cfg_menu() { # <target>
             hostname)
                 local h; h=$(tui_input "Hostname" "New hostname:" "$(cat "$t/etc/hostname" 2>/dev/null)") || continue
                 [ -z "$h" ] && continue
+                rootfs_valid_hostname "$h" || { tui_msg "Invalid hostname" "Use letters, numbers, dots, and hyphens only."; continue; }
                 echo "$h" > "$t/etc/hostname"
                 grep -q '127.0.1.1' "$t/etc/hosts" 2>/dev/null \
                     && sed -i "s/^127.0.1.1.*/127.0.1.1\t$h/" "$t/etc/hosts" \
@@ -1533,19 +1890,19 @@ rootfs_cfg_menu() { # <target>
             rootpw)
                 local p; p=$(tui_password "Root password" "New root password for this rootfs:") || continue
                 [ -z "$p" ] && continue
-                echo "root:$p" | chroot "$t" chpasswd 2>>"$LOGFILE" \
+                echo "root:$p" | rootfs_exec_raw "$t" chpasswd 2>>"$LOGFILE" \
                     && tui_msg "Done" "Root password updated." \
                     || tui_msg "Failed" "chpasswd failed in chroot (foreign arch without qemu?)." ;;
             adduser)
                 local u p
-                u=$(tui_input "New user" "Username:" "") || continue; [ -z "$u" ] && continue
-                if chroot "$t" sh -c "command -v useradd" >/dev/null 2>&1; then
-                    chroot "$t" useradd -m -s /bin/sh "$u" 2>>"$LOGFILE"
+                u=$(tui_input "New user" "Username:" "") || continue; [ -z "$u" ] && continue; rootfs_valid_username "$u" || { tui_msg "Invalid username" "Use lowercase letters, numbers, underscores, and hyphens."; continue; }
+                if rootfs_exec_raw "$t" sh -c "command -v useradd" >/dev/null 2>&1; then
+                    rootfs_exec_raw "$t" useradd -m -s /bin/sh "$u" 2>>"$LOGFILE"
                 else
-                    chroot "$t" adduser -D "$u" 2>>"$LOGFILE"
+                    rootfs_exec_raw "$t" adduser -D "$u" 2>>"$LOGFILE"
                 fi
                 p=$(tui_password "Password" "Password for $u (blank = locked):")
-                [ -n "$p" ] && echo "$u:$p" | chroot "$t" chpasswd 2>>"$LOGFILE"
+                [ -n "$p" ] && echo "$u:$p" | rootfs_exec_raw "$t" chpasswd 2>>"$LOGFILE"
                 tui_msg "Done" "User $u created in the rootfs." ;;
             dns)
                 local d
@@ -1683,6 +2040,7 @@ rootfs_manage() {
             "PM: $(rootfs_detect_pm "$sel")  init: $(rootfs_detect_init "$sel")" \
             continue "Continue/recover rootfs generation" \
             enter    "Enter chroot (interactive shell)" \
+            entrycfg "Configure chroot entry options" \
             cmd      "Run a single command in the chroot" \
             pkg      "Package management (inside the rootfs)" \
             config   "In-rootfs configuration (identity, locale, SSH, services...)" \
@@ -1700,6 +2058,7 @@ rootfs_manage() {
         case "$c" in
             continue) rootfs_continue_generation "$sel" ;;
             enter) enter_chroot "$sel" ;;
+            entrycfg) rootfs_chroot_options_menu "$sel" ;;
             cmd)
                 local rcmd
                 rcmd=$(tui_input "Chroot command" "Command to run inside $(basename "$sel"):" "") || continue
@@ -1734,14 +2093,12 @@ rootfs_manage() {
                     zst "tar.zst (fast)" off \
                     xz  "tar.xz" off) || continue
                 [ -z "$comp" ] && continue
-                local ext tool
+                local ext
                 case "$comp" in
-                    zst) ext="tar.zst"; tool="zstd -T0 -f -o" ;;
-                    gz)  ext="tar.gz";  tool="gzip -c >" ;;
-                    xz)  ext="tar.xz";  tool="xz -T0 -c >" ;;
-                esac
-                run_cmd "Compressing -> $sel.$ext" bash -c \
-                    "tar -C '$sel' --numeric-owner -c . | $tool '$sel.$ext'" ;;
+                    zst) ext="tar.zst"; command -v zstd >/dev/null || { tui_msg "Missing tool" "zstd is required for tar.zst archives."; continue; }; run_cmd "Compressing -> $sel.$ext" tar --zstd -C "$sel" --numeric-owner -cf "$sel.$ext" . ;;
+                    gz)  ext="tar.gz"; run_cmd "Compressing -> $sel.$ext" tar -C "$sel" --numeric-owner -czf "$sel.$ext" . ;;
+                    xz)  ext="tar.xz"; run_cmd "Compressing -> $sel.$ext" tar -C "$sel" --numeric-owner -cJf "$sel.$ext" . ;;
+                esac ;;
             delete)
                 local typed
                 tui_yesno "DELETE" "Recursively delete:\n$sel\n\nThis cannot be undone. Continue?" || continue
