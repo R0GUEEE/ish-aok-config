@@ -1,7 +1,10 @@
 #!/bin/bash
 # systui — Provision Arch Linux
+PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 
 provision_arch() {
+    provision_require_family archlinux || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
     log "Starting Arch Linux provisioning..."
@@ -103,10 +106,10 @@ fi
 NICETIES
     chmod 0644 /etc/profile.d/30-aok-niceties.sh
     
-    for s in sshd syslog-ng chronyd crond; do
-        systemctl enable "$s" >/dev/null 2>&1 || true
-        systemctl restart "$s" >/dev/null 2>&1 || true
-    done
+    provision_service_enable_start sshd
+    provision_service_enable_start syslog-ng
+    provision_service_enable_start chronyd
+    provision_service_enable_start cronie crond
     
     tui_msg "Arch Provisioning Complete" "Arch Linux has been provisioned successfully.\n\nRe-login to activate bash + MOTD."
 }

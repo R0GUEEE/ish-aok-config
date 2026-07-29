@@ -1,5 +1,7 @@
 #!/bin/bash
 ###############################################################################
+PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 # systui — Enhanced Debian 12+ Provisioning
 #
 # Features:
@@ -16,6 +18,7 @@
 ###############################################################################
 
 provision_debian_enhanced() {
+    provision_require_family debian || return $?
     local cfg_file="$1"
     
     # Default configurations

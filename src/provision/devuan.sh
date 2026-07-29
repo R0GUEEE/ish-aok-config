@@ -1,7 +1,10 @@
 #!/bin/bash
 # systui — Provision Devuan 6+
+PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 
 provision_devuan() {
+    provision_require_family devuan || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
     log "Starting Devuan Linux provisioning..."
@@ -94,10 +97,10 @@ fi
 NICETIES
     chmod 0644 /etc/profile.d/30-aok-niceties.sh
     
-    for s in sshd rsyslog cron chrony; do
-        update-rc.d "$s" enable >/dev/null 2>&1 || true
-        service "$s" restart >/dev/null 2>&1 || service "$s" start >/dev/null 2>&1 || true
-    done
+    provision_service_enable_start ssh ssh
+    provision_service_enable_start rsyslog
+    provision_service_enable_start cron
+    provision_service_enable_start chrony
     
     tui_msg "Devuan Provisioning Complete" "Devuan has been provisioned successfully!"
 }

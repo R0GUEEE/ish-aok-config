@@ -1,9 +1,12 @@
 #!/bin/bash
 ###############################################################################
+PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 # systui — Provision Alpine Linux 3.23+
 ###############################################################################
 
 provision_alpine() {
+    provision_require_family alpine || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
     log "Starting Alpine Linux provisioning..."
@@ -100,8 +103,7 @@ NICETIES
     chmod 0644 /etc/profile.d/30-aok-niceties.sh
     
     for s in bootmisc hostname syslog-ng seedrng sshd cronie chronyd local; do
-        run_cmd "Enabling service $s" rc-update add "$s" $([ "$s" = sshd ] && echo default || echo boot) >/dev/null 2>&1 || true
-        rc-service "$s" restart >/dev/null 2>&1 || rc-service "$s" start >/dev/null 2>&1 || true
+        provision_service_enable_start "$s"
     done
     
     tui_msg "Alpine Provisioning Complete" "Alpine Linux has been provisioned successfully.\n\nRe-login to activate bash + MOTD.\n\nServices enabled: sshd, syslog-ng, cronie, chronyd"

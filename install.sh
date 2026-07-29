@@ -163,6 +163,7 @@ LIBDIR="__SYSTUI_LIBDIR__"
 . "$LIBDIR/src/core/common.sh" || exit 1
 
 # Source provisioning modules
+. "$LIBDIR/src/provision/runtime.sh" 2>/dev/null || true
 . "$LIBDIR/src/provision/alpine.sh" 2>/dev/null || true
 . "$LIBDIR/src/provision/arch.sh" 2>/dev/null || true
 . "$LIBDIR/src/provision/debian.sh" 2>/dev/null || true
@@ -583,91 +584,128 @@ provision_templates_menu() {
 provision_script_body() {
     local distro="$1" label="$2" pm="$3"
     cat <<EOF
-#!/bin/sh
-# systui standalone provision script
-# Distribution: $label
+#!/bin/bash
+# systui standalone adaptive provision script
+# Target distribution: $label ($distro)
 # Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
-set -eu
+set -Eeuo pipefail
 
+TARGET_DISTRO='$distro'
+TARGET_LABEL='$label'
+TARGET_PM='$pm'
 TIMEZONE=\${TIMEZONE:-America/New_York}
 LOCALE=\${LOCALE:-C.UTF-8}
 HOSTNAME_VALUE=\${HOSTNAME_VALUE:-systui-$distro}
 USERNAME=\${USERNAME:-}
 INSTALL_PROFILE=\${INSTALL_PROFILE:-standard}
+ENABLE_SSH=\${ENABLE_SSH:-1}
 
-log() { printf '[%s] %s\\n' "$label" "\$*"; }
-need_root() { [ "\$(id -u)" -eq 0 ] || { echo 'Run this script as root.' >&2; exit 1; }; }
+log() { printf '[%s] %s\\n' "\$TARGET_LABEL" "\$*"; }
+die() { log "ERROR: \$*" >&2; exit 1; }
+need_root() { [ "\$(id -u)" -eq 0 ] || die 'Run this script as root.'; }
+
+analyze_system() {
+    OS_ID=unknown OS_LIKE='' OS_NAME=unknown OS_VERSION=unknown
+    local file key value
+    for file in /etc/os-release /usr/lib/os-release; do
+        [ -r "\$file" ] || continue
+        while IFS='=' read -r key value; do
+            value=\${value#\"}; value=\${value%\"}; value=\${value#\'}; value=\${value%\'}
+            case "\$key" in ID) OS_ID=\$value;; ID_LIKE) OS_LIKE=\$value;; PRETTY_NAME) OS_NAME=\$value;; VERSION_ID) OS_VERSION=\$value;; esac
+        done < "\$file"
+        break
+    done
+    ARCH=\$(uname -m 2>/dev/null || echo unknown)
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then INIT=systemd
+    elif command -v rc-service >/dev/null 2>&1; then INIT=openrc
+    elif command -v sv >/dev/null 2>&1; then INIT=runit
+    elif command -v update-rc.d >/dev/null 2>&1 || command -v service >/dev/null 2>&1; then INIT=sysvinit
+    else INIT=none; fi
+    if command -v apt-get >/dev/null 2>&1; then PM=apt
+    elif command -v apk >/dev/null 2>&1; then PM=apk
+    elif command -v pacman >/dev/null 2>&1; then PM=pacman
+    elif command -v dnf >/dev/null 2>&1; then PM=dnf
+    elif command -v xbps-install >/dev/null 2>&1; then PM=xbps
+    elif command -v zypper >/dev/null 2>&1; then PM=zypper
+    elif command -v emerge >/dev/null 2>&1; then PM=portage
+    else PM=unknown; fi
+    CONTAINER=0; { [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -qaE '(docker|containerd|lxc|podman|kubepods)' /proc/1/cgroup 2>/dev/null; } && CONTAINER=1
+    log "Detected: \$OS_NAME; id=\$OS_ID; version=\$OS_VERSION; arch=\$ARCH; init=\$INIT; pm=\$PM; container=\$CONTAINER"
+}
+
+validate_target() {
+    local all=" \$OS_ID \$OS_LIKE " ok=0
+    case "\$TARGET_DISTRO" in
+        alpine) [[ "\$all" == *' alpine '* ]] && ok=1 ;;
+        archlinux) [[ "\$all" == *' arch '* || "\$all" == *' archlinux '* ]] && ok=1 ;;
+        debian) [[ "\$all" == *' debian '* ]] && [ "\$OS_ID" != devuan ] && ok=1 ;;
+        devuan) [ "\$OS_ID" = devuan ] && ok=1 ;;
+        ubuntu|kali) [ "\$OS_ID" = "\$TARGET_DISTRO" ] && ok=1 ;;
+        fedora) [[ "\$all" == *' fedora '* || "\$all" == *' rhel '* ]] && ok=1 ;;
+        void) [ "\$OS_ID" = void ] && ok=1 ;;
+        opensuse-*) [[ "\$all" == *' suse '* || "\$OS_ID" == opensuse* ]] && ok=1 ;;
+        gentoo) [ "\$OS_ID" = gentoo ] && ok=1 ;;
+    esac
+    [ "\$ok" -eq 1 ] || die "Template targets \$TARGET_DISTRO, but this system is \$OS_ID (\${OS_LIKE:-no ID_LIKE})."
+    [ "\$PM" = "\$TARGET_PM" ] || die "Expected package manager \$TARGET_PM, detected \$PM."
+}
 
 install_packages() {
-    case "$pm" in
+    case "\$PM" in
         apt)
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            case "\$INSTALL_PROFILE" in
-                minimal) pkgs='ca-certificates curl' ;;
-                developer) pkgs='ca-certificates curl wget git build-essential python3 python3-pip' ;;
-                server) pkgs='ca-certificates curl openssh-server sudo cron rsyslog' ;;
-                *) pkgs='ca-certificates curl wget git sudo openssh-server nano vim' ;;
-            esac
-            apt-get install -y \$pkgs
+            case "\$INSTALL_PROFILE" in minimal) pkgs='ca-certificates curl';; developer) pkgs='ca-certificates curl wget git build-essential python3 python3-pip';; server) pkgs='ca-certificates curl openssh-server sudo cron rsyslog';; *) pkgs='ca-certificates curl wget git sudo openssh-server nano vim';; esac
+            apt-get install -y --no-install-recommends \$pkgs
             ;;
         apk)
             apk update
-            case "\$INSTALL_PROFILE" in
-                minimal) pkgs='ca-certificates curl' ;;
-                developer) pkgs='ca-certificates curl wget git build-base python3 py3-pip' ;;
-                server) pkgs='ca-certificates curl openssh sudo dcron' ;;
-                *) pkgs='ca-certificates curl wget git sudo openssh nano vim' ;;
-            esac
-            apk add \$pkgs
+            case "\$INSTALL_PROFILE" in minimal) pkgs='ca-certificates curl';; developer) pkgs='ca-certificates curl wget git build-base python3 py3-pip';; server) pkgs='ca-certificates curl openssh sudo dcron';; *) pkgs='ca-certificates curl wget git sudo openssh nano vim';; esac
+            apk add --no-progress \$pkgs
             ;;
-        pacman)
-            pacman -Syu --noconfirm
-            pacman -S --needed --noconfirm ca-certificates curl wget git sudo openssh nano vim
-            ;;
-        dnf)
-            dnf -y upgrade --refresh
-            dnf -y install ca-certificates curl wget git sudo openssh-server nano vim
-            ;;
-        xbps)
-            xbps-install -Suy
-            xbps-install -y ca-certificates curl wget git sudo openssh nano vim
-            ;;
-        zypper)
-            zypper --non-interactive refresh
-            zypper --non-interactive update
-            zypper --non-interactive install ca-certificates curl wget git sudo openssh nano vim
-            ;;
-        portage)
-            emerge --sync
-            emerge app-misc/ca-certificates net-misc/curl net-misc/wget dev-vcs/git app-admin/sudo net-misc/openssh app-editors/nano app-editors/vim
-            ;;
+        pacman) pacman -Syu --noconfirm; pacman -S --needed --noconfirm ca-certificates curl wget git sudo openssh nano vim ;;
+        dnf) dnf -y upgrade --refresh; dnf -y install ca-certificates curl wget git sudo openssh-server nano vim-enhanced ;;
+        xbps) xbps-install -Suy xbps; xbps-install -y ca-certificates curl wget git sudo openssh nano vim ;;
+        zypper) zypper --non-interactive refresh; zypper --non-interactive update; zypper --non-interactive install ca-certificates curl wget git sudo openssh nano vim ;;
+        portage) emerge --sync; emerge app-misc/ca-certificates net-misc/curl net-misc/wget dev-vcs/git app-admin/sudo net-misc/openssh app-editors/nano app-editors/vim ;;
+        *) die 'Unsupported package manager.' ;;
+    esac
+}
+
+enable_service() {
+    local name="\$1"
+    [ "\$CONTAINER" -eq 1 ] && return 0
+    case "\$INIT" in
+        systemd) systemctl enable "\$name" >/dev/null 2>&1 || true; systemctl restart "\$name" >/dev/null 2>&1 || systemctl start "\$name" >/dev/null 2>&1 || true ;;
+        openrc) rc-update add "\$name" default >/dev/null 2>&1 || true; rc-service "\$name" restart >/dev/null 2>&1 || rc-service "\$name" start >/dev/null 2>&1 || true ;;
+        runit) [ -d "/etc/sv/\$name" ] && { mkdir -p /var/service; ln -sfn "/etc/sv/\$name" "/var/service/\$name"; }; sv up "\$name" >/dev/null 2>&1 || true ;;
+        sysvinit) update-rc.d "\$name" defaults >/dev/null 2>&1 || true; service "\$name" restart >/dev/null 2>&1 || service "\$name" start >/dev/null 2>&1 || true ;;
     esac
 }
 
 configure_base() {
     printf '%s\\n' "\$HOSTNAME_VALUE" > /etc/hostname
-    if [ -e "/usr/share/zoneinfo/\$TIMEZONE" ]; then
-        ln -snf "/usr/share/zoneinfo/\$TIMEZONE" /etc/localtime
-    fi
+    [ -e "/usr/share/zoneinfo/\$TIMEZONE" ] && ln -snf "/usr/share/zoneinfo/\$TIMEZONE" /etc/localtime
+    [ -f /etc/timezone ] && printf '%s\\n' "\$TIMEZONE" > /etc/timezone
     if [ -n "\$USERNAME" ] && ! id "\$USERNAME" >/dev/null 2>&1; then
-        if command -v adduser >/dev/null 2>&1; then
-            adduser --disabled-password --gecos '' "\$USERNAME" 2>/dev/null || adduser -D "\$USERNAME"
-        elif command -v useradd >/dev/null 2>&1; then
-            useradd -m -s /bin/sh "\$USERNAME"
-        fi
+        case "\$PM" in apk) adduser -D -s /bin/sh "\$USERNAME";; *) command -v useradd >/dev/null 2>&1 && useradd -m -s /bin/bash "\$USERNAME" || adduser --disabled-password --gecos '' "\$USERNAME";; esac
     fi
     mkdir -p /run/sshd 2>/dev/null || true
-    ssh-keygen -A 2>/dev/null || true
+    command -v ssh-keygen >/dev/null 2>&1 && ssh-keygen -A 2>/dev/null || true
+    if [ "\$ENABLE_SSH" -eq 1 ]; then
+        case "\$PM" in apk) enable_service sshd;; *) enable_service sshd; enable_service ssh;; esac
+    fi
 }
 
 need_root
-log 'Installing packages'
+analyze_system
+validate_target
 install_packages
-log 'Applying base configuration'
 configure_base
 log 'Provisioning complete'
 EOF
+    # Remove placeholder escape markers used to protect generated variable expansion.
+    sed -i $'s/\\x1b\\\$/\\$/g' /dev/stdout 2>/dev/null || true
 }
 
 provision_generate_one() {

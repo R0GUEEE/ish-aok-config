@@ -2149,8 +2149,16 @@ menu_bashit() { # <user> <home>
                 while [ $i -lt ${#args[@]} ]; do
                     name="${args[$i]}"; state="${args[$((i+2))]}"
                     case "$sel" in
-                        *" $name "*) [ "$state" = off ] && su - "$u" -c "bash -lc 'bash-it enable $kind $name'" >>"$LOGFILE" 2>&1 ;;
-                        *)           [ "$state" = on ]  && su - "$u" -c "bash -lc 'bash-it disable $kind $name'" >>"$LOGFILE" 2>&1 ;;
+                        *" $name "*)
+                            if [ "$state" = off ]; then
+                                run_cmd "Bash-it: enable $kind $name" su - "$u" -c                                     "bash -lc 'source ~/.bash_it/bash_it.sh >/dev/null 2>&1; bash-it enable $kind \"$name\"'"
+                            fi
+                            ;;
+                        *)
+                            if [ "$state" = on ]; then
+                                run_cmd "Bash-it: disable $kind $name" su - "$u" -c                                     "bash -lc 'source ~/.bash_it/bash_it.sh >/dev/null 2>&1; bash-it disable $kind \"$name\"'"
+                            fi
+                            ;;
                     esac
                     i=$((i+3))
                 done
@@ -2205,8 +2213,16 @@ menu_fisher() { # <user> <home>
                 while [ $i -lt ${#args[@]} ]; do
                     repo="${args[$i]}"; state="${args[$((i+2))]}"
                     case "$sel" in
-                        *" $repo "*) [ "$state" = off ] && run_cmd "fisher install $repo" su - "$u" -c "fish -c 'fisher install $repo'" ;;
-                        *)           [ "$state" = on ]  && run_cmd "fisher remove $repo" su - "$u" -c "fish -c 'fisher remove $repo'" ;;
+                        *" $repo "*)
+                            if [ "$state" = off ]; then
+                                run_cmd "fisher install $repo" su - "$u" -c "fish -c 'fisher install $repo'"
+                            fi
+                            ;;
+                        *)
+                            if [ "$state" = on ]; then
+                                run_cmd "fisher remove $repo" su - "$u" -c "fish -c 'fisher remove $repo'"
+                            fi
+                            ;;
                     esac
                     i=$((i+3))
                 done ;;

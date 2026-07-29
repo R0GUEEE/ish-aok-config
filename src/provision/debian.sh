@@ -1,7 +1,10 @@
 #!/bin/bash
 # systui — Provision Debian 12+
+PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 
 provision_debian() {
+    provision_require_family debian || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
     log "Starting Debian Linux provisioning..."
@@ -94,10 +97,10 @@ fi
 NICETIES
     chmod 0644 /etc/profile.d/30-aok-niceties.sh
     
-    for s in ssh rsyslog cron chrony; do
-        systemctl enable "$s" >/dev/null 2>&1 || true
-        systemctl restart "$s" >/dev/null 2>&1 || true
-    done
+    provision_service_enable_start ssh
+    provision_service_enable_start rsyslog
+    provision_service_enable_start cron
+    provision_service_enable_start chrony
     
     tui_msg "Debian Provisioning Complete" "Debian has been provisioned successfully!"
 }
