@@ -127,6 +127,322 @@ rootfs_release_menu() { # <distro> <arch>
     printf '%s\n' "$r"
 }
 
+
+# Interactive additional-package catalogue for RootFS builds.
+# Package tags use Debian-style canonical names; map_packages() translates
+# known names for Alpine, Arch, Fedora and Void backends.
+rootfs_catalog_items() { # category -> lines: tag|description|default
+    case "$1" in
+        essentials) cat <<'EOF'
+bash|Bash shell|on
+bash-completion|Bash completion|on
+coreutils|GNU core utilities|on
+findutils|find, xargs and locate utilities|off
+grep|GNU grep|off
+sed|GNU sed|off
+gawk|GNU awk|off
+less|Terminal pager|on
+file|File type detection|on
+man-db|Manual page database|off
+locales|Locale data and generation|off
+tzdata|Timezone database|on
+ca-certificates|Trusted CA certificates|on
+gnupg|OpenPGP tools|off
+openssl|TLS and crypto toolkit|off
+EOF
+            ;;
+        shells) cat <<'EOF'
+zsh|Z shell|off
+fish|Fish shell|off
+dash|Small POSIX shell|off
+tmux|Terminal multiplexer|off
+screen|GNU Screen|off
+direnv|Directory environment loader|off
+fzf|Fuzzy finder|off
+zoxide|Smarter cd command|off
+starship|Cross-shell prompt|off
+EOF
+            ;;
+        editors) cat <<'EOF'
+nano|Nano editor|on
+vim|Vim editor|on
+neovim|Neovim editor|off
+micro|Micro editor|off
+emacs-nox|Emacs terminal build|off
+EOF
+            ;;
+        development) cat <<'EOF'
+git|Git version control|on
+git-lfs|Git Large File Storage|off
+build-essential|Compiler and build essentials|off
+cmake|CMake build system|off
+ninja-build|Ninja build tool|off
+meson|Meson build system|off
+pkg-config|Package compiler flags|off
+gdb|GNU debugger|off
+strace|System-call tracer|off
+ltrace|Library-call tracer|off
+shellcheck|Shell script analyzer|off
+make|GNU Make|off
+patch|Patch utility|off
+EOF
+            ;;
+        languages) cat <<'EOF'
+python3|Python 3 runtime|on
+python3-pip|Python package installer|off
+python3-venv|Python virtual environments|off
+nodejs|Node.js runtime|off
+npm|Node package manager|off
+golang|Go toolchain|off
+rustc|Rust compiler|off
+cargo|Rust package manager|off
+ruby|Ruby runtime|off
+ruby-dev|Ruby development headers|off
+perl|Perl runtime|off
+php-cli|PHP command-line runtime|off
+openjdk-17-jdk-headless|OpenJDK development kit|off
+EOF
+            ;;
+        network) cat <<'EOF'
+iproute2|Modern network configuration tools|on
+iputils-ping|Ping utilities|on
+net-tools|Legacy ifconfig/netstat tools|off
+curl|HTTP transfer client|on
+wget|Network downloader|on
+rsync|Remote/local file synchronization|off
+dnsutils|DNS query tools|off
+whois|WHOIS client|off
+traceroute|Route tracing utility|off
+mtr-tiny|Combined ping and traceroute|off
+nmap|Network scanner|off
+tcpdump|Packet capture utility|off
+netcat-openbsd|TCP/UDP utility|off
+socat|Bidirectional data relay|off
+iperf3|Network throughput tester|off
+ethtool|Ethernet device settings|off
+wireless-tools|Legacy wireless utilities|off
+wpa-supplicant|Wi-Fi authentication|off
+EOF
+            ;;
+        server) cat <<'EOF'
+openssh-client|OpenSSH client|on
+openssh-server|OpenSSH server|off
+sudo|Privilege delegation|off
+cron|Scheduled jobs|off
+at|One-time scheduled jobs|off
+rsyslog|System logging daemon|off
+logrotate|Log rotation|off
+chrony|Time synchronization|off
+nftables|Firewall framework|off
+fail2ban|Login abuse prevention|off
+avahi-daemon|mDNS service discovery|off
+samba|SMB file sharing|off
+nginx|Nginx web server|off
+apache2|Apache HTTP server|off
+EOF
+            ;;
+        databases) cat <<'EOF'
+sqlite3|SQLite command-line client|off
+mariadb-client|MariaDB/MySQL client|off
+mariadb-server|MariaDB server|off
+postgresql-client|PostgreSQL client|off
+postgresql|PostgreSQL server|off
+redis-server|Redis server|off
+EOF
+            ;;
+        containers) cat <<'EOF'
+podman|Daemonless containers|off
+podman-compose|Compose for Podman|off
+docker.io|Docker engine|off
+docker-compose|Docker Compose|off
+containerd|Container runtime|off
+runc|OCI runtime|off
+skopeo|Container image transport tool|off
+buildah|OCI image builder|off
+qemu-user-static|Static user-mode emulators|off
+EOF
+            ;;
+        storage) cat <<'EOF'
+tar|Tar archive tool|on
+unzip|ZIP extraction|on
+zip|ZIP creation|off
+xz-utils|XZ compression tools|on
+zstd|Zstandard compression tools|off
+p7zip-full|7-Zip archive support|off
+rsync|File synchronization|off
+rclone|Cloud storage synchronization|off
+parted|Partition editor|off
+fdisk|Disk partitioning tools|off
+e2fsprogs|ext filesystem tools|off
+dosfstools|FAT filesystem tools|off
+btrfs-progs|Btrfs filesystem tools|off
+xfsprogs|XFS filesystem tools|off
+cryptsetup|Disk encryption tools|off
+lvm2|Logical Volume Manager|off
+mdadm|Software RAID management|off
+EOF
+            ;;
+        monitoring) cat <<'EOF'
+procps|Process utilities|on
+htop|Interactive process viewer|on
+btop|Resource monitor|off
+sysstat|Performance statistics|off
+iotop|Disk I/O monitor|off
+iftop|Network bandwidth monitor|off
+nethogs|Per-process network monitor|off
+lsof|Open file inspector|off
+ncdu|Disk usage browser|off
+duf|Modern disk usage display|off
+tree|Directory tree display|off
+jq|JSON processor|off
+lm-sensors|Hardware sensor monitoring|off
+smartmontools|Disk health monitoring|off
+EOF
+            ;;
+        security) cat <<'EOF'
+lynis|System security auditor|off
+rkhunter|Rootkit scanner|off
+aide|File integrity monitor|off
+clamav|Antivirus scanner|off
+apparmor|Application confinement|off
+auditd|Linux audit daemon|off
+ufw|Simple firewall frontend|off
+nmap|Network scanner|off
+tcpdump|Packet analyzer|off
+openssl|TLS and crypto toolkit|off
+gnupg|OpenPGP tools|off
+EOF
+            ;;
+        hardware) cat <<'EOF'
+udev|Device manager|off
+pciutils|PCI inspection tools|off
+usbutils|USB inspection tools|off
+lshw|Hardware inventory|off
+hwinfo|Hardware detection|off
+acpi|ACPI information|off
+acpid|ACPI event daemon|off
+powertop|Power consumption analyzer|off
+cpufrequtils|CPU frequency tools|off
+kmod|Kernel module tools|off
+EOF
+            ;;
+        desktop) cat <<'EOF'
+dbus|Desktop message bus|off
+xorg|X.Org display server|off
+xterm|Basic X terminal|off
+fonts-dejavu|DejaVu fonts|off
+xdg-utils|Desktop integration helpers|off
+pulseaudio|PulseAudio sound server|off
+pipewire|PipeWire media server|off
+EOF
+            ;;
+        misc) cat <<'EOF'
+dialog|Dialog TUI widgets|on
+whiptail|Newt TUI widgets|off
+expect|Automate interactive programs|off
+asciinema|Terminal session recorder|off
+cowsay|ASCII speech bubbles|off
+figlet|Large ASCII text|off
+fortune-mod|Fortune messages|off
+EOF
+            ;;
+    esac
+}
+
+rootfs_catalog_select_category() { # category title
+    local category="$1" title="$2" line tag desc state
+    local args=()
+    while IFS='|' read -r tag desc state; do
+        [ -n "$tag" ] || continue
+        args+=("$tag" "$desc" "$state")
+    done < <(rootfs_catalog_items "$category")
+    [ ${#args[@]} -gt 0 ] || return 0
+    tui_check "Additional packages: $title" "SPACE toggles packages; ENTER adds selection:" "${args[@]}"
+}
+
+rootfs_catalog_search() {
+    local q line tag desc state
+    q=$(tui_input "Search package catalogue" "Package name or description:" "") || return 0
+    [ -n "$q" ] || return 0
+    local args=()
+    for category in essentials shells editors development languages network server databases containers storage monitoring security hardware desktop misc; do
+        while IFS='|' read -r tag desc state; do
+            [ -n "$tag" ] || continue
+            if printf '%s %s\n' "$tag" "$desc" | grep -qi -- "$q"; then
+                args+=("$tag" "$desc" off)
+            fi
+        done < <(rootfs_catalog_items "$category")
+    done
+    if [ ${#args[@]} -eq 0 ]; then
+        tui_msg "Package catalogue" "No catalogue entries matched: $q"
+        return 0
+    fi
+    tui_check "Package search: $q" "SPACE toggles matches; ENTER adds selection:" "${args[@]}"
+}
+
+rootfs_package_catalog() { # distro existing-packages -> final package string
+    local distro="$1" selected="$2" choice added manual
+    while true; do
+        choice=$(tui_menu "Additional package catalogue [$distro]" \
+            "Browse categories, add presets, search, or enter native package names.\nCurrently selected: $(printf '%s' "$selected" | xargs -n1 2>/dev/null | sort -u | wc -l) packages" \
+            presets "Add a package preset" \
+            essentials "Essentials and base utilities" \
+            shells "Shells and terminal integration" \
+            editors "Editors" \
+            development "Development toolchain" \
+            languages "Programming languages" \
+            network "Networking and diagnostics" \
+            server "Server and service tools" \
+            databases "Database clients and servers" \
+            containers "Containers and virtualization" \
+            storage "Storage, filesystems and archives" \
+            monitoring "Monitoring and administration" \
+            security "Security and auditing" \
+            hardware "Hardware utilities" \
+            desktop "Desktop/X11 components" \
+            misc "Miscellaneous terminal utilities" \
+            search "Search the complete catalogue" \
+            manual "Enter native package names manually" \
+            review "Review selected package names" \
+            clear "Clear all additional packages" \
+            done "Finish package selection") || break
+        case "$choice" in
+            presets)
+                added=$(tui_check "Package presets" "SPACE toggles presets:" \
+                    rescue "Recovery tools: shell, editor, network, storage" off \
+                    developer "Compiler, Git, Python, debugger and build tools" off \
+                    server "SSH, sudo, logging, cron, time sync and firewall" off \
+                    network "Network troubleshooting toolkit" off \
+                    containers "Podman/Docker and OCI utilities" off \
+                    diagnostics "System monitoring and hardware inspection" off) || added=""
+                added=${added//\"/}
+                case " $added " in *" rescue "*) selected+=" bash nano vim curl wget iproute2 iputils-ping openssh-client rsync tar unzip xz-utils procps htop lsof" ;; esac
+                case " $added " in *" developer "*) selected+=" git build-essential make cmake ninja-build meson pkg-config gdb strace python3 python3-pip python3-venv" ;; esac
+                case " $added " in *" server "*) selected+=" openssh-server sudo cron rsyslog logrotate chrony nftables fail2ban" ;; esac
+                case " $added " in *" network "*) selected+=" curl wget dnsutils whois traceroute mtr-tiny nmap tcpdump netcat-openbsd socat iperf3 ethtool" ;; esac
+                case " $added " in *" containers "*) selected+=" podman buildah skopeo runc containerd docker.io docker-compose" ;; esac
+                case " $added " in *" diagnostics "*) selected+=" htop btop sysstat iotop iftop nethogs lsof ncdu tree jq pciutils usbutils lshw lm-sensors smartmontools" ;; esac
+                ;;
+            search) added=$(rootfs_catalog_search) || added=""; selected+=" ${added//\"/}" ;;
+            manual) manual=$(tui_input "Native package names" "Space-separated package names for $distro:" "") || manual=""; selected+=" $manual" ;;
+            review)
+                local review_text
+                review_text=$(printf '%s\n' "$selected" | xargs -n1 2>/dev/null | sed '/^$/d' | sort -u)
+                [ -n "$review_text" ] || review_text="No additional packages selected."
+                tui_msg "Selected rootfs packages" "$review_text" ;;
+            clear) tui_yesno "Clear packages" "Remove every currently selected additional package?" && selected="" ;;
+            done) break ;;
+            *)
+                local title="${choice^}"
+                added=$(rootfs_catalog_select_category "$choice" "$title") || added=""
+                selected+=" ${added//\"/}"
+                ;;
+        esac
+    done
+    # De-duplicate while preserving a stable installation order.
+    printf '%s\n' "$selected" | xargs -n1 2>/dev/null | awk 'NF && !seen[$0]++ {printf "%s ", $0}'
+}
+
 menu_rootfs() {
     while true; do
         local c
@@ -299,9 +615,11 @@ user creation). Install on the host first if you haven't:
                 locales "Locales" off tzdata "Timezone database" off) || return 0
             pkgs+=" ${sel//\"/}" ;;
     esac
-    local extra
-    extra=$(tui_input "Additional packages" "Extra native or Debian-style package names (optional):" "") || extra=""
-    pkgs="$pkgs $extra $init_pkgs"
+    # Browse a full, categorized package catalogue for every preset. The
+    # selected canonical names are translated by each distro backend where a
+    # mapping exists; the manual entry remains available for native names.
+    pkgs=$(rootfs_package_catalog "$distro" "$pkgs")
+    pkgs="$pkgs $init_pkgs"
 
     # ---- 6: mirror ----
     local def_mirror

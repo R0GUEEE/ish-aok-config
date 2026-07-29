@@ -576,3 +576,7 @@ sudo systui-update
 ```
 
 The updater fetches the current branch from `origin`, backs up and stashes local source changes, fast-forwards to the latest revision, and reruns `install.sh`. Use `--no-deps` to skip package dependency installation or `--force` to reset the source checkout after creating a backup.
+
+## RootFS additional package catalogue
+
+The RootFS Builder now opens a categorized package catalogue after preset selection. It supports space-to-select package lists, reusable rescue/developer/server/network/container/diagnostic presets, catalogue search, manual native package names, selection review, and de-duplication. Canonical package names are translated through the existing Alpine, Arch, Fedora, and Void package maps where available.
