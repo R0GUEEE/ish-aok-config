@@ -81,9 +81,26 @@ package_is_installed() { # <package-manager> <native-package>
     esac
 }
 
-install_native_packages() { # <package-manager> <required:0|1> <packages...>
-    local pm="$1" required="$2" pkg
-    shift 2
+PACKAGE_METADATA_REFRESHED=0
+
+refresh_package_metadata() { # <package-manager>
+    local pm="$1"
+    [ "$PACKAGE_METADATA_REFRESHED" = 0 ] || return 0
+    case "$pm" in
+        apt) apt-get update ;;
+        apk) apk update ;;
+        pacman) pacman -Sy --noconfirm ;;
+        dnf) dnf makecache -y ;;
+        zypper) zypper --non-interactive refresh ;;
+        xbps) xbps-install -S ;;
+        emerge) return 0 ;;
+    esac
+    PACKAGE_METADATA_REFRESHED=1
+}
+
+install_native_packages() { # <package-manager> <packages...>
+    local pm="$1" pkg
+    shift
     local missing=() failed=()
 
     for pkg in "$@"; do
@@ -92,11 +109,12 @@ install_native_packages() { # <package-manager> <required:0|1> <packages...>
     [ ${#missing[@]} -gt 0 ] || return 0
 
     info "Installing ${#missing[@]} missing package(s): ${missing[*]}"
+    refresh_package_metadata "$pm"
     case "$pm" in
         apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" ;;
         apk) apk add --no-progress "${missing[@]}" ;;
         pacman) pacman -S --noconfirm --needed "${missing[@]}" ;;
-        dnf) dnf install -y "${missing[@]}" ;;
+        dnf) dnf install -y --setopt=install_weak_deps=False "${missing[@]}" ;;
         zypper) zypper --non-interactive install --no-recommends "${missing[@]}" ;;
         xbps) xbps-install -y "${missing[@]}" ;;
         emerge) emerge --noreplace "${missing[@]}" ;;
@@ -109,7 +127,7 @@ install_native_packages() { # <package-manager> <required:0|1> <packages...>
             apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg" ;;
             apk) apk add --no-progress "$pkg" ;;
             pacman) pacman -S --noconfirm --needed "$pkg" ;;
-            dnf) dnf install -y "$pkg" ;;
+            dnf) dnf install -y --setopt=install_weak_deps=False "$pkg" ;;
             zypper) zypper --non-interactive install --no-recommends "$pkg" ;;
             xbps) xbps-install -y "$pkg" ;;
             emerge) emerge --noreplace "$pkg" ;;
@@ -117,10 +135,7 @@ install_native_packages() { # <package-manager> <required:0|1> <packages...>
     done
 
     if [ ${#failed[@]} -gt 0 ]; then
-        if [ "$required" = 1 ]; then
-            error "Required dependencies could not be installed: ${failed[*]}"
-        fi
-        warn "Optional feature dependencies unavailable on this distribution: ${failed[*]}"
+        error "Required dependencies could not be installed: ${failed[*]}"
     fi
 }
 
@@ -130,129 +145,53 @@ install_dependencies() {
         return 0
     fi
 
-    info "Checking systui and sub-tool dependencies..."
+    info "Checking the minimal systui runtime dependencies..."
 
-    local pm
+    local pm pkg_bash pkg_dialog pkg_coreutils pkg_grep pkg_sed pkg_awk
+    local pkg_find pkg_curl pkg_ca cmd core_missing=0
+    local required=()
     pm=$(detect_pm)
     [ -z "$pm" ] && error "Could not detect package manager. Please install manually."
 
-    # Required packages run the TUI, catalogue synchronization, updater, and
-    # archive/provisioning basics. Optional packages unlock rootfs, storage,
-    # network diagnostics, source builds, and the managed sub-tools.
+    # Package names are shared by the supported binary distributions. Gentoo
+    # uses category-qualified atoms.
     case "$pm" in
-        apt)
-            info "Detected APT (Debian/Ubuntu/Devuan)."
-            apt-get update
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux \
-                openssh-client curl wget git ca-certificates openssl \
-                man-db tzdata tar gzip xz-utils zstd bzip2 rsync gnupg file \
-                procps python3 python3-pip cpio unzip zip jq less sudo iproute2
-            install_native_packages "$pm" 0 \
-                debootstrap debian-archive-keyring ubuntu-keyring qemu-user-static \
-                binfmt-support arch-install-scripts parted fdisk e2fsprogs dosfstools \
-                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
-                ethtool dnsmasq iputils-ping dnsutils net-tools nmap traceroute mtr-tiny \
-                socat build-essential pkg-config cmake meson ninja-build autoconf \
-                automake libtool rustc cargo nodejs npm golang-go flatpak
-            ;;
-        apk)
-            info "Detected APK (Alpine)."
-            apk update
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux \
-                openssh curl wget git ca-certificates openssl man-db tzdata \
-                tar gzip xz zstd bzip2 rsync gnupg file procps \
-                python3 py3-pip cpio unzip zip jq less sudo iproute2
-            install_native_packages "$pm" 0 \
-                qemu-user-static parted e2fsprogs dosfstools btrfs-progs xfsprogs \
-                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
-                bind-tools net-tools nmap mtr socat build-base pkgconf cmake meson \
-                ninja autoconf automake libtool rust cargo nodejs npm go flatpak
-            warn "debootstrap is not normally packaged by Alpine; Debian-family builds use it only when available."
-            ;;
-        pacman)
-            info "Detected pacman (Arch)."
-            pacman -Sy --noconfirm
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux \
-                openssh curl wget git ca-certificates openssl man-db tzdata \
-                tar gzip xz zstd bzip2 rsync gnupg file procps-ng \
-                python python-pip cpio unzip zip jq less sudo iproute2
-            install_native_packages "$pm" 0 \
-                arch-install-scripts qemu-user-static parted e2fsprogs dosfstools \
-                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
-                ethtool dnsmasq iputils bind net-tools nmap traceroute mtr socat \
-                base-devel pkgconf cmake meson ninja autoconf automake libtool \
-                rust nodejs npm go flatpak
-            command -v debootstrap >/dev/null 2>&1 || warn "Install debootstrap from the AUR to build Debian-family rootfs images."
-            ;;
-        dnf)
-            info "Detected DNF (Fedora/RHEL)."
-            dnf makecache -y
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux \
-                openssh-clients curl wget git ca-certificates openssl man-db tzdata \
-                tar gzip xz zstd bzip2 rsync gnupg2 file procps-ng \
-                python3 python3-pip cpio unzip zip jq less sudo iproute
-            install_native_packages "$pm" 0 \
-                debootstrap qemu-user-static parted util-linux e2fsprogs dosfstools \
-                btrfs-progs xfsprogs cryptsetup lvm2 mdadm smartmontools hdparm \
-                ethtool dnsmasq iputils bind-utils net-tools nmap traceroute mtr \
-                socat gcc gcc-c++ make pkgconf-pkg-config cmake meson ninja-build \
-                autoconf automake libtool rust cargo nodejs npm golang flatpak
-            ;;
-        zypper)
-            info "Detected Zypper (openSUSE/SUSE)."
-            zypper --non-interactive refresh
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux openssh \
-                curl wget git ca-certificates openssl man man-pages timezone tar \
-                gzip xz zstd bzip2 rsync gpg2 file procps python3 python3-pip \
-                cpio unzip zip jq less sudo iproute2
-            install_native_packages "$pm" 0 \
-                qemu-linux-user parted e2fsprogs dosfstools btrfsprogs xfsprogs \
-                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
-                bind-utils net-tools nmap traceroute mtr socat gcc gcc-c++ make \
-                pkg-config cmake meson ninja autoconf automake libtool rust cargo \
-                nodejs npm go flatpak
-            ;;
-        xbps)
-            info "Detected XBPS (Void Linux)."
-            xbps-install -S
-            install_native_packages "$pm" 1 \
-                bash dialog findutils grep sed gawk coreutils util-linux openssh \
-                curl wget git ca-certificates openssl man-pages tzdata tar gzip xz \
-                zstd bzip2 rsync gnupg2 file procps-ng python3 python3-pip cpio \
-                unzip zip jq less sudo iproute2
-            install_native_packages "$pm" 0 \
-                qemu-user-static parted e2fsprogs dosfstools btrfs-progs xfsprogs \
-                cryptsetup lvm2 mdadm smartmontools hdparm ethtool dnsmasq iputils \
-                bind-utils net-tools nmap traceroute mtr socat base-devel pkg-config \
-                cmake meson ninja autoconf automake libtool rust cargo nodejs npm go \
-                flatpak
+        apt|apk|pacman|dnf|zypper|xbps)
+            pkg_bash=bash; pkg_dialog=dialog; pkg_coreutils=coreutils
+            pkg_grep=grep; pkg_sed=sed; pkg_awk=gawk; pkg_find=findutils
+            pkg_curl=curl; pkg_ca=ca-certificates
             ;;
         emerge)
-            info "Detected Portage (Gentoo)."
-            install_native_packages "$pm" 1 \
-                app-shells/bash dev-util/dialog sys-apps/findutils sys-apps/grep \
-                sys-apps/sed sys-apps/gawk sys-apps/coreutils sys-apps/util-linux \
-                net-misc/openssh net-misc/curl net-misc/wget dev-vcs/git \
-                app-misc/ca-certificates dev-libs/openssl sys-apps/man-db \
-                sys-libs/timezone-data app-arch/tar app-arch/gzip app-arch/xz-utils \
-                app-arch/zstd app-arch/bzip2 net-misc/rsync app-crypt/gnupg \
-                sys-apps/file sys-process/procps dev-lang/python app-arch/cpio \
-                app-arch/unzip app-arch/zip app-misc/jq sys-apps/less app-admin/sudo
-            install_native_packages "$pm" 0 \
-                sys-block/parted sys-fs/e2fsprogs sys-fs/dosfstools sys-fs/btrfs-progs \
-                sys-fs/xfsprogs sys-fs/cryptsetup sys-fs/lvm2 sys-fs/mdadm \
-                sys-apps/smartmontools sys-apps/hdparm sys-apps/ethtool net-dns/dnsmasq \
-                net-analyzer/nmap net-analyzer/traceroute net-analyzer/mtr net-misc/socat \
-                dev-util/cmake dev-build/meson dev-build/ninja dev-build/autoconf \
-                dev-build/automake dev-build/libtool dev-lang/rust dev-lang/nodejs \
-                dev-lang/go sys-apps/flatpak
+            pkg_bash=app-shells/bash; pkg_dialog=dev-util/dialog
+            pkg_coreutils=sys-apps/coreutils; pkg_grep=sys-apps/grep
+            pkg_sed=sys-apps/sed; pkg_awk=sys-apps/gawk
+            pkg_find=sys-apps/findutils; pkg_curl=net-misc/curl
+            pkg_ca=app-misc/ca-certificates
             ;;
     esac
+
+    info "Detected package manager: $pm"
+
+    # Test capabilities, not package names. This avoids installing gawk when a
+    # working awk is already present, or curl when wget already handles HTTPS.
+    command -v bash >/dev/null 2>&1 || required+=("$pkg_bash")
+    command -v dialog >/dev/null 2>&1 || required+=("$pkg_dialog")
+    command -v grep >/dev/null 2>&1 || required+=("$pkg_grep")
+    command -v sed >/dev/null 2>&1 || required+=("$pkg_sed")
+    command -v awk >/dev/null 2>&1 || required+=("$pkg_awk")
+    command -v find >/dev/null 2>&1 || required+=("$pkg_find")
+
+    for cmd in id mktemp head tr cut sort tee chmod rm date; do
+        command -v "$cmd" >/dev/null 2>&1 || core_missing=1
+    done
+    [ "$core_missing" = 0 ] || required+=("$pkg_coreutils")
+
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        required+=("$pkg_curl")
+    fi
+    package_is_installed "$pm" "$pkg_ca" || required+=("$pkg_ca")
+
+    install_native_packages "$pm" "${required[@]}"
 
     success "Dependency check complete"
 }
@@ -265,11 +204,14 @@ verify_dependencies() {
     info "Verifying dependencies..."
     
     local missing=""
-    for cmd in bash dialog sed awk grep cut tr tar gzip curl; do
+    for cmd in bash dialog sed awk grep cut tr head sort find; do
         if ! check_command "$cmd"; then
             missing+="$cmd "
         fi
     done
+    if ! check_command curl && ! check_command wget; then
+        missing+="curl-or-wget "
+    fi
     
     if [ -n "$missing" ]; then
         error "Missing required commands: $missing"

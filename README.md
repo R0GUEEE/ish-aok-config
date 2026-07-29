@@ -174,13 +174,15 @@ Each function:
 ### What `install.sh` Does
 
 1. **Detects package manager** (APT, APK, pacman, DNF, Zypper, XBPS, or Portage)
-2. **Installs only missing dependencies:**
+2. **Installs only missing runtime dependencies, without recommended/weak packages:**
    - bash
    - dialog
-   - Standard utilities (grep, sed, awk, etc.)
-   - Network tools (openssh, curl, wget)
-   - Essential files (ca-certificates, tzdata)
-   - Available rootfs, storage, diagnostics, archive, and source-build helpers
+   - Minimal text and file utilities (coreutils, grep, sed, awk, find)
+   - curl or an already-installed wget, plus CA certificates, for the synchronized software catalogue
+
+   Feature-specific tools for rootfs creation, storage, networking, archives,
+   builds, and managed applications are installed only when their menu action
+   explicitly requires them.
 
 3. **Replaces managed project files** in `/usr/local/lib/systui/` with the latest copy
 4. **Creates or replaces the executable** at `/usr/local/bin/systui`
