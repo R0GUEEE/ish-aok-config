@@ -216,6 +216,8 @@ unset -f curl
 check "menu_rootfs_bootstrap_tools function exists" function_exists menu_rootfs_bootstrap_tools
 check "bootstrap tools menu wired into menu_rootfs" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "bootstrap)  menu_rootfs_bootstrap_tools"
+check "bootstrap tools menu uses tui_check checklist" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "tui_check \"Rootfs Bootstrap Tools\""
 check "bootstrap tools menu includes debootstrap" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "debootstrap"
 check "bootstrap tools menu includes mmdebstrap" contains \
@@ -226,8 +228,8 @@ check "bootstrap tools menu includes proot" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "proot"
 check "bootstrap tools menu includes qemu-user-static" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "qemu-user-static"
-check "bootstrap tools status option shows install status" contains \
-    "$PROJECT_DIR/src/features/rootfs.sh" "bs_st"
+check "bootstrap tools menu maps packages via _bs_pkg" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "_bs_pkg"
 
 # Generated catalogue installers must be complete and syntactically valid.
 SYSTUI_AWESOME_CACHE="$tmpdir/awesome"

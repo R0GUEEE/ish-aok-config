@@ -1122,116 +1122,89 @@ rootfs_package_catalog() { # distro existing-packages -> final package string
 
 
 menu_rootfs_bootstrap_tools() {
-    # Status helper: prints [installed] or [not installed] beside each tool.
-    bs_st() { command -v "$1" >/dev/null 2>&1 && printf '[installed]' || printf '[not installed]'; }
+    # Returns the correct package name for a tool under the active package manager.
+    # Format per entry: tag|apt_pkg|pacman_pkg|dnf_pkg|apk_pkg
+    _bs_pkg() { # <tag>
+        local _tag="$1" _apt _pac _dnf _apk
+        while IFS='|' read -r t _apt _pac _dnf _apk _; do
+            [ "$t" = "$_tag" ] || continue
+            case "$PM" in
+                apt)    printf '%s' "${_apt:-$_tag}" ;;
+                pacman) printf '%s' "${_pac:-$_tag}" ;;
+                dnf|yum) printf '%s' "${_dnf:-$_tag}" ;;
+                apk)    printf '%s' "${_apk:-$_tag}" ;;
+                *)      printf '%s' "$_tag" ;;
+            esac
+            return
+        done <<< "$_BS_PKGS"
+        printf '%s' "$_tag"
+    }
 
-    # Tool catalogue: tag|label|apt_pkg|pacman_pkg|dnf_pkg|apk_pkg|description
-    local TOOLS="debootstrap|debootstrap|debootstrap|debootstrap|debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
-mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap||Modern APT-based bootstrap via fakechroot
-cdebootstrap|cdebootstrap|cdebootstrap||||Compiled minimal Debian bootstrap
-multistrap|multistrap|multistrap||||Configuration-driven multi-mirror APT bootstrap
-qemu-debootstrap|qemu-debootstrap (foreign arch)|qemu-user-static||||qemu-user-static wrapper for foreign-arch bootstraps
-schroot|schroot|schroot|schroot||schroot|Managed chroot sessions with profiles
-systemd-nspawn|systemd-nspawn|systemd-container|systemd|systemd-container||Lightweight container tool (part of systemd)
-pacstrap|pacstrap|arch-install-scripts|arch-install-scripts||arch-install-scripts|pacstrap and genfstab for Arch rootfs builds
-dnf|dnf (--installroot)|dnf|dnf|dnf||Fedora/RPM rootfs bootstrap via dnf --installroot
-zypper|zypper (--root)|zypper|zypper|zypper||openSUSE/SUSE rootfs bootstrap via zypper --root
-xbps-install|xbps-install (--rootdir)|xbps-tools||xbps|xbps-tools|Void Linux rootfs bootstrap via xbps-install --rootdir
-rinse|rinse|rinse||||RPM-based distro rootfs installer
-proot|proot (unprivileged chroot)|proot|proot|proot|proot|User-space chroot using ptrace (no root required)
-fakechroot|fakechroot|fakechroot|fakechroot||fakechroot|Library shim for chroot-like behaviour without root
-fakeroot|fakeroot|fakeroot|fakeroot|fakeroot|fakeroot|Fake root environment for package building
-qemu-user-static|qemu-user-static|qemu-user-static|qemu-user-static|qemu-user-static||QEMU user-mode emulation for foreign-arch chroots
-binfmt-support|binfmt-support|binfmt-support|||binfmt-support|Kernel binfmt_misc support (needed for qemu-user-static)
-zstd|zstd (archive util)|zstd|zstd|zstd|zstd|Zstandard compression (needed for Arch bootstrap tarballs)
-xz-utils|xz-utils (archive util)|xz-utils|xz-utils|xz|xz|XZ/LZMA compression (needed for Void/Gentoo tarballs)"
+    # Package name map: tag|apt|pacman|dnf|apk
+    local _BS_PKGS="debootstrap|debootstrap|debootstrap|debootstrap|debootstrap
+mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap|
+cdebootstrap|cdebootstrap|||
+multistrap|multistrap|||
+qemu-user-static|qemu-user-static|qemu-user-static|qemu-user-static|
+binfmt-support|binfmt-support|||binfmt-support
+arch-install-scripts|arch-install-scripts|arch-install-scripts||arch-install-scripts
+schroot|schroot|schroot||schroot
+systemd-container|systemd-container|systemd|systemd-container|
+rinse|rinse|||
+proot|proot|proot|proot|proot
+fakechroot|fakechroot|fakechroot||fakechroot
+fakeroot|fakeroot|fakeroot|fakeroot|fakeroot
+xbps-tools|xbps-tools||xbps|xbps-tools
+dnf|dnf|dnf|dnf|
+zypper|zypper|zypper|zypper|
+zstd|zstd|zstd|zstd|zstd
+xz-utils|xz-utils|xz-utils|xz|xz"
 
-    while true; do
-        local c
-        c=$(tui_menu "Rootfs Bootstrap Tools" \
-            "Install and manage rootfs bootstrap utilities:" \
-            all      "Install all bootstrap tools" \
-            deb      "Install Debian/Ubuntu tools  (debootstrap, mmdebstrap, cdebootstrap, multistrap)" \
-            rpm      "Install RPM tools  (dnf --installroot, zypper --root, rinse)" \
-            arch     "Install Arch tools  (pacstrap / arch-install-scripts)" \
-            cross    "Install cross-arch tools  (qemu-user-static, binfmt-support)" \
-            chroot   "Install chroot helpers  (proot, fakechroot, fakeroot, schroot, nspawn)" \
-            archive  "Install archive tools  (zstd, xz-utils)" \
-            status   "Show status of all bootstrap tools" \
-            back     "Back") || return 0
-        case "$c" in
-            all)
-                local _batch=()
-                case "$PM" in
-                    apt)    _batch=(debootstrap mmdebstrap cdebootstrap multistrap
-                                qemu-user-static binfmt-support schroot systemd-container
-                                arch-install-scripts rinse proot fakechroot fakeroot
-                                zstd xz-utils) ;;
-                    pacman) _batch=(debootstrap mmdebstrap arch-install-scripts
-                                qemu-user-static schroot systemd proot fakechroot fakeroot
-                                zstd xz-utils) ;;
-                    dnf)    _batch=(debootstrap mmdebstrap dnf systemd-container
-                                qemu-user-static proot fakeroot zstd xz) ;;
-                    apk)    _batch=(debootstrap schroot proot fakechroot fakeroot zstd xz) ;;
-                    *)      _batch=(debootstrap) ;;
-                esac
-                run_cmd "Install all bootstrap tools" pm_install "${_batch[@]}" ;;
-            deb)
-                local _deb_batch=()
-                case "$PM" in
-                    apt)    _deb_batch=(debootstrap mmdebstrap cdebootstrap multistrap) ;;
-                    pacman) _deb_batch=(debootstrap mmdebstrap) ;;
-                    dnf)    _deb_batch=(debootstrap mmdebstrap) ;;
-                    *)      _deb_batch=(debootstrap) ;;
-                esac
-                run_cmd "Install Debian bootstrap tools" pm_install "${_deb_batch[@]}" ;;
-            rpm)
-                case "$PM" in
-                    apt)    run_cmd "Install RPM bootstrap tools" pm_install dnf zypper rinse ;;
-                    pacman) run_cmd "Install RPM bootstrap tools" pm_install dnf zypper ;;
-                    dnf)    run_cmd "Install RPM bootstrap tools" pm_install dnf zypper ;;
-                    *)      tui_msg "RPM tools" "No RPM bootstrap package mapping for $PM." ;;
-                esac ;;
-            arch)
-                case "$PM" in
-                    apt|pacman) run_cmd "Install Arch bootstrap tools" pm_install arch-install-scripts ;;
-                    *)          tui_msg "Arch tools" "No Arch bootstrap package mapping for $PM." ;;
-                esac ;;
-            cross)
-                case "$PM" in
-                    apt)        run_cmd "Install cross-arch tools" pm_install qemu-user-static binfmt-support ;;
-                    pacman)     run_cmd "Install cross-arch tools" pm_install qemu-user-static ;;
-                    dnf)        run_cmd "Install cross-arch tools" pm_install qemu-user-static ;;
-                    *)          tui_msg "Cross-arch tools" "No cross-arch package mapping for $PM." ;;
-                esac ;;
-            chroot)
-                local _chroot_batch=()
-                case "$PM" in
-                    apt)    _chroot_batch=(proot fakechroot fakeroot schroot systemd-container) ;;
-                    pacman) _chroot_batch=(proot fakechroot fakeroot schroot systemd) ;;
-                    dnf)    _chroot_batch=(proot fakeroot systemd-container) ;;
-                    apk)    _chroot_batch=(proot fakechroot fakeroot schroot) ;;
-                    *)      _chroot_batch=(proot fakeroot) ;;
-                esac
-                run_cmd "Install chroot helpers" pm_install "${_chroot_batch[@]}" ;;
-            archive)
-                case "$PM" in
-                    apt|pacman) run_cmd "Install archive tools" pm_install zstd xz-utils ;;
-                    dnf|apk)    run_cmd "Install archive tools" pm_install zstd xz ;;
-                    *)          run_cmd "Install archive tools" pm_install zstd xz-utils ;;
-                esac ;;
-            status)
-                local _out="" _tag _lbl _apt _pac _dnf _apk _desc _st
-                while IFS='|' read -r _tag _lbl _apt _pac _dnf _apk _desc; do
-                    [ -z "$_tag" ] && continue
-                    _st=$(bs_st "$_tag")
-                    _out="${_out}$(printf '%-28s %s\n  %s\n' "$_lbl" "$_st" "$_desc")"$'\n'
-                done <<< "$TOOLS"
-                printf '%s' "$_out" > "$SYSTUI_TMP/bs-status.txt"
-                tui_text "Bootstrap tools status" "$SYSTUI_TMP/bs-status.txt" ;;
-            back|"") return 0 ;;
-        esac
+    # Build checklist args: tag  "label — description"  on/off
+    # Pre-select tools already installed; mark unavailable ones off.
+    local _args=()
+    while IFS='|' read -r _tag _lbl _desc; do
+        [ -n "$_tag" ] || continue
+        local _state
+        command -v "$_tag" >/dev/null 2>&1 && _state=on || _state=off
+        _args+=("$_tag" "$_lbl — $_desc" "$_state")
+    done <<'_CATALOGUE_'
+debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
+mmdebstrap|mmdebstrap|Modern APT-based bootstrap via fakechroot (supports any variant/arch)
+cdebootstrap|cdebootstrap|Compiled minimal Debian bootstrap (small and fast)
+multistrap|multistrap|Configuration-driven multi-mirror APT bootstrap
+qemu-user-static|qemu-user-static|QEMU user-mode emulation for foreign-arch chroots
+binfmt-support|binfmt-support|Kernel binfmt_misc support (required by qemu-user-static)
+arch-install-scripts|pacstrap|pacstrap and genfstab for Arch rootfs builds
+schroot|schroot|Managed chroot sessions with per-user profiles
+systemd-container|systemd-nspawn|Lightweight OS container tool (part of systemd)
+rinse|rinse|RPM-based distro rootfs installer (no rpm required)
+proot|proot|User-space chroot via ptrace — no root required
+fakechroot|fakechroot|Library shim for chroot-like behaviour without root
+fakeroot|fakeroot|Fake root environment for package building
+xbps-tools|xbps-install|Void Linux rootfs bootstrap via xbps-install --rootdir
+dnf|dnf|Fedora/RPM rootfs bootstrap via dnf --installroot
+zypper|zypper|openSUSE/SUSE rootfs bootstrap via zypper --root
+zstd|zstd|Zstandard compression (needed for Arch bootstrap tarballs)
+xz-utils|xz-utils|XZ/LZMA compression (needed for Void/Gentoo tarballs)
+_CATALOGUE_
+
+    local _sel
+    _sel=$(tui_check "Rootfs Bootstrap Tools" \
+        "SPACE toggles tools; ENTER installs selected:" \
+        "${_args[@]}") || return 0
+    [ -z "$_sel" ] && return 0
+
+    # Map selected display tags to real package names for this distro.
+    local _pkgs=()
+    for _tag in $_sel; do
+        local _pkg
+        _pkg=$(_bs_pkg "$_tag")
+        [ -n "$_pkg" ] && _pkgs+=("$_pkg")
     done
+    [ ${#_pkgs[@]} -eq 0 ] && return 0
+
+    run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"
 }
 menu_rootfs() {
     while true; do
