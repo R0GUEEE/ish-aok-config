@@ -7404,7 +7404,6 @@ menu_sysconfig() {
         local c
         c=$(tui_menu "System Configuration" \
             "Detected: package manager = $PM, init = $INIT" \
-            provision   "Provision tool (install, configure, and manage)" \
             packages    "Packages (catalogue, repositories, apt-fast...)" \
             shells      "Shells & plugins (frameworks, starship, history...)" \
             editors     "Editors (install + per-editor configuration)" \
@@ -7416,7 +7415,6 @@ menu_sysconfig() {
             performance "Advanced performance tuning" \
             back        "Back to main menu") || return 0
         case "$c" in
-            provision)   menu_provision_tool ;;
             packages)    menu_packages ;;
             shells)      menu_shells ;;
             editors)     menu_editors ;;

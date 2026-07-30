@@ -5,17 +5,17 @@ PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 SYSTUI_PROVISION_CONFIG="${TMPDIR:-/tmp}/systui-provision-menu-test.$$"
 SYSTUI_PROVISION_TOOL="${TMPDIR:-/tmp}/systui-provision-tool-test.$$"
 LIBDIR="$PROJECT_DIR"
-export SYSTUI_PROVISION_CONFIG
-export SYSTUI_PROVISION_TOOL LIBDIR
+export SYSTUI_PROVISION_CONFIG SYSTUI_PROVISION_TOOL LIBDIR
 trap 'rm -f -- "$SYSTUI_PROVISION_CONFIG" "$SYSTUI_PROVISION_TOOL"' EXIT
 
-. "$PROJECT_DIR/src/features/provision-system.sh"
+. "$PROJECT_DIR/src/features/ultimate-provision.sh"
 
-# Provisioning is reachable only from System Configuration, not Main Menu.
-! grep -q 'provision "Provision System' "$PROJECT_DIR/install.sh"
-grep -q 'provision.*"Provision tool (install, configure, and manage)"' \
-    "$PROJECT_DIR/src/features/sysconfig.sh"
-grep -q 'provision).*menu_provision_tool' "$PROJECT_DIR/src/features/sysconfig.sh"
+# Ultimate Provision is a first-class main-menu option.
+grep -q 'provision "Ultimate Provision (quick system setup)"' "$PROJECT_DIR/install.sh"
+grep -q 'provision)' "$PROJECT_DIR/install.sh"
+grep -q 'menu_ultimate_provision' "$PROJECT_DIR/install.sh"
+grep -q 'quick "Quick setup (install/update, review, and run)"' \
+    "$PROJECT_DIR/src/features/ultimate-provision.sh"
 
 SCRIPT_PROV_TZ=UTC
 SCRIPT_PROV_USER=tester
@@ -32,11 +32,12 @@ script_provision_load
 [ "$SCRIPT_PROV_NOPASS" = 1 ]
 
 # Configuration is parsed as data; it is never evaluated as shell code.
-printf 'SCRIPT_PROV_TZ=$(touch /tmp/systui-provision-menu-injected)\n' > "$SYSTUI_PROVISION_CONFIG"
-rm -f /tmp/systui-provision-menu-injected
+injected="${TMPDIR:-/tmp}/systui-provision-menu-injected.$$"
+printf 'SCRIPT_PROV_TZ=$(touch %s)\n' "$injected" > "$SYSTUI_PROVISION_CONFIG"
+rm -f -- "$injected"
 unset SCRIPT_PROV_TZ
 script_provision_load
-[ ! -e /tmp/systui-provision-menu-injected ]
+[ ! -e "$injected" ]
 
 [ "$(script_provision_tool_status)" = "not installed" ]
 script_provision_install_tool
@@ -45,4 +46,4 @@ script_provision_install_tool
 script_provision_remove_tool
 [ ! -e "$SYSTUI_PROVISION_TOOL" ]
 
-echo "ok - provision tool settings and lifecycle work safely"
+echo "ok - Ultimate Provision settings and lifecycle work safely"

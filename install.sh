@@ -291,6 +291,7 @@ main_menu() {
     while true; do
         local choice
         choice=$(tui_menu "Main Menu" "systui — choose a section:" \
+            provision "Ultimate Provision (quick system setup)" \
             rootfs    "Rootfs Builder (create minimal systems)" \
             config    "System Configuration" \
             awesome   "Awesome Linux (software catalogue)" \
@@ -298,6 +299,9 @@ main_menu() {
             quit      "Quit") || return 0
         
         case "$choice" in
+            provision)
+                menu_ultimate_provision
+                ;;
             rootfs)
                 menu_rootfs
                 ;;
@@ -342,7 +346,9 @@ systui is a terminal-based user interface for Linux system configuration,
 provisioning, and management.
 .SH FEATURES
 .IP "•" 2
-System Configuration: Provision tool, shells, repositories, packages
+Ultimate Provision: Install, configure, run, update, and remove quick setup
+.IP "•" 2
+System Configuration: Shells, repositories, packages, services, and users
 .IP "•" 2
 Dialog-based TUI: Easy navigation and configuration
 .SH REQUIREMENTS

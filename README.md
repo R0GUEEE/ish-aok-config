@@ -30,11 +30,10 @@ sudo systui
 ```bash
 sudo systui
 → Main Menu
-→ System Configuration → Provision Tool
-→ Install or update provision tool
-→ Configure (set timezone, username, hostname, sudo preference)
-→ Run installed provision tool
-→ Re-login to activate changes
+→ Ultimate Provision
+→ Configure quick-setup settings
+→ Quick setup (install/update, review, and run)
+→ Re-login to activate the new shell environment
 ```
 
 ## Project Structure
@@ -52,6 +51,7 @@ systui-project/
 │   │   └── common.sh         # Common utilities & package mapping
 │   │
 │   ├── provision/            # Provisioning functions (one per distro)
+│   │   ├── provision-ultimate.sh # Bundled Debian-family quick setup
 │   │   ├── alpine.sh         # Alpine 3.23+ (OpenRC)
 │   │   ├── arch.sh           # Arch Linux (systemd)
 │   │   ├── debian.sh         # Debian 12+ (systemd)
@@ -214,48 +214,29 @@ sudo systui
 
 # Navigate with arrow keys, Enter to select
 Main Menu
-  → System Configuration
-    → Provision Tool
-      → Install or update provision tool
-      → Configure provision tool
-      → Show tool status and settings
-      → Run installed provision tool
-      → Remove provision tool
+  → Ultimate Provision
+    → Quick setup (install/update, review, and run)
+    → Install or update Ultimate Provision
+    → Configure quick-setup settings
+    → Show status and current settings
+    → Run Ultimate Provision now
+    → Remove installed Ultimate Provision
 ```
 
-### Provisioning a Fresh System
+### Quick System Setup
 
 ```bash
 # On Debian, Ubuntu, Kali, Devuan, or another compatible APT system
 sudo systui
-→ System Configuration → Provision Tool → Install or Update Provision Tool
-→ Configure Provision Tool
-→ Timezone: UTC
-→ Username: admin
-→ Hostname: myserver
-→ Sudo: password required (or passwordless)
-→ Run Installed Provision Tool
-
-# Provisioning starts automatically
-# Takes 5-15 minutes depending on internet speed
-# Services automatically enabled and started
+→ Ultimate Provision → Configure quick-setup settings
+→ Quick setup (install/update, review, and run)
 ```
 
-### Manual Provisioning (Without TUI)
-
-For automation/CI-CD:
-
-```bash
-# Run the installed tool directly
-sudo provision-system
-
-# Pre-set environment variables for non-interactive mode
-TZ_NAME=UTC \
-TARGET_USER=admin \
-NEW_HOSTNAME=prod-server \
-SUDO_NOPASSWD=0 \
-sudo -E provision-system
-```
+Ultimate Provision configures the timezone, primary user, hostname, sudo policy,
+terminal package set, services, Bash environment, Neovim, and tmux. The main-menu
+option is available on every system, but execution is intentionally restricted
+to compatible APT-based distributions because the supplied script uses Debian
+packages and system configuration conventions.
 
 ## Configuration
 
@@ -469,19 +450,6 @@ The package catalogue now includes:
 - Rich package pages with install, remove, reinstall, metadata, installed-file,
   version-hold and package-integrity actions.
 - Package-name translation for APT, APK, Pacman and DNF environments.
-
-## Provision Tool
-
-The Provision Tool manager is under **System Configuration**. It installs or
-updates the bundled `src/provision/provision-system.sh` as
-`/usr/local/sbin/provision-system`, configures it, shows its status, runs it,
-and removes it. Settings are saved in `/etc/systui/provision-system.conf` and
-are retained when the tool is removed.
-
-Before execution, the menu shows a full review and asks for confirmation. The
-script installs its terminal toolset and configures services, shell defaults,
-Neovim, tmux, timezone, hostname, and sudo on compatible APT-based systems.
-
 
 ## Expanded rootfs and package management
 

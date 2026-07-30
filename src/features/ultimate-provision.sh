@@ -1,12 +1,12 @@
 #!/bin/bash
-# Install, configure, and manage the standalone provision tool.
+# Install, configure, and manage Ultimate Provision.
 
 script_provision_source_path() {
-    printf '%s\n' "$LIBDIR/src/provision/provision-system.sh"
+    printf '%s\n' "$LIBDIR/src/provision/provision-ultimate.sh"
 }
 
 script_provision_tool_path() {
-    printf '%s\n' "${SYSTUI_PROVISION_TOOL:-/usr/local/sbin/provision-system}"
+    printf '%s\n' "${SYSTUI_PROVISION_TOOL:-/usr/local/sbin/provision-ultimate}"
 }
 
 script_provision_tool_status() {
@@ -19,6 +19,14 @@ script_provision_tool_status() {
         printf '%s\n' "installed (current)"
     else
         printf '%s\n' "installed (update available or locally modified)"
+    fi
+}
+
+script_provision_system_status() {
+    if command -v apt-get >/dev/null 2>&1; then
+        printf '%s\n' "compatible APT system"
+    else
+        printf '%s\n' "unsupported (APT required)"
     fi
 }
 
@@ -51,7 +59,7 @@ script_provision_defaults() {
 }
 
 script_provision_config_file() {
-    printf '%s\n' "${SYSTUI_PROVISION_CONFIG:-/etc/systui/provision-system.conf}"
+    printf '%s\n' "${SYSTUI_PROVISION_CONFIG:-/etc/systui/provision-ultimate.conf}"
 }
 
 script_provision_load() {
@@ -85,10 +93,10 @@ script_provision_save() {
 }
 
 script_provision_review() {
-    local review_file="$SYSTUI_TMP/provision-system.review" tool
+    local review_file="$SYSTUI_TMP/provision-ultimate.review" tool
     tool=$(script_provision_tool_path)
     {
-        echo "PROVISION TOOL"
+        echo "ULTIMATE PROVISION"
         echo
         echo "Bundled source: $(script_provision_source_path)"
         echo "Installed tool: $tool"
@@ -96,6 +104,7 @@ script_provision_review() {
         echo "Detected system: ${DISTRO_PRETTY_NAME:-${DISTRO:-unknown}}"
         echo "Package manager: ${PM:-unknown}"
         echo "Init system: ${INIT:-unknown}"
+        echo "Compatibility: $(script_provision_system_status)"
         echo
         echo "Timezone: $SCRIPT_PROV_TZ"
         echo "Primary login: $SCRIPT_PROV_USER"
@@ -110,13 +119,13 @@ script_provision_review() {
         echo "services, shell environment, Neovim starter, and tmux configuration."
         echo "It supports Debian, Ubuntu, Kali, Devuan, and related APT systems."
     } > "$review_file"
-    tui_text "Provision Review" "$review_file" || true
+    tui_text "Ultimate Provision Review" "$review_file" || true
 }
 
 script_provision_configure() {
     local choice value selected
     while true; do
-        choice=$(tui_menu "Configure Provision Script" "Settings passed to the bundled provision script:" \
+        choice=$(tui_menu "Configure Ultimate Provision" "Settings passed to the bundled provision script:" \
             timezone "Timezone: $SCRIPT_PROV_TZ" \
             username "Primary login: $SCRIPT_PROV_USER" \
             hostname "Hostname: $SCRIPT_PROV_HOST" \
@@ -176,10 +185,10 @@ script_provision_install_action() {
     local status
     status=$(script_provision_tool_status)
     if [ "$status" != "not installed" ]; then
-        tui_yesno "Update Provision Tool" "Replace the installed provision tool with the bundled version?" || return 0
+        tui_yesno "Update Ultimate Provision" "Replace the installed provision tool with the bundled version?" || return 0
     fi
     if script_provision_install_tool; then
-        tui_msg "Provision Tool" "The provision tool is installed and current at:\n$(script_provision_tool_path)"
+        tui_msg "Ultimate Provision" "Ultimate Provision is installed and current at:\n$(script_provision_tool_path)"
     else
         tui_msg "Installation Failed" "Could not install the bundled provision tool."
     fi
@@ -190,12 +199,12 @@ script_provision_remove_action() {
     tool=$(script_provision_tool_path)
     config_file=$(script_provision_config_file)
     [ -e "$tool" ] || {
-        tui_msg "Provision Tool" "The provision tool is not installed."
+        tui_msg "Ultimate Provision" "The provision tool is not installed."
         return 0
     }
-    tui_yesno "Remove Provision Tool" "Remove the installed tool?\n\n$tool\n\nSaved configuration will be kept." || return 0
+    tui_yesno "Remove Ultimate Provision" "Remove the installed tool?\n\n$tool\n\nSaved configuration will be kept." || return 0
     if script_provision_remove_tool; then
-        tui_msg "Provision Tool Removed" "Removed $tool\n\nConfiguration was kept at:\n$config_file"
+        tui_msg "Ultimate Provision Removed" "Removed $tool\n\nConfiguration was kept at:\n$config_file"
     else
         tui_msg "Removal Failed" "Could not remove $tool"
     fi
@@ -209,10 +218,10 @@ script_provision_run() {
     local script rc=0
     script=$(script_provision_tool_path)
     [ -x "$script" ] || {
-        tui_msg "Provision Tool Not Installed" "Install the provision tool before running it."
+        tui_msg "Ultimate Provision Not Installed" "Install Ultimate Provision before running it."
         return 0
     }
-    if ! command -v apt-get >/dev/null 2>&1; then
+    if [ "$(script_provision_system_status)" != "compatible APT system" ]; then
         tui_msg "Unsupported System" "This provision script requires an APT-based Debian, Ubuntu, Kali, Devuan, or related system."
         return 0
     fi
@@ -239,19 +248,29 @@ script_provision_run() {
     return 0
 }
 
-menu_provision_tool() {
+script_provision_quick_setup() {
+    if [ "$(script_provision_tool_status)" != "installed (current)" ]; then
+        script_provision_install_action
+    fi
+    [ -x "$(script_provision_tool_path)" ] || return 0
+    script_provision_run
+}
+
+menu_ultimate_provision() {
     local choice
     script_provision_load
     while true; do
-        choice=$(tui_menu "Provision Tool" \
-            "Status: $(script_provision_tool_status)" \
-            install "Install or update provision tool" \
-            configure "Configure provision tool" \
-            status "Show tool status and settings" \
-            run "Run installed provision tool" \
-            remove "Remove provision tool" \
-            back "Back to System Configuration") || return 0
+        choice=$(tui_menu "Ultimate Provision" \
+            "Tool: $(script_provision_tool_status) | System: $(script_provision_system_status)" \
+            quick "Quick setup (install/update, review, and run)" \
+            install "Install or update Ultimate Provision" \
+            configure "Configure quick-setup settings" \
+            status "Show status and current settings" \
+            run "Run Ultimate Provision now" \
+            remove "Remove installed Ultimate Provision" \
+            back "Back to main menu") || return 0
         case "$choice" in
+            quick) script_provision_quick_setup ;;
             install) script_provision_install_action ;;
             configure) script_provision_configure ;;
             status) script_provision_status ;;
@@ -262,4 +281,4 @@ menu_provision_tool() {
     done
 }
 
-export -f menu_provision_tool
+export -f menu_ultimate_provision
