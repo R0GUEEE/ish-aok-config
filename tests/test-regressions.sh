@@ -327,5 +327,43 @@ check "flatpak guard uses menu_flatpak_install" contains \
 check "snap guard uses menu_snap_install" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "menu_snap_install"
 
+# ---- Popular repositories expansions --------------------------------------
+# APT_POPULAR new entries
+check "APT_POPULAR has kubernetes repo"      contains "$PROJECT_DIR/src/features/sysconfig.sh" "pkgs.k8s.io/core:/stable:/v1.32/deb"
+check "APT_POPULAR has github-cli repo"      contains "$PROJECT_DIR/src/features/sysconfig.sh" "cli.github.com/packages/githubcli-archive-keyring.gpg"
+check "APT_POPULAR has brave repo"           contains "$PROJECT_DIR/src/features/sysconfig.sh" "brave-browser-apt-release.s3.brave.com"
+check "APT_POPULAR has sublime-text repo"    contains "$PROJECT_DIR/src/features/sysconfig.sh" "download.sublimetext.com"
+check "APT_POPULAR has signal repo"          contains "$PROJECT_DIR/src/features/sysconfig.sh" "updates.signal.org/desktop/apt"
+check "APT_POPULAR has spotify repo"         contains "$PROJECT_DIR/src/features/sysconfig.sh" "repository.spotify.com"
+check "APT_POPULAR has influxdb repo"        contains "$PROJECT_DIR/src/features/sysconfig.sh" "repos.influxdata.com/stable"
+check "APT_POPULAR has elastic repo"         contains "$PROJECT_DIR/src/features/sysconfig.sh" "artifacts.elastic.co/packages/8.x/apt"
+check "APT_POPULAR has cloudflared repo"     contains "$PROJECT_DIR/src/features/sysconfig.sh" "pkg.cloudflare.com/cloudflared"
+check "APT_POPULAR has virtualbox repo"      contains "$PROJECT_DIR/src/features/sysconfig.sh" "download.virtualbox.org/virtualbox/debian"
+
+# DNF new entries
+check "DNF popular has kubernetes"           contains "$PROJECT_DIR/src/features/sysconfig.sh" "pkgs.k8s.io/core:/stable:/v1.32/rpm"
+check "DNF popular has github-cli"           contains "$PROJECT_DIR/src/features/sysconfig.sh" "cli.github.com/packages/rpm/gh-cli.repo"
+check "DNF popular has grafana"              contains "$PROJECT_DIR/src/features/sysconfig.sh" "rpm.grafana.com"
+check "DNF popular has hashicorp"            contains "$PROJECT_DIR/src/features/sysconfig.sh" "rpm.releases.hashicorp.com"
+check "DNF popular has brave"                contains "$PROJECT_DIR/src/features/sysconfig.sh" "brave-browser-rpm-release.s3.brave.com"
+check "DNF popular has influxdb"             contains "$PROJECT_DIR/src/features/sysconfig.sh" "repos.influxdata.com/rhel"
+check "DNF popular has elastic"              contains "$PROJECT_DIR/src/features/sysconfig.sh" "artifacts.elastic.co/packages/8.x/yum"
+check "DNF popular has postgres"             contains "$PROJECT_DIR/src/features/sysconfig.sh" "download.postgresql.org/pub/repos/yum"
+
+# Pacman new entries
+check "Pacman popular has blackarch"         contains "$PROJECT_DIR/src/features/sysconfig.sh" "blackarch.org/strap.sh"
+check "Pacman popular has cachyos"           contains "$PROJECT_DIR/src/features/sysconfig.sh" "mirror.cachyos.org"
+check "Pacman popular has endeavouros"       contains "$PROJECT_DIR/src/features/sysconfig.sh" "mirror.endeavouros.com"
+
+# zypper case added
+check "zypper popular repos case exists"     contains "$PROJECT_DIR/src/features/sysconfig.sh" "zypper)"
+check "zypper packman repo present"          contains "$PROJECT_DIR/src/features/sysconfig.sh" "ftp.gwdg.de/pub/linux/misc/packman"
+check "zypper kubernetes repo present"       contains "$PROJECT_DIR/src/features/sysconfig.sh" "pkgs.k8s.io/core:/stable:/v1.32/rpm"
+check "zypper grafana repo present"          contains "$PROJECT_DIR/src/features/sysconfig.sh" "rpm.grafana.com"
+
+# APK edge repos
+check "APK edge-main option present"         contains "$PROJECT_DIR/src/features/sysconfig.sh" "edge-main"
+check "APK edge-community option present"    contains "$PROJECT_DIR/src/features/sysconfig.sh" "edge-community"
+
 printf '1..%d\n' "$checks"
 [ "$failures" -eq 0 ]

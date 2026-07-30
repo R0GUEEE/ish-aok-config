@@ -443,7 +443,17 @@ mozilla|Mozilla (Firefox .deb, no snap)|https://packages.mozilla.org/apt/repo-si
 postgres|PostgreSQL (PGDG)|https://www.postgresql.org/media/keys/ACCC4CF8.asc|asc|deb [signed-by=\$K] https://apt.postgresql.org/pub/repos/apt \$CODENAME-pgdg main
 tailscale|Tailscale VPN|https://pkgs.tailscale.com/stable/\$ID/\$CODENAME.noarmor.gpg|bin|deb [signed-by=\$K] https://pkgs.tailscale.com/stable/\$ID \$CODENAME main
 grafana|Grafana (monitoring)|https://apt.grafana.com/gpg.key|asc|deb [signed-by=\$K] https://apt.grafana.com stable main
-hashicorp|HashiCorp (terraform, vault)|https://apt.releases.hashicorp.com/gpg|asc|deb [arch=\$ARCH signed-by=\$K] https://apt.releases.hashicorp.com \$CODENAME main"
+hashicorp|HashiCorp (terraform, vault, nomad)|https://apt.releases.hashicorp.com/gpg|asc|deb [arch=\$ARCH signed-by=\$K] https://apt.releases.hashicorp.com \$CODENAME main
+kubernetes|Kubernetes (kubectl, kubeadm, kubelet)|https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key|asc|deb [arch=\$ARCH signed-by=\$K] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /
+github-cli|GitHub CLI (gh)|https://cli.github.com/packages/githubcli-archive-keyring.gpg|bin|deb [arch=\$ARCH signed-by=\$K] https://cli.github.com/packages stable main
+brave|Brave Browser|https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg|bin|deb [arch=amd64 signed-by=\$K] https://brave-browser-apt-release.s3.brave.com/ stable main
+sublime-text|Sublime Text editor|https://download.sublimetext.com/sublimehq-pub.gpg|asc|deb [arch=amd64 signed-by=\$K] https://download.sublimetext.com/ apt/stable/
+signal|Signal Desktop messenger|https://updates.signal.org/desktop/apt/keys.asc|asc|deb [arch=amd64 signed-by=\$K] https://updates.signal.org/desktop/apt xenial main
+spotify|Spotify music client|https://download.spotify.com/debian/pubkey_6224F9941A8AA6D1.gpg|bin|deb [arch=amd64 signed-by=\$K] https://repository.spotify.com stable non-free
+influxdb|InfluxDB (time-series metrics)|https://repos.influxdata.com/influxdata-archive_compat.key|asc|deb [arch=\$ARCH signed-by=\$K] https://repos.influxdata.com/stable stable main
+elastic|Elastic Stack (Elasticsearch, Kibana, Logstash)|https://artifacts.elastic.co/GPG-KEY-elasticsearch|asc|deb [arch=\$ARCH signed-by=\$K] https://artifacts.elastic.co/packages/8.x/apt stable main
+cloudflared|Cloudflare (cloudflared, WARP)|https://pkg.cloudflare.com/cloudflare-main.gpg|bin|deb [arch=\$ARCH signed-by=\$K] https://pkg.cloudflare.com/cloudflared \$CODENAME main
+virtualbox|Oracle VirtualBox|https://www.virtualbox.org/download/oracle_vbox_2016.asc|asc|deb [arch=amd64 signed-by=\$K] https://download.virtualbox.org/virtualbox/debian \$CODENAME contrib"
 
 repo_add_apt_popular() { # <tag ...>
     # shellcheck disable=SC2034  # consumed via eval'd repo-line templates
@@ -938,10 +948,18 @@ repo_popular() {
         dnf)
             local sel
             sel=$(tui_check "Popular repositories (dnf)" "SPACE toggles, ENTER applies:" \
-                rpmfusion "RPM Fusion free + nonfree" off \
-                docker    "Docker CE" off \
-                vscode    "Visual Studio Code" off \
-                tailscale "Tailscale VPN" off) || return 0
+                rpmfusion  "RPM Fusion free + nonfree" off \
+                docker     "Docker CE" off \
+                vscode     "Visual Studio Code" off \
+                tailscale  "Tailscale VPN" off \
+                kubernetes "Kubernetes (kubectl, kubeadm)" off \
+                github-cli "GitHub CLI (gh)" off \
+                grafana    "Grafana (monitoring)" off \
+                hashicorp  "HashiCorp (terraform, vault, nomad)" off \
+                brave      "Brave Browser" off \
+                postgres   "PostgreSQL (PGDG)" off \
+                influxdb   "InfluxDB (time-series metrics)" off \
+                elastic    "Elastic Stack (Elasticsearch, Kibana)" off) || return 0
             sel=${sel//\"/}
             local t
             for t in $sel; do
@@ -958,13 +976,46 @@ repo_popular() {
                             > /etc/yum.repos.d/systui-vscode.repo ;;
                     tailscale)
                         run_cmd "Tailscale repo" dnf config-manager --add-repo https://pkgs.tailscale.com/stable/fedora/tailscale.repo ;;
+                    kubernetes)
+                        printf '[kubernetes]\nname=Kubernetes\nbaseurl=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/\nenabled=1\ngpgcheck=1\ngpgkey=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/repodata/repomd.xml.key\n' \
+                            > /etc/yum.repos.d/systui-kubernetes.repo ;;
+                    github-cli)
+                        run_cmd "GitHub CLI repo" bash -c \
+                            'dnf install -y dnf-plugins-core 2>/dev/null
+                             dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo' ;;
+                    grafana)
+                        printf '[grafana]\nname=grafana\nbaseurl=https://rpm.grafana.com\nrepo_gpgcheck=1\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.grafana.com/gpg.key\n' \
+                            > /etc/yum.repos.d/systui-grafana.repo ;;
+                    hashicorp)
+                        run_cmd "HashiCorp repo" bash -c \
+                            'dnf install -y dnf-plugins-core 2>/dev/null
+                             dnf config-manager --add-repo https://rpm.releases.hashicorp.com/fedora/hashicorp.repo' ;;
+                    brave)
+                        run_cmd "Brave Browser repo" bash -c \
+                            'dnf install -y dnf-plugins-core 2>/dev/null
+                             dnf config-manager --add-repo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
+                             rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc' ;;
+                    postgres)
+                        run_cmd "PostgreSQL PGDG repo" bash -c \
+                            'dnf install -y "https://download.postgresql.org/pub/repos/yum/reporpms/F-$(rpm -E %fedora)-x86_64/pgdg-fedora-repo-latest.noarch.rpm" 2>/dev/null || \
+                             dnf install -y "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$(rpm -E %rhel)-x86_64/pgdg-redhat-repo-latest.noarch.rpm"' ;;
+                    influxdb)
+                        printf '[influxdb]\nname=InfluxDB Repository\nbaseurl=https://repos.influxdata.com/rhel/$releasever/stable/$basearch/\nenabled=1\ngpgcheck=1\ngpgkey=https://repos.influxdata.com/influxdata-archive_compat.key\n' \
+                            > /etc/yum.repos.d/systui-influxdb.repo ;;
+                    elastic)
+                        rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch 2>>"$LOGFILE"
+                        printf '[elasticsearch-8.x]\nname=Elasticsearch 8.x packages\nbaseurl=https://artifacts.elastic.co/packages/8.x/yum\ngpgcheck=1\ngpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch\nenabled=1\nautorefresh=1\ntype=rpm-md\n' \
+                            > /etc/yum.repos.d/systui-elastic.repo ;;
                 esac
             done ;;
         pacman)
             local sel
             sel=$(tui_check "Popular repositories (pacman)" "SPACE toggles, ENTER applies:" \
-                multilib "multilib (32-bit libs: Steam, Wine)" off \
-                chaotic  "Chaotic-AUR (prebuilt AUR packages)" off) || return 0
+                multilib    "multilib (32-bit libs: Steam, Wine)" off \
+                chaotic     "Chaotic-AUR (prebuilt AUR packages)" off \
+                blackarch   "BlackArch (security research tools)" off \
+                cachyos     "CachyOS (performance-optimised packages)" off \
+                endeavouros "EndeavourOS (EndeavourOS packages)" off) || return 0
             sel=${sel//\"/}
             local t
             for t in $sel; do
@@ -981,16 +1032,111 @@ repo_popular() {
                              'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'"
                         grep -q '^\[chaotic-aur\]' /etc/pacman.conf || \
                             printf '\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist\n' >> /etc/pacman.conf ;;
+                    blackarch)
+                        run_cmd "BlackArch repo" bash -c \
+                            'curl -O https://blackarch.org/strap.sh
+                             sha1sum strap.sh
+                             chmod +x strap.sh && ./strap.sh
+                             rm -f strap.sh' ;;
+                    cachyos)
+                        run_cmd "CachyOS repo" bash -c \
+                            'pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com
+                             pacman-key --lsign-key F3B607488DB35A47
+                             pacman -U --noconfirm \
+                               https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-3-1-any.pkg.tar.zst \
+                               https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-18-1-any.pkg.tar.zst'
+                        grep -q '^\[cachyos\]' /etc/pacman.conf || \
+                            printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf ;;
+                    endeavouros)
+                        run_cmd "EndeavourOS repo" bash -c \
+                            'pacman-key --recv-key 739B8C2E6EB7638D --keyserver keyserver.ubuntu.com
+                             pacman-key --lsign-key 739B8C2E6EB7638D
+                             pacman -U --noconfirm https://mirror.endeavouros.com/extra/endeavouros-keyring-1-1-any.pkg.tar.zst \
+                               https://mirror.endeavouros.com/extra/endeavouros-mirrorlist-1.9-1-any.pkg.tar.zst'
+                        grep -q '^\[endeavouros\]' /etc/pacman.conf || \
+                            printf '\n[endeavouros]\nInclude = /etc/pacman.d/endeavouros-mirrorlist\n' >> /etc/pacman.conf ;;
                 esac
             done
             [ -n "${sel// }" ] && run_cmd "pacman -Syy" pacman -Syy ;;
+        zypper)
+            local sel
+            sel=$(tui_check "Popular repositories (zypper)" "SPACE toggles, ENTER applies:" \
+                packman    "Packman (multimedia codecs, libdvdcss)" off \
+                vscode     "Visual Studio Code" off \
+                github-cli "GitHub CLI (gh)" off \
+                docker     "Docker CE" off \
+                tailscale  "Tailscale VPN" off \
+                brave      "Brave Browser" off \
+                kubernetes "Kubernetes (kubectl, kubeadm)" off \
+                grafana    "Grafana (monitoring)" off \
+                hashicorp  "HashiCorp (terraform, vault)" off \
+                postgres   "PostgreSQL (PGDG)" off) || return 0
+            sel=${sel//\"/}
+            local t
+            for t in $sel; do
+                case "$t" in
+                    packman)
+                        run_cmd "Packman repo" bash -c \
+                            '. /etc/os-release
+                             case "$ID" in
+                               *tumbleweed*|*slowroll*) REL=openSUSE_Tumbleweed ;;
+                               *) REL="openSUSE_Leap_${VERSION_ID}" ;;
+                             esac
+                             zypper ar -cfp 90 "https://ftp.gwdg.de/pub/linux/misc/packman/suse/${REL}/" packman 2>/dev/null || true
+                             zypper --gpg-auto-import-keys refresh packman' ;;
+                    vscode)
+                        run_cmd "VS Code repo" bash -c \
+                            'rpm --import https://packages.microsoft.com/keys/microsoft.asc 2>/dev/null
+                             zypper ar -f https://packages.microsoft.com/yumrepos/vscode vscode 2>/dev/null || zypper mr --refresh vscode' ;;
+                    github-cli)
+                        run_cmd "GitHub CLI repo" bash -c \
+                            'zypper ar https://cli.github.com/packages/rpm/gh-cli.repo gh-cli 2>/dev/null || zypper mr --refresh gh-cli
+                             zypper --gpg-auto-import-keys refresh gh-cli' ;;
+                    docker)
+                        run_cmd "Docker CE repo" bash -c \
+                            '. /etc/os-release
+                             case "$ID" in
+                               opensuse-tumbleweed) REL=opensuse ;;
+                               *) REL=sles ;;
+                             esac
+                             zypper ar "https://download.docker.com/linux/${REL}/docker-ce.repo" docker-ce 2>/dev/null || zypper mr --refresh docker-ce
+                             zypper --gpg-auto-import-keys refresh docker-ce' ;;
+                    tailscale)
+                        run_cmd "Tailscale repo" bash -c \
+                            'zypper ar https://pkgs.tailscale.com/stable/opensuse/tailscale.repo tailscale 2>/dev/null || zypper mr --refresh tailscale
+                             zypper --gpg-auto-import-keys refresh tailscale' ;;
+                    brave)
+                        run_cmd "Brave Browser repo" bash -c \
+                            'rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc 2>/dev/null
+                             zypper ar https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo brave-browser 2>/dev/null || zypper mr --refresh brave-browser' ;;
+                    kubernetes)
+                        run_cmd "Kubernetes repo" bash -c \
+                            'zypper ar https://pkgs.k8s.io/core:/stable:/v1.32/rpm/ kubernetes 2>/dev/null || zypper mr --refresh kubernetes
+                             zypper --gpg-auto-import-keys refresh kubernetes' ;;
+                    grafana)
+                        run_cmd "Grafana repo" bash -c \
+                            'zypper ar https://rpm.grafana.com grafana 2>/dev/null || zypper mr --refresh grafana
+                             zypper --gpg-auto-import-keys refresh grafana' ;;
+                    hashicorp)
+                        run_cmd "HashiCorp repo" bash -c \
+                            'zypper ar https://rpm.releases.hashicorp.com/opensuse/hashicorp.repo hashicorp 2>/dev/null || zypper mr --refresh hashicorp
+                             zypper --gpg-auto-import-keys refresh hashicorp' ;;
+                    postgres)
+                        run_cmd "PostgreSQL PGDG repo" bash -c \
+                            '. /etc/os-release
+                             zypper ar "https://download.postgresql.org/pub/repos/yum/reporpms/OpenSUSE-${VERSION_ID}-x86_64/pgdg-opensuse-repo-latest.noarch.rpm" postgres-pgdg 2>/dev/null || true' ;;
+                esac
+            done
+            [ -n "${sel// }" ] && run_cmd "zypper refresh" zypper refresh ;;
         apk)
             local base rel sel
             base=$(awk -F'/alpine' '/alpine/{print $1"/alpine"; exit}' /etc/apk/repositories)
             rel=$(grep -o 'v[0-9.]*\|edge' /etc/apk/repositories | head -1)
             sel=$(tui_check "Popular repositories (apk)" "SPACE toggles, ENTER applies:" \
-                community "community ($rel)" "$(grep -q "$rel/community" /etc/apk/repositories && echo on || echo off)" \
-                testing   "edge/testing (bleeding edge!)" "$(grep -q edge/testing /etc/apk/repositories && echo on || echo off)") || return 0
+                community      "community ($rel)" "$(grep -q "$rel/community" /etc/apk/repositories && echo on || echo off)" \
+                testing        "edge/testing (bleeding edge!)" "$(grep -q edge/testing /etc/apk/repositories && echo on || echo off)" \
+                edge-main      "edge/main (newer packages than stable)" "$(grep -q edge/main /etc/apk/repositories && echo on || echo off)" \
+                edge-community "edge/community (newer community packages)" "$(grep -q edge/community /etc/apk/repositories && echo on || echo off)") || return 0
             sel=${sel//\"/}
             case " $sel " in *" community "*)
                 grep -q "$rel/community" /etc/apk/repositories || echo "$base/$rel/community" >> /etc/apk/repositories ;;
@@ -998,6 +1144,14 @@ repo_popular() {
             case " $sel " in *" testing "*)
                 grep -q edge/testing /etc/apk/repositories || { echo "$base/edge/testing" >> /etc/apk/repositories
                     warn "edge/testing on stable can break dependencies — prefer @testing pins."; } ;;
+            esac
+            case " $sel " in *" edge-main "*)
+                grep -q edge/main /etc/apk/repositories || { echo "$base/edge/main" >> /etc/apk/repositories
+                    warn "edge/main on stable may introduce incompatible package versions."; } ;;
+            esac
+            case " $sel " in *" edge-community "*)
+                grep -q edge/community /etc/apk/repositories || { echo "$base/edge/community" >> /etc/apk/repositories
+                    warn "edge/community on stable may introduce incompatible package versions."; } ;;
             esac
             show_warnings
             run_cmd "apk update" apk update ;;
