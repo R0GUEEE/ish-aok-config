@@ -3728,6 +3728,42 @@ menu_fisher() { # <user> <home>
 }
 
 # ---- Nushell manager ----
+
+# Core plugins (officially maintained, distributed with Nushell, install via cargo)
+NU_PLUGINS_CORE="nu_plugin_polars|Polars DataFrames — fast columnar operations via the Polars library
+nu_plugin_formats|Formats — EML, ICS, INI, plist and VCF file format support
+nu_plugin_gstat|gstat — structured Git repository status as Nu data
+nu_plugin_query|Query — SQL, XML, JSON, HTML selector and webpage metadata queries
+nu_plugin_inc|inc — increment a value or semantic version number"
+
+# Popular third-party plugins (curated from awesome-nu, 0.110+ compatible)
+NU_PLUGINS_POPULAR="nu_plugin_highlight|Syntax highlighting for code snippets (cptpiepmatz)
+nu_plugin_dns|DNS queries returned as structured Nu data (dead10ck)
+nu_plugin_emoji|Emoji search and insertion (fdncred)
+nu_plugin_file|Identify file types using libmagic — like the file(1) command (fdncred)
+nu_plugin_json_path|JSONPath queries on JSON data (fdncred)
+nu_plugin_parquet|Read/write Apache Parquet columnar files (fdncred)
+nu_plugin_regex|Regex search with named capture groups as records (fdncred)
+nu_plugin_semver|Parse and compare SemVer version strings (abusch)
+nu_plugin_skim|skim (sk) fuzzy-finder integrated with Nu structured data (idanarye)
+nu_plugin_compress|Compress/decompress via zstd, gzip, bzip2 and xz (yybit)
+nu_plugin_clipboard|Read/write the system clipboard (FMotalleb)
+nu_plugin_desktop_notifications|Send desktop notifications from Nu scripts (FMotalleb)
+nu_plugin_port_extension|List active connections and scan ports (FMotalleb)
+nu_plugin_image|Display PNG images inline in the terminal (FMotalleb)
+nu_plugin_hashes|63 cryptographic hash functions as Nu commands (ArmoredPony)
+nu_plugin_hmac|HMAC message authentication codes (fnuttens)
+nu_plugin_net|Enumerate network interfaces as structured data (fennewald)
+nu_plugin_mongo|Query MongoDB databases (WindSoilder)
+nu_plugin_prometheus|Query Prometheus metrics as Nu tables (drbrain)
+nu_plugin_x509|Parse and inspect X.509 / TLS certificates (yybit)
+nu_plugin_bson|BSON (Binary JSON) format encode/decode (Kissaki)
+nu_plugin_hcl|HashiCorp Configuration Language (HCL) parser (Yethal)
+nu_plugin_handlebars|Render Handlebars templates from Nu values (idanarye)
+nu_plugin_vec|Vector math operations on Nu lists (PhotonBursted)
+nu_plugin_ulid|Generate and parse ULID identifiers (lizclipse)
+nu_plugin_ws|Stream WebSocket output as Nu structured data (alex-kattathra-johnson)"
+
 nu_quote() {
     local s="$1"
     s=${s//\\/\\\\}
@@ -3744,20 +3780,87 @@ nu_run_as() { # user command
     su - "$u" -c "$(nu_cmd "$cmd")"
 }
 
+# Return the cargo bin directory for a given user
+nu_plugin_cargo_bin() {
+    local u="$1"
+    su - "$u" -c 'printf "%s" "${CARGO_HOME:-$HOME/.cargo}/bin"' 2>/dev/null
+}
+
+# Install a checklist of nu plugins via cargo and auto-register them
+nu_plugin_install_from_list() { # title list-string user home
+    local title="$1" list="$2" u="$3" home_dir="$4"
+    local args=() crate desc
+    while IFS='|' read -r crate desc; do
+        [ -z "$crate" ] && continue
+        args+=("$crate" "$desc" off)
+    done <<< "$list"
+    [ ${#args[@]} -eq 0 ] && { tui_msg "Empty" "No plugins in this list."; return; }
+    local sel
+    sel=$(tui_check "$title — $u" \
+        "SPACE selects plugins to install via Cargo, ENTER confirms.\nRequires the Rust toolchain (cargo):" \
+        "${args[@]}") || return 0
+    sel=${sel//\"/}
+    [ -z "${sel// }" ] && return
+    command -v cargo >/dev/null 2>&1 || {
+        tui_yesno "Cargo missing" "Cargo (Rust toolchain) is not installed. Install it now?" || return
+        pm_install cargo rustc
+        command -v cargo >/dev/null 2>&1 || { tui_msg "Error" "Cargo could not be installed."; return; }
+    }
+    local cargo_bin; cargo_bin=$(nu_plugin_cargo_bin "$u")
+    local p
+    for p in $sel; do
+        run_cmd "cargo install $p" su - "$u" -c "cargo install '$p' --locked 2>&1 || cargo install '$p'"
+        local bin="$cargo_bin/$p"
+        if su - "$u" -c "[ -x '$bin' ]" 2>/dev/null; then
+            run_cmd "plugin add $p" nu_run_as "$u" "plugin add $(nu_quote "$bin")"
+        else
+            warn "Binary $bin not found after install — run 'plugin add <path>' manually in Nu."
+        fi
+    done
+    show_warnings
+    tui_msg "Done" "Selected plugins installed and registered.\nRestart Nu (or run 'plugin use <name>') to load them."
+}
+
+# Re-register all currently known plugin executables (needed after a Nu update)
+nu_plugin_update_all() { # user
+    local u="$1"
+    local installed
+    installed=$(nu_run_as "$u" \
+        'plugin list | get filename | each { |f| $f } | str join (char newline)' 2>/dev/null) || {
+        tui_msg "No plugins" "No plugins are registered for $u, or Nu is not installed."; return;
+    }
+    [ -z "$installed" ] && { tui_msg "No plugins" "No plugins are registered for $u."; return; }
+    local p
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        [ -f "$p" ] || { warn "Plugin binary not found, skipping: $p"; continue; }
+        run_cmd "Re-register $p" nu_run_as "$u" "plugin add $(nu_quote "$p")"
+    done <<< "$installed"
+    show_warnings
+    tui_msg "Done" "All registered plugins re-added for $u.\nRestart Nu to reload updated signatures."
+}
+
 menu_nushell_plugins() { # <user> <home>
     local u="$1" home_dir="$2"
     while true; do
         local c plugin registry
         c=$(tui_menu "Nushell plugins — $u" "Manage the Nu plugin registry:" \
-            list "List registered plugins" \
-            add "Register a plugin executable" \
-            remove "Remove a plugin from the registry" \
-            back "Back") || return 0
+            core    "Install core plugins  (polars, formats, gstat, query, inc)" \
+            popular "Install popular third-party plugins  (curated from awesome-nu)" \
+            list    "List registered plugins" \
+            update  "Re-register all plugins  (run this after updating Nu)" \
+            add     "Register a plugin executable by path" \
+            remove  "Remove a plugin from the registry" \
+            back    "Back") || return 0
         case "$c" in
+            core)    nu_plugin_install_from_list "Core Nushell plugins" "$NU_PLUGINS_CORE" "$u" "$home_dir" ;;
+            popular) nu_plugin_install_from_list "Popular Nu plugins" "$NU_PLUGINS_POPULAR" "$u" "$home_dir" ;;
             list)
                 registry="$SYSTUI_TMP/nu-plugins.txt"
-                nu_run_as "$u" 'plugin list --registry' >"$registry" 2>&1 || true
+                nu_run_as "$u" 'plugin list' >"$registry" 2>&1 \
+                    || echo "(no plugins registered or Nu not installed)" > "$registry"
                 tui_text "Nushell plugins — $u" "$registry" ;;
+            update) nu_plugin_update_all "$u" ;;
             add)
                 plugin=$(tui_input "Add Nu plugin" \
                     "Path to a plugin executable (for example: ~/.cargo/bin/nu_plugin_polars):" \
@@ -5302,6 +5405,50 @@ menu_file_manager_mappings() {
     done
 }
 
+menu_set_default_shell() {
+    local u sh sh_path cur_shell args=() bin
+
+    u=$(tui_input "Set default shell" "Change login shell for which user?" "${SUDO_USER:-root}") || return 0
+    id "$u" >/dev/null 2>&1 || { tui_msg "Error" "User '$u' not found on this system."; return; }
+
+    cur_shell=$(basename "$(getent passwd "$u" 2>/dev/null | cut -d: -f7)")
+
+    # Build the radio list from every shell binary we know about, filtering to
+    # only those actually present in PATH on this system.
+    for sh in bash zsh fish nu ksh mksh dash tcsh csh sh; do
+        bin=$(command -v "$sh" 2>/dev/null) || continue
+        local label="$sh  ($bin)"
+        [ "$sh" = "$cur_shell" ] && label="$sh  ($bin)  ← current" \
+                                 && args+=("$sh" "$label" on) \
+                                 || args+=("$sh" "$label" off)
+    done
+
+    [ ${#args[@]} -eq 0 ] && { tui_msg "No shells" "No supported shells were found in PATH."; return; }
+
+    sh=$(tui_radio "Set default shell — $u" \
+        "Current shell: ${cur_shell:-unknown}\nSPACE selects the new default login shell for $u:" \
+        "${args[@]}") || return 0
+    [ -z "$sh" ] && return
+
+    sh_path=$(command -v "$sh" 2>/dev/null)
+    [ -n "$sh_path" ] || { tui_msg "Not found" "'$sh' is not available in PATH."; return; }
+
+    # chsh requires the target shell to be listed in /etc/shells
+    if ! grep -qxF "$sh_path" /etc/shells 2>/dev/null; then
+        tui_yesno "Add to /etc/shells?" \
+"$sh_path is not listed in /etc/shells.
+chsh requires all valid login shells to appear there.
+Add it now?" || return
+        echo "$sh_path" >> /etc/shells
+    fi
+
+    if command -v chsh >/dev/null 2>&1; then
+        run_cmd "Set login shell of $u to $sh" chsh -s "$sh_path" "$u"
+    else
+        run_cmd "Set login shell of $u to $sh" usermod -s "$sh_path" "$u"
+    fi
+}
+
 menu_shells() {
     while true; do
         local c
@@ -5322,7 +5469,7 @@ menu_shells() {
             history) tui_msg "History" "Use Shell config files → Populate common configuration entries to manage persistent history." ;;
             readline) safe_edit /etc/inputrc || true ;;
             bashopts) menu_shell_config ;;
-            default) local u sh; u=$(tui_input "User" "Username:" "${SUDO_USER:-root}") || continue; sh=$(tui_radio "Default shell" "SPACE selects:" bash "Bash" on zsh "Zsh" off fish "Fish" off) || continue; chsh -s "$(command -v "$sh")" "$u" ;;
+            default) menu_set_default_shell ;;
             advanced) menu_shell_advanced ;;
             back|"") return 0 ;;
         esac

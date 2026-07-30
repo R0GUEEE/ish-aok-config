@@ -49,6 +49,17 @@ source "$PROJECT_DIR/src/features/health.sh"
 
 check "advanced shell menu target exists" function_exists menu_shell_advanced
 check "nushell manager target exists" function_exists menu_nushell
+check "set default shell function exists" function_exists menu_set_default_shell
+check "set default shell includes nushell (nu)" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu ksh mksh"
+check "set default shell checks etc-shells" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "grep -qxF"
+check "set default shell offers to add missing shell to etc-shells" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Add to /etc/shells"
+check "set default shell falls back to usermod" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "usermod -s"
+check "default action in menu_shells calls new function" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "default) menu_set_default_shell"
 check "obsolete advanced shell target is absent" not_contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "menu_shells_advanced"
 check "all password prompts use the defined widget" not_contains \
@@ -57,6 +68,33 @@ check "nushell is exposed in shell config choices" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "config.nu — Nushell startup config"
 check "nushell plugin manager is exposed" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "Nushell plugins —"
+check "nushell plugin core catalogue defined" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "NU_PLUGINS_CORE="
+check "nushell plugin popular catalogue defined" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "NU_PLUGINS_POPULAR="
+check "nushell core plugins include polars" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_polars|Polars"
+check "nushell core plugins include gstat" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_gstat|gstat"
+check "nushell core plugins include query" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_query|Query"
+check "nushell core plugins include formats" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_formats|Formats"
+check "nushell popular plugins include highlight" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_highlight|"
+check "nushell popular plugins include dns" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_dns|"
+check "nushell popular plugins include skim" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_skim|"
+check "nushell plugin install helper exists" function_exists nu_plugin_install_from_list
+check "nushell plugin update-all helper exists" function_exists nu_plugin_update_all
+check "nushell plugin cargo bin helper exists" function_exists nu_plugin_cargo_bin
+check "nushell plugin menu has core action" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'core    "Install core plugins'
+check "nushell plugin menu has popular action" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'popular "Install popular third-party plugins'
+check "nushell plugin menu has update action" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'update  "Re-register all plugins'
 check "nushell multi-method install menu exists" function_exists menu_nushell_install
 check "nushell github binary install helper exists" function_exists nu_github_install
 check "nushell github install targets nushell releases api" contains \

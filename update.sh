@@ -142,7 +142,8 @@ else
 fi
 
 [ -f "$SOURCE_DIR/install.sh" ] || die "Updated source does not contain install.sh."
-[ -x "$SOURCE_DIR/install.sh" ] || chmod +x "$SOURCE_DIR/install.sh"
+info "Setting install.sh as executable..."
+chmod +x "$SOURCE_DIR/install.sh"
 
 info "Reinstalling systui..."
 if [ "$NO_DEPS" -eq 1 ]; then
