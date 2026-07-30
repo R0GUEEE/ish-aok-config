@@ -95,6 +95,24 @@ check "catalogue installer generation has no expansion error" not_contains "$gen
 check "catalogue installer includes its command dispatcher" contains "$installer" 'method=${1:-auto}'
 check "catalogue installer passes POSIX shell syntax" sh -n "$installer"
 
+# Project-specific GitHub installers must defer translated dependency variables
+# until the generated script runs on the target distribution.
+fake_source="$tmpdir/fake-github-source"
+mkdir -p "$fake_source"
+: > "$fake_source/CMakeLists.txt"
+awesome_linux_github_clone() { return 0; }
+awesome_linux_source_dir() { printf '%s\n' "$fake_source"; }
+tui_msg() { return 0; }
+github_installer=$(awesome_linux_generate_github_installer \
+    "GitHub Example" "https://github.com/example/app")
+check "GitHub installer preserves APK dependency expansion" contains \
+    "$github_installer" 'apk add --no-cache $apk_deps'
+check "GitHub installer preserves Pacman dependency expansion" contains \
+    "$github_installer" 'pacman -S --needed --noconfirm $pacman_deps'
+check "GitHub installer preserves DNF dependency expansion" contains \
+    "$github_installer" 'dnf install -y --setopt=install_weak_deps=False $dnf_deps'
+check "GitHub installer passes POSIX shell syntax" sh -n "$github_installer"
+
 # Healthy package/service commands may print routine status text but should
 # still produce the explicit clean markers used by the dashboard.
 dpkg() { return 0; }
