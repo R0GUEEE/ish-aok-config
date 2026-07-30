@@ -6111,7 +6111,7 @@ fm_backup_config() { # fm_backup_config <path>
 }
 
 fm_configure_lf_menu() {
-    local u h f selected
+    local u h f selected ratios
     u=$(fm_target_user) || return 0; h=$(fm_home "$u"); f="$h/.config/lf/lfrc"
     selected=$(tui_check "lf configuration" "SPACE selects enabled settings. The generated configuration replaces lfrc after creating a timestamped backup:" \
         hidden      "Show hidden files" on \
@@ -6120,58 +6120,186 @@ fm_configure_lf_menu() {
         drawbox     "Draw pane borders" on \
         dirfirst    "List directories before files" on \
         natural     "Natural filename sorting" on \
+        sortsize    "Sort by size instead of name" off \
+        sorttime    "Sort by modification time instead of name" off \
         ignorecase  "Case-insensitive sorting/search" off \
+        smartcase   "Smart-case search (sensitive only with capitals)" on \
         reverse     "Reverse sort order" off \
-        info        "Show file information" on \
+        info        "Show size and time columns" on \
+        dirpreviews "Preview directory contents" off \
         mouse       "Enable mouse support" off \
         number      "Show line/item numbers" off \
         relativenum "Use relative numbering" off \
         autoquit    "Quit when changing to a directory" off \
-        saferemove  "Map delete to trash-put when available" on \
+        incsearch   "Incremental search while typing" on \
+        wrapscan    "Wrap around at the end of a search" on \
+        globsearch  "Treat search patterns as globs" off \
+        widepreview "Use a wider preview pane (1:2:3)" on \
+        scrolloff   "Keep three lines of context when scrolling" on \
+        period      "Refresh the directory listing every second" off \
+        safeshell   "Use safer shell options for embedded commands" on \
+        history     "Persist command history" on \
+        saferemove  "Map d to trash-put when available" on \
+        confirmdel  "Map D to delete with confirmation" on \
         homebind    "Map gh to the home directory" on \
-        editoropen  "Open text files with EDITOR" on) || return 0
+        configbind  "Map gc to the config directory" on \
+        rootbind    "Map gr to the filesystem root" off \
+        mkdirbind   "Map a to create a directory" on \
+        renamebind  "Map r/R to rename and bulk-rename" on \
+        archivebind "Map ax/az to extract and compress" on \
+        chmodbind   "Map ch to change permissions" off \
+        fzfbind     "Map <c-f> to fzf jump when available" on \
+        zoxidebind  "Map gz to zoxide query when available" off \
+        editoropen  "Open text files with EDITOR" on \
+        openwith    "Map o to choose an opener interactively" on) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"
+    ratios="1:2"; fm_selection_has "$selected" widepreview && ratios="1:2:3"
     {
         fm_selection_has "$selected" hidden && echo 'set hidden true' || echo 'set hidden false'
         fm_selection_has "$selected" icons && echo 'set icons true' || echo 'set icons false'
         fm_selection_has "$selected" preview && echo 'set preview true' || echo 'set preview false'
         fm_selection_has "$selected" drawbox && echo 'set drawbox true' || echo 'set drawbox false'
         fm_selection_has "$selected" dirfirst && echo 'set dirfirst true' || echo 'set dirfirst false'
-        fm_selection_has "$selected" natural && echo 'set sortby natural' || echo 'set sortby name'
-        fm_selection_has "$selected" ignorecase && echo 'set ignorecase true'
+        if fm_selection_has "$selected" sortsize; then echo 'set sortby size'
+        elif fm_selection_has "$selected" sorttime; then echo 'set sortby time'
+        elif fm_selection_has "$selected" natural; then echo 'set sortby natural'
+        else echo 'set sortby name'; fi
+        fm_selection_has "$selected" ignorecase && echo 'set ignorecase true' || echo 'set ignorecase false'
+        fm_selection_has "$selected" smartcase && echo 'set smartcase true'
         fm_selection_has "$selected" reverse && echo 'set reverse true'
         fm_selection_has "$selected" info && echo 'set info size:time'
+        fm_selection_has "$selected" dirpreviews && echo 'set dirpreviews true'
         fm_selection_has "$selected" mouse && echo 'set mouse true'
         fm_selection_has "$selected" number && echo 'set number true'
         fm_selection_has "$selected" relativenum && echo 'set relativenumber true'
         fm_selection_has "$selected" autoquit && echo 'set autoquit true'
+        fm_selection_has "$selected" incsearch && echo 'set incsearch true'
+        fm_selection_has "$selected" wrapscan && echo 'set wrapscan true'
+        fm_selection_has "$selected" globsearch && echo 'set globsearch true'
+        echo "set ratios $ratios"
+        fm_selection_has "$selected" scrolloff && echo 'set scrolloff 3'
+        fm_selection_has "$selected" period && echo 'set period 1'
+        fm_selection_has "$selected" safeshell && { echo 'set shell sh'; echo 'set shellopts -eu'; }
+        fm_selection_has "$selected" history && echo 'set history true' || echo 'set history false'
         echo 'map q quit'; echo 'map / search'; echo 'map <enter> open'
         fm_selection_has "$selected" homebind && echo 'map gh cd ~'
-        if fm_selection_has "$selected" saferemove; then
-            cat <<'EOF'
-cmd trash ${{
-  if command -v trash-put >/dev/null 2>&1; then trash-put "$fx"; else printf 'trash-put is not installed\n' >&2; fi
-} }
+        fm_selection_has "$selected" configbind && echo 'map gc cd ~/.config'
+        fm_selection_has "$selected" rootbind && echo 'map gr cd /'
+        fm_selection_has "$selected" mkdirbind && cat <<'LFEOF'
+cmd mkdir %{{
+  printf "Directory name: "
+  read -r name
+  [ -n "$name" ] && mkdir -p -- "$name"
+}}
+map a mkdir
+LFEOF
+        fm_selection_has "$selected" renamebind && cat <<'LFEOF'
+map r rename
+cmd bulkrename %{{
+  [ -z "$fx" ] && exit 0
+  old_list=$(mktemp) || exit 1
+  new_list=$(mktemp) || { rm -f "$old_list"; exit 1; }
+  printf '%s\n' "$fx" > "$old_list"
+  cp "$old_list" "$new_list"
+  ${EDITOR:-vi} "$new_list"
+  if [ "$(wc -l < "$old_list")" -ne "$(wc -l < "$new_list")" ]; then
+    printf 'Line count changed; aborting bulk rename.\n' >&2
+  else
+    line=1
+    while IFS= read -r old; do
+      new=$(sed -n "${line}p" "$new_list")
+      if [ -n "$new" ] && [ "$old" != "$new" ]; then mv -i -- "$old" "$new"; fi
+      line=$((line + 1))
+    done < "$old_list"
+  fi
+  rm -f "$old_list" "$new_list"
+}}
+map R bulkrename
+LFEOF
+        fm_selection_has "$selected" archivebind && cat <<'LFEOF'
+cmd extract %{{
+  case "$f" in
+    *.tar.gz|*.tgz)  tar xzf "$f" ;;
+    *.tar.bz2|*.tbz) tar xjf "$f" ;;
+    *.tar.xz|*.txz)  tar xJf "$f" ;;
+    *.tar.zst)       zstd -dc "$f" | tar xf - ;;
+    *.tar)           tar xf "$f" ;;
+    *.zip)           unzip -q "$f" ;;
+    *.7z)            7z x "$f" ;;
+    *.rar)           unrar x "$f" ;;
+    *) printf 'Unsupported archive: %s\n' "$f" >&2 ;;
+  esac
+}}
+map ax extract
+cmd compress %{{
+  printf "Archive name (without extension): "
+  read -r name
+  [ -n "$name" ] || exit 0
+  tar czf "$name.tar.gz" -- $fx
+}}
+map az compress
+LFEOF
+        fm_selection_has "$selected" chmodbind && cat <<'LFEOF'
+cmd chmodsel %{{
+  printf "Mode (example 644): "
+  read -r mode
+  [ -n "$mode" ] && chmod -- "$mode" $fx
+}}
+map ch chmodsel
+LFEOF
+        fm_selection_has "$selected" fzfbind && cat <<'LFEOF'
+cmd fzf_jump ${{
+  command -v fzf >/dev/null 2>&1 || exit 0
+  res=$(find . -mindepth 1 -maxdepth 4 2>/dev/null | fzf --reverse --header='Jump to')
+  [ -z "$res" ] && exit 0
+  if [ -d "$res" ]; then lf -remote "send $id cd \"$res\""; else lf -remote "send $id select \"$res\""; fi
+}}
+map <c-f> fzf_jump
+LFEOF
+        fm_selection_has "$selected" zoxidebind && cat <<'LFEOF'
+cmd z ${{
+  command -v zoxide >/dev/null 2>&1 || exit 0
+  res=$(zoxide query "$1" 2>/dev/null) && lf -remote "send $id cd \"$res\""
+}}
+map gz push :z<space>
+LFEOF
+        fm_selection_has "$selected" saferemove && cat <<'LFEOF'
+cmd trash %{{
+  if command -v trash-put >/dev/null 2>&1; then trash-put $fx; else printf 'trash-put is not installed\n' >&2; fi
+}}
 map d trash
-EOF
-        fi
-        if fm_selection_has "$selected" editoropen; then
-            cat <<'EOF'
+LFEOF
+        fm_selection_has "$selected" confirmdel && cat <<'LFEOF'
+cmd delete %{{
+  printf "Permanently delete the selection? [y/N] "
+  read -r ans
+  case "$ans" in [yY]*) rm -rf -- $fx ;; esac
+}}
+map D delete
+LFEOF
+        fm_selection_has "$selected" editoropen && cat <<'LFEOF'
 cmd open ${{
   case $(file --mime-type -Lb "$f") in
     text/*|application/json|application/xml) ${EDITOR:-vi} "$f" ;;
     *) xdg-open "$f" >/dev/null 2>&1 & ;;
   esac
-} }
-EOF
-        fi
+}}
+LFEOF
+        fm_selection_has "$selected" openwith && cat <<'LFEOF'
+cmd open_with %{{
+  printf "Open with: "
+  read -r prog
+  [ -n "$prog" ] && $prog $fx
+}}
+map o open_with
+LFEOF
     } > "$f"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/lf" 2>/dev/null || true
-    tui_msg "Configured" "lf configuration generated for $u."
+    tui_msg "Configured" "lf configuration generated for $u ($(grep -c . "$f") lines)."
 }
 
 fm_configure_tere_menu() {
-    local u h selected opts rc
+    local u h selected opts rc frag
     u=$(fm_target_user) || return 0; h=$(fm_home "$u")
     selected=$(tui_check "tere configuration" "SPACE selects shell-wrapper settings:" \
         mouse       "Enable mouse input" on \
@@ -6180,38 +6308,80 @@ fm_configure_tere_menu() {
         dirsfirst   "Sort directories first" on \
         gitignore   "Respect .gitignore files" off \
         caseignore  "Case-insensitive search" on \
+        smartcase   "Smart-case search (overrides case-insensitive)" off \
+        autocd      "Change directory on a unique match" off \
+        filtersearch "Filter the listing instead of jumping" off \
+        history     "Persist directory history" on \
+        nocolor     "Disable colours (plain terminals)" off \
         bash        "Install wrapper in .bashrc" on \
         zsh         "Install wrapper in .zshrc" on \
         fish        "Install wrapper in fish config" off \
-        aliasj      "Add tj alias for tere" off) || return 0
+        aliasj      "Add tj alias for tere" off \
+        aliascdi    "Add cdi alias for tere" off \
+        ctrlt       "Bind Ctrl-T to tere in bash/zsh" off) || return 0
     opts=""
     fm_selection_has "$selected" mouse && opts="$opts --mouse=on" || opts="$opts --mouse=off"
     fm_selection_has "$selected" skipfirst && opts="$opts --skip-first-run-prompt"
     fm_selection_has "$selected" hidden && opts="$opts --show-hidden"
     fm_selection_has "$selected" dirsfirst && opts="$opts --folders-first"
     fm_selection_has "$selected" gitignore && opts="$opts --respect-gitignore"
-    fm_selection_has "$selected" caseignore && opts="$opts --ignore-case"
-    for rc in .bashrc .zshrc; do
-        [ "$rc" = .bashrc ] && fm_selection_has "$selected" bash || { [ "$rc" = .zshrc ] && fm_selection_has "$selected" zsh; } || continue
-        fm_as_user "$u" "touch ~/$rc; sed -i '/^# systui-tere-config begin$/,/^# systui-tere-config end$/d' ~/$rc; cat >> ~/$rc <<'EOF'
-# systui-tere-config begin
-tere() {
-    local result=\$(command tere$opts \"\$@\")
-    [ -n \"\$result\" ] && cd -- \"\$result\"
-}
-$(fm_selection_has "$selected" aliasj && echo "alias tj='tere'" || true)
-# systui-tere-config end
-EOF"
-    done
-    if fm_selection_has "$selected" fish; then
-        fm_as_user "$u" "mkdir -p ~/.config/fish/functions; cat > ~/.config/fish/functions/tere.fish <<'EOF'
-function tere
-    set --local result (command tere$opts \$argv)
-    test -n \"\$result\"; and cd -- \"\$result\"
-end
-EOF"
+    if fm_selection_has "$selected" smartcase; then opts="$opts --smart-case"
+    elif fm_selection_has "$selected" caseignore; then opts="$opts --ignore-case"
     fi
-    tui_msg "Configured" "tere shell integration generated for $u."
+    fm_selection_has "$selected" autocd && opts="$opts --autocd-timeout=200"
+    fm_selection_has "$selected" filtersearch && opts="$opts --filter-search"
+    fm_selection_has "$selected" nocolor && opts="$opts --no-colors"
+    fm_selection_has "$selected" history && fm_as_user "$u" "mkdir -p ~/.local/share/tere" 2>/dev/null
+
+    # The fragment is assembled here and copied into place, rather than being
+    # interpolated through a double-quoted `fm_as_user` argument. The Ctrl-T
+    # bindings contain both quote styles and backslash escapes, and nesting
+    # them inside a quoted heredoc leaked the escapes into the user's rc file.
+    frag="$SYSTUI_TMP/tere-frag"
+    for rc in .bashrc .zshrc; do
+        case "$rc" in
+            .bashrc) fm_selection_has "$selected" bash || continue ;;
+            .zshrc)  fm_selection_has "$selected" zsh  || continue ;;
+        esac
+        {
+            printf '# systui-tere-config begin\n'
+            printf 'tere() {\n'
+            printf '    local result\n'
+            printf '    result=$(command tere%s "$@")\n' "$opts"
+            printf '    [ -n "$result" ] && cd -- "$result"\n'
+            printf '}\n'
+            fm_selection_has "$selected" aliasj   && printf "alias tj='tere'\n"
+            fm_selection_has "$selected" aliascdi && printf "alias cdi='tere'\n"
+            if fm_selection_has "$selected" ctrlt; then
+                if [ "$rc" = .bashrc ]; then
+                    printf 'bind -x %s"\\C-t": tere%s\n' "'" "'"
+                else
+                    printf 'tere-widget() { tere; zle reset-prompt; }\n'
+                    printf 'zle -N tere-widget\n'
+                    printf 'bindkey "^T" tere-widget\n'
+                fi
+            fi
+            printf '# systui-tere-config end\n'
+        } > "$frag"
+        fm_as_user "$u" "touch ~/$rc; sed -i '/^# systui-tere-config begin\$/,/^# systui-tere-config end\$/d' ~/$rc"
+        cat "$frag" >> "$h/$rc"
+        chown "$u":"$(id -gn "$u")" "$h/$rc" 2>/dev/null || true
+    done
+    rm -f "$frag"
+
+    if fm_selection_has "$selected" fish; then
+        mkdir -p "$h/.config/fish/functions"
+        {
+            printf 'function tere\n'
+            printf '    set --local result (command tere%s $argv)\n' "$opts"
+            printf '    test -n "$result"; and cd -- "$result"\n'
+            printf 'end\n'
+        } > "$h/.config/fish/functions/tere.fish"
+        fm_selection_has "$selected" aliasj   && printf 'function tj\n    tere $argv\nend\n'  > "$h/.config/fish/functions/tj.fish"
+        fm_selection_has "$selected" aliascdi && printf 'function cdi\n    tere $argv\nend\n' > "$h/.config/fish/functions/cdi.fish"
+        chown -R "$u":"$(id -gn "$u")" "$h/.config/fish" 2>/dev/null || true
+    fi
+    tui_msg "Configured" "tere shell integration installed for $u.\nOptions:$opts\n\nOpen a new shell to activate it."
 }
 
 fm_configure_yazi_menu() {
@@ -6221,59 +6391,171 @@ fm_configure_yazi_menu() {
         hidden      "Show hidden files" on \
         dirfirst    "Sort directories first" on \
         natural     "Natural filename sorting" on \
+        sortmtime   "Sort by modification time instead of name" off \
+        sortsize    "Sort by size instead of name" off \
         reverse     "Reverse sort order" off \
         sensitive   "Case-sensitive sorting" off \
         size        "Display file size line mode" on \
         permissions "Display permissions line mode" off \
+        mtime       "Display modification time line mode" off \
+        symlink     "Show symlink targets" on \
+        ratio       "Use a wider preview pane (1:3:4)" on \
+        scrolloff   "Keep five lines of context when scrolling" on \
         wrap        "Wrap preview text" on \
         image       "Enable image previews" on \
+        imagequality "Use high-quality image previews" off \
+        maxwidth    "Limit preview images to 1920x1080" on \
         tabsize4    "Use four-space preview tabs" on \
         homebind    "Map g,h to home" on \
+        configbind  "Map g,c to the config directory" on \
+        rootbind    "Map g,r to the filesystem root" off \
         quitcd      "Map q to quit and change directory" off \
         shell       "Map ! to interactive shell" on \
-        trash       "Use trash instead of permanent delete" on) || return 0
+        trash       "Use trash instead of permanent delete" on \
+        confirmdel  "Ask before permanent delete" on \
+        hiddentoggle "Map . to toggle hidden files" on \
+        searchbind  "Map s/S to fd and ripgrep search" on \
+        selectall   "Map <c-a> to select all" on \
+        linemodebind "Map m to cycle line modes" off \
+        editoropen  "Open text files with EDITOR" on) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"; fm_backup_config "$k"
-    sortby=name; fm_selection_has "$selected" natural && sortby=natural
-    linemode=none; fm_selection_has "$selected" size && linemode=size; fm_selection_has "$selected" permissions && linemode=permissions
+    sortby=name
+    if fm_selection_has "$selected" sortmtime; then sortby=mtime
+    elif fm_selection_has "$selected" sortsize; then sortby=size
+    elif fm_selection_has "$selected" natural; then sortby=natural
+    fi
+    linemode=none
+    fm_selection_has "$selected" size && linemode=size
+    fm_selection_has "$selected" permissions && linemode=permissions
+    fm_selection_has "$selected" mtime && linemode=mtime
     {
-        echo '[manager]'; echo "show_hidden = $(fm_selection_has "$selected" hidden && echo true || echo false)"
-        echo "sort_by = \"$sortby\""; echo "sort_dir_first = $(fm_selection_has "$selected" dirfirst && echo true || echo false)"
+        echo '[mgr]'
+        echo "show_hidden = $(fm_selection_has "$selected" hidden && echo true || echo false)"
+        echo "show_symlink = $(fm_selection_has "$selected" symlink && echo true || echo false)"
+        echo "sort_by = \"$sortby\""
+        echo "sort_dir_first = $(fm_selection_has "$selected" dirfirst && echo true || echo false)"
         echo "sort_reverse = $(fm_selection_has "$selected" reverse && echo true || echo false)"
         echo "sort_sensitive = $(fm_selection_has "$selected" sensitive && echo true || echo false)"
         [ "$linemode" != none ] && echo "linemode = \"$linemode\""
-        echo; echo '[preview]'; echo "wrap = \"$(fm_selection_has "$selected" wrap && echo yes || echo no)\""
+        fm_selection_has "$selected" ratio && echo 'ratio = [1, 3, 4]' || echo 'ratio = [1, 4, 3]'
+        fm_selection_has "$selected" scrolloff && echo 'scrolloff = 5'
+        echo
+        echo '[preview]'
+        echo "wrap = \"$(fm_selection_has "$selected" wrap && echo yes || echo no)\""
         echo "tab_size = $(fm_selection_has "$selected" tabsize4 && echo 4 || echo 2)"
         echo "image_delay = $(fm_selection_has "$selected" image && echo 30 || echo 999999)"
-        echo; echo '[opener]'; echo 'edit = [{ run = '\''${EDITOR:-vi} "$@"'\'', block = true, for = "unix" }]'
+        fm_selection_has "$selected" maxwidth && { echo 'max_width = 1920'; echo 'max_height = 1080'; }
+        fm_selection_has "$selected" imagequality && echo 'image_quality = 90' || echo 'image_quality = 75'
+        echo
+        echo '[opener]'
+        if fm_selection_has "$selected" editoropen; then
+            echo 'edit = [{ run = '\''${EDITOR:-vi} "$@"'\'', block = true, for = "unix" }]'
+        else
+            echo 'edit = [{ run = '\''xdg-open "$@"'\'', orphan = true, for = "unix" }]'
+        fi
+        echo
+        echo '[tasks]'
+        echo "suppress_preload = $(fm_selection_has "$selected" image && echo false || echo true)"
     } > "$f"
     {
-        fm_selection_has "$selected" homebind && cat <<'EOF'
-[[manager.prepend_keymap]]
+        fm_selection_has "$selected" homebind && cat <<'YEOF'
+[[mgr.prepend_keymap]]
 on = [ "g", "h" ]
 run = "cd ~"
 desc = "Go home"
-EOF
-        fm_selection_has "$selected" quitcd && cat <<'EOF'
-[[manager.prepend_keymap]]
+YEOF
+        fm_selection_has "$selected" configbind && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "g", "c" ]
+run = "cd ~/.config"
+desc = "Go to the config directory"
+YEOF
+        fm_selection_has "$selected" rootbind && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "g", "r" ]
+run = "cd /"
+desc = "Go to the filesystem root"
+YEOF
+        fm_selection_has "$selected" quitcd && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
 on = [ "q" ]
 run = "quit --no-cwd-file"
 desc = "Quit"
-EOF
-        fm_selection_has "$selected" shell && cat <<'EOF'
-[[manager.prepend_keymap]]
+YEOF
+        fm_selection_has "$selected" shell && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
 on = [ "!" ]
 run = "shell --block --interactive"
 desc = "Open shell"
-EOF
-        fm_selection_has "$selected" trash && cat <<'EOF'
-[[manager.prepend_keymap]]
+YEOF
+        fm_selection_has "$selected" hiddentoggle && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "." ]
+run = "hidden toggle"
+desc = "Toggle hidden files"
+YEOF
+        fm_selection_has "$selected" selectall && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "<C-a>" ]
+run = "toggle_all --state=on"
+desc = "Select all"
+YEOF
+        fm_selection_has "$selected" linemodebind && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "m", "s" ]
+run = "linemode size"
+desc = "Line mode: size"
+
+[[mgr.prepend_keymap]]
+on = [ "m", "p" ]
+run = "linemode permissions"
+desc = "Line mode: permissions"
+
+[[mgr.prepend_keymap]]
+on = [ "m", "m" ]
+run = "linemode mtime"
+desc = "Line mode: modification time"
+YEOF
+        fm_selection_has "$selected" searchbind && cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "s" ]
+run = "search fd"
+desc = "Search files by name (fd)"
+
+[[mgr.prepend_keymap]]
+on = [ "S" ]
+run = "search rg"
+desc = "Search file contents (ripgrep)"
+YEOF
+        if fm_selection_has "$selected" trash; then
+            cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
 on = [ "d" ]
 run = "remove"
-desc = "Move selected files to trash"
-EOF
+desc = "Move to trash"
+YEOF
+        fi
+        if fm_selection_has "$selected" confirmdel; then
+            cat <<'YEOF'
+
+[[mgr.prepend_keymap]]
+on = [ "D" ]
+run = "remove --permanently"
+desc = "Delete permanently (asks first)"
+YEOF
+        fi
     } > "$k"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/yazi" 2>/dev/null || true
-    tui_msg "Configured" "Yazi configuration generated for $u."
+    tui_msg "Configured" "Yazi configuration generated for $u.\nyazi.toml: $(grep -c . "$f") lines, keymap.toml: $(grep -c . "$k") lines."
 }
 
 fm_configure_ranger_menu() {
@@ -6283,43 +6565,78 @@ fm_configure_ranger_menu() {
         hidden       "Show hidden files" on \
         preview      "Preview files" on \
         previewdirs  "Preview directories" on \
+        previewscript "Use the ranger preview script (scope.sh)" on \
         images       "Enable image previews" off \
         sixel        "Use sixel image preview method" off \
+        kitty        "Use kitty image preview method" off \
         icons        "Display file icons when supported" on \
         mouse        "Enable mouse support" on \
         dirfirst     "Sort directories first" on \
         natural      "Natural sorting" on \
         caseignore   "Case-insensitive sorting" on \
+        reverse      "Reverse sort order" off \
         confirm      "Confirm destructive operations" on \
         vcs          "Show VCS/Git information" on \
+        vcsroot      "Show VCS information in the root directory only" off \
         freespace    "Display free disk space" on \
+        tabs         "Show the tab bar when multiple tabs are open" on \
+        lineNumbers  "Show relative line numbers" off \
+        autosave     "Save copy/paste buffer between sessions" on \
+        scrolloff    "Keep three lines of context when scrolling" on \
+        titlebar     "Update the terminal title" on \
+        hostname     "Show the hostname in the titlebar" off \
+        flushinput   "Flush input before starting a command" on \
         homebind     "Map gh to home" on \
-        trash        "Map delete to trash-put" on) || return 0
+        configbind   "Map gc to the config directory" on \
+        trash        "Map d to trash-put" on \
+        fzfbind      "Map <c-f> to fzf select when available" on \
+        bulkrename   "Map br to bulk rename" on \
+        openwith     "Map ow to choose an opener" on) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"
-    previewmethod=ueberzug; fm_selection_has "$selected" sixel && previewmethod=sixel
+    previewmethod=ueberzug
+    fm_selection_has "$selected" sixel && previewmethod=sixel
+    fm_selection_has "$selected" kitty && previewmethod=kitty
     {
         echo "set show_hidden $(fm_selection_has "$selected" hidden && echo true || echo false)"
         echo "set preview_files $(fm_selection_has "$selected" preview && echo true || echo false)"
         echo "set preview_directories $(fm_selection_has "$selected" previewdirs && echo true || echo false)"
+        echo "set use_preview_script $(fm_selection_has "$selected" previewscript && echo true || echo false)"
         echo "set preview_images $(fm_selection_has "$selected" images && echo true || echo false)"
         echo "set preview_images_method $previewmethod"
-        echo "set draw_borders both"; echo "set mouse_enabled $(fm_selection_has "$selected" mouse && echo true || echo false)"
+        echo "set draw_borders both"
+        echo "set mouse_enabled $(fm_selection_has "$selected" mouse && echo true || echo false)"
         echo "set sort_directories_first $(fm_selection_has "$selected" dirfirst && echo true || echo false)"
-        echo "set sort natural"; fm_selection_has "$selected" natural || echo 'set sort basename'
+        fm_selection_has "$selected" natural && echo 'set sort natural' || echo 'set sort basename'
         echo "set sort_case_insensitive $(fm_selection_has "$selected" caseignore && echo true || echo false)"
+        echo "set sort_reverse $(fm_selection_has "$selected" reverse && echo true || echo false)"
         echo "set confirm_on_delete $(fm_selection_has "$selected" confirm && echo multiple || echo never)"
         echo "set vcs_aware $(fm_selection_has "$selected" vcs && echo true || echo false)"
+        fm_selection_has "$selected" vcsroot && { echo 'set vcs_backend_git local'; } || echo 'set vcs_backend_git enabled'
         echo "set display_free_space $(fm_selection_has "$selected" freespace && echo true || echo false)"
+        echo "set draw_progress_bar_in_status_bar true"
+        fm_selection_has "$selected" tabs && echo 'set dirname_in_tabs true'
+        fm_selection_has "$selected" lineNumbers && echo 'set line_numbers relative'
+        echo "set save_copy_buffer $(fm_selection_has "$selected" autosave && echo true || echo false)"
+        fm_selection_has "$selected" scrolloff && echo 'set scroll_offset 3'
+        echo "set update_title $(fm_selection_has "$selected" titlebar && echo true || echo false)"
+        echo "set hostname_in_titlebar $(fm_selection_has "$selected" hostname && echo true || echo false)"
+        echo "set flushinput $(fm_selection_has "$selected" flushinput && echo true || echo false)"
         fm_selection_has "$selected" icons && echo 'default_linemode devicons'
         fm_selection_has "$selected" homebind && echo 'map gh cd ~'
+        fm_selection_has "$selected" configbind && echo 'map gc cd ~/.config'
         fm_selection_has "$selected" trash && echo 'map d shell trash-put %s'
+        fm_selection_has "$selected" bulkrename && echo 'map br bulkrename'
+        fm_selection_has "$selected" openwith && echo 'map ow console open_with '
+        fm_selection_has "$selected" fzfbind && cat <<'REOF'
+map <C-f> fzf_select
+REOF
     } > "$f"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/ranger" 2>/dev/null || true
-    tui_msg "Configured" "Ranger configuration generated for $u."
+    tui_msg "Configured" "Ranger configuration generated for $u ($(grep -c . "$f") lines)."
 }
 
 fm_configure_nnn_menu() {
-    local u selected opts plug
+    local u selected opts plug colors
     u=$(fm_target_user) || return 0
     selected=$(tui_check "nnn configuration" "SPACE selects environment and plugin settings:" \
         hidden       "Show hidden files" on \
@@ -6328,73 +6645,139 @@ fm_configure_nnn_menu() {
         dirsfirst    "List directories first" on \
         caseignore   "Case-insensitive matching" on \
         useeditor    "Open text files with EDITOR" on \
-        color        "Enable context colors" on \
+        nosort       "Disable sorting for very large directories" off \
+        reverse      "Reverse sort order" off \
+        timesort     "Sort by modification time" off \
+        sizesort     "Sort by size" off \
+        extsort      "Sort by extension" off \
+        color        "Enable context colours" on \
+        colorscheme  "Use a high-contrast colour scheme" off \
+        icons        "Enable icons (requires an icon-enabled build)" off \
         trash        "Use trash-cli for deletion" on \
+        selmode      "Persist selection across directories" off \
+        cursor       "Remember the cursor position per directory" on \
         preview      "Enable preview-tui plugin binding" on \
         finder       "Enable finder/fzf plugin binding" on \
         fzopen       "Enable fzopen plugin binding" on \
         mount        "Enable mount plugin binding" on \
+        diff         "Enable diff plugin binding" off \
+        imgview      "Enable image viewer plugin binding" off \
+        gitstatus    "Enable git status plugin binding" off \
         bookmarks    "Add common home/download bookmarks" on \
+        extrabm      "Add project and temp bookmarks" off \
+        fifo         "Enable the preview FIFO for preview-tui" on \
         cdexit       "Install nnn shell cd-on-quit wrapper" on) || return 0
-    opts=""; fm_selection_has "$selected" hidden && opts="${opts}H"; fm_selection_has "$selected" detail && opts="${opts}d"
-    fm_selection_has "$selected" autoenter && opts="${opts}a"; fm_selection_has "$selected" dirsfirst && opts="${opts}e"
-    fm_selection_has "$selected" caseignore && opts="${opts}i"; fm_selection_has "$selected" useeditor && opts="${opts}c"
-    plug=""; fm_selection_has "$selected" finder && plug="${plug}f:finder;"; fm_selection_has "$selected" fzopen && plug="${plug}o:fzopen;"
-    fm_selection_has "$selected" preview && plug="${plug}p:preview-tui;"; fm_selection_has "$selected" mount && plug="${plug}m:nmount;"
-    fm_as_user "$u" "touch ~/.profile; sed -i '/^# systui-nnn-config begin$/,/^# systui-nnn-config end$/d' ~/.profile; cat >> ~/.profile <<'EOF'
+    opts=""
+    fm_selection_has "$selected" hidden && opts="${opts}H"
+    fm_selection_has "$selected" detail && opts="${opts}d"
+    fm_selection_has "$selected" autoenter && opts="${opts}a"
+    fm_selection_has "$selected" dirsfirst && opts="${opts}e"
+    fm_selection_has "$selected" caseignore && opts="${opts}i"
+    fm_selection_has "$selected" useeditor && opts="${opts}c"
+    fm_selection_has "$selected" nosort && opts="${opts}S"
+    fm_selection_has "$selected" reverse && opts="${opts}r"
+    fm_selection_has "$selected" timesort && opts="${opts}T"
+    fm_selection_has "$selected" sizesort && opts="${opts}s"
+    fm_selection_has "$selected" extsort && opts="${opts}E"
+    fm_selection_has "$selected" selmode && opts="${opts}A"
+    fm_selection_has "$selected" cursor && opts="${opts}P"
+    plug=""
+    fm_selection_has "$selected" finder && plug="${plug}f:finder;"
+    fm_selection_has "$selected" fzopen && plug="${plug}o:fzopen;"
+    fm_selection_has "$selected" preview && plug="${plug}p:preview-tui;"
+    fm_selection_has "$selected" mount && plug="${plug}m:nmount;"
+    fm_selection_has "$selected" diff && plug="${plug}d:diffs;"
+    fm_selection_has "$selected" imgview && plug="${plug}v:imgview;"
+    fm_selection_has "$selected" gitstatus && plug="${plug}g:gitstatus;"
+    colors=2136; fm_selection_has "$selected" colorscheme && colors=4231
+    fm_as_user "$u" "touch ~/.profile; sed -i '/^# systui-nnn-config begin\$/,/^# systui-nnn-config end\$/d' ~/.profile; cat >> ~/.profile <<'EOF'
 # systui-nnn-config begin
 export NNN_OPTS='$opts'
 export NNN_PLUG='${plug%;}'
-$(fm_selection_has "$selected" color && echo "export NNN_COLORS='2136'" || true)
+$(fm_selection_has "$selected" color && echo "export NNN_COLORS='$colors'" || true)
 $(fm_selection_has "$selected" trash && echo "export NNN_TRASH=1" || true)
-$(fm_selection_has "$selected" bookmarks && echo "export NNN_BMS='h:~;d:~/Downloads;c:~/.config'" || true)
+$(fm_selection_has "$selected" icons && echo "export NNN_ICONS=1" || true)
+$(fm_selection_has "$selected" fifo && echo 'export NNN_FIFO=/tmp/nnn.fifo' || true)
+$(fm_selection_has "$selected" bookmarks && fm_selection_has "$selected" extrabm && echo "export NNN_BMS='h:~;d:~/Downloads;c:~/.config;p:~/Projects;t:/tmp'" || { fm_selection_has "$selected" bookmarks && echo "export NNN_BMS='h:~;d:~/Downloads;c:~/.config'"; } || true)
 $(fm_selection_has "$selected" cdexit && cat <<'EOW'
 n() {
-    if [ -n "$NNNLVL" ] && [ "${NNNLVL:-0}" -ge 1 ]; then printf 'nnn is already running\n'; return; fi
-    export NNN_TMPFILE="${XDG_CONFIG_HOME:-$HOME/.config}/nnn/.lastd"
-    nnn "$@"
-    [ -f "$NNN_TMPFILE" ] && . "$NNN_TMPFILE" && rm -f "$NNN_TMPFILE"
+    if [ -n "\$NNNLVL" ] && [ "\${NNNLVL:-0}" -ge 1 ]; then printf 'nnn is already running\n'; return; fi
+    export NNN_TMPFILE=\"\${XDG_CONFIG_HOME:-\$HOME/.config}/nnn/.lastd\"
+    nnn \"\$@\"
+    [ -f \"\$NNN_TMPFILE\" ] && . \"\$NNN_TMPFILE\" && rm -f \"\$NNN_TMPFILE\"
 }
 EOW
 )
 # systui-nnn-config end
 EOF"
-    tui_msg "Configured" "nnn environment configuration generated for $u. Re-login or source ~/.profile."
+    tui_msg "Configured" "nnn environment configuration generated for $u.\nNNN_OPTS='$opts'\n\nRe-login or source ~/.profile."
 }
 
 fm_configure_vifm_menu() {
-    local u h f selected
+    local u h f selected cols
     u=$(fm_target_user) || return 0; h=$(fm_home "$u"); f="$h/.config/vifm/vifmrc"
     selected=$(tui_check "Vifm configuration" "SPACE selects enabled settings:" \
         hidden      "Show hidden files" on \
         ignorecase  "Case-insensitive matching" on \
-        smartcase   "Use case-sensitive matching when capitals appear" on \
+        smartcase   "Case-sensitive matching when capitals appear" on \
+        incsearch   "Incremental search" on \
+        hlsearch    "Highlight search matches" on \
         wildmenu    "Enable command completion menu" on \
+        wildstyle   "Use a popup completion menu" off \
         syscalls    "Use direct system calls where possible" on \
         mouse       "Enable mouse support" on \
-        trash       "Use Vifm trash directory" on \
+        trash       "Use the Vifm trash directory" on \
         confirm     "Confirm file deletion" on \
         dirfirst    "Sort directories first" on \
-        size        "Show file size column" on \
-        permissions "Show permissions column" on \
-        preview     "Enable preview pane binding" on \
+        numbers     "Show relative line numbers" off \
+        size        "Show the file size column" on \
+        permissions "Show the permissions column" on \
+        mtime       "Show the modification time column" off \
+        preview     "Map w to toggle the preview pane" on \
+        quickview   "Enable quick view on start" off \
+        millerview  "Enable Miller columns" off \
+        statusline  "Show a detailed status line" on \
+        history     "Keep a larger history" on \
+        undolevels  "Increase undo levels to 100" on \
         homebind    "Map gh to home" on \
-        editor      "Use EDITOR as vicmd" on) || return 0
+        configbind  "Map gc to the config directory" on \
+        editor      "Use EDITOR as vicmd" on \
+        fzfbind     "Map <c-f> to fzf when available" off \
+        trashbind   "Map DD to move to trash" on) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"
     {
         fm_selection_has "$selected" editor && echo 'set vicmd=$EDITOR' || echo 'set vicmd=vi'
         fm_selection_has "$selected" hidden && echo 'set dotfiles' || echo 'set nodotfiles'
-        fm_selection_has "$selected" ignorecase && echo 'set ignorecase'; fm_selection_has "$selected" smartcase && echo 'set smartcase'
-        fm_selection_has "$selected" wildmenu && echo 'set wildmenu'; fm_selection_has "$selected" syscalls && echo 'set syscalls'
-        fm_selection_has "$selected" mouse && echo 'set mouse=a' || echo 'set mouse='; fm_selection_has "$selected" trash && echo 'set trash'
-        fm_selection_has "$selected" confirm && echo 'set confirm'; fm_selection_has "$selected" dirfirst && echo 'set sortnumbers'
-        cols='name'; fm_selection_has "$selected" permissions && cols='permissions:10,name'; fm_selection_has "$selected" size && cols="$cols,size:7"
+        fm_selection_has "$selected" ignorecase && echo 'set ignorecase' || echo 'set noignorecase'
+        fm_selection_has "$selected" smartcase && echo 'set smartcase'
+        fm_selection_has "$selected" incsearch && echo 'set incsearch'
+        fm_selection_has "$selected" hlsearch && echo 'set hlsearch'
+        fm_selection_has "$selected" wildmenu && echo 'set wildmenu'
+        fm_selection_has "$selected" wildstyle && echo 'set wildstyle=popup'
+        fm_selection_has "$selected" syscalls && echo 'set syscalls'
+        fm_selection_has "$selected" mouse && echo 'set mouse=a' || echo 'set mouse='
+        fm_selection_has "$selected" trash && echo 'set trash' || echo 'set notrash'
+        fm_selection_has "$selected" confirm && echo 'set confirm=delete,permdelete' || echo 'set confirm='
+        fm_selection_has "$selected" dirfirst && echo 'set sortnumbers'
+        fm_selection_has "$selected" numbers && echo 'set number relativenumber'
+        fm_selection_has "$selected" history && echo 'set history=100'
+        fm_selection_has "$selected" undolevels && echo 'set undolevels=100'
+        fm_selection_has "$selected" millerview && echo 'set milleroptions=lsize:1,csize:2,rsize:1' && echo 'set millerview'
+        fm_selection_has "$selected" quickview && echo 'view'
+        cols='name'
+        fm_selection_has "$selected" permissions && cols="permissions:10,$cols"
+        fm_selection_has "$selected" size && cols="$cols,size:7"
+        fm_selection_has "$selected" mtime && cols="$cols,mtime:15"
         echo "set viewcolumns=-$cols"
+        fm_selection_has "$selected" statusline && echo 'set statusline="  %t%= %A %10u:%-7g %15s %20d  "'
         fm_selection_has "$selected" preview && echo 'map w :view<cr>'
         fm_selection_has "$selected" homebind && echo 'map gh :cd ~<cr>'
+        fm_selection_has "$selected" configbind && echo 'map gc :cd ~/.config<cr>'
+        fm_selection_has "$selected" trashbind && echo 'map DD :delete<cr>'
+        fm_selection_has "$selected" fzfbind && echo 'command! FZFlocate :set noquickview | :!find . -type f 2>/dev/null | fzf > /tmp/vifm-fzf %i'
     } > "$f"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/vifm" 2>/dev/null || true
-    tui_msg "Configured" "Vifm configuration generated for $u."
+    tui_msg "Configured" "Vifm configuration generated for $u ($(grep -c . "$f") lines)."
 }
 
 fm_configure_broot_menu() {
@@ -6406,13 +6789,22 @@ fm_configure_broot_menu() {
         sizes        "Show file sizes" on \
         dates        "Show modification dates" off \
         permissions  "Show permissions" off \
+        counts       "Show child counts for directories" off \
         gitstatus    "Show Git status" on \
         icons        "Show file icons" on \
         mouse        "Capture mouse input" on \
-        quitroot     "Quit when opening a directory" on \
-        preview      "Enable preview transformer" on \
-        homeverb     "Add home navigation verb" on \
-        trashverb    "Add trash-put verb" on) || return 0
+        quitroot     "Quit when the last state is cancelled" on \
+        preview      "Enable the preview panel" on \
+        syntax       "Enable syntax-highlighted previews" on \
+        modal        "Enable modal (vim-like) mode" off \
+        sortsize     "Sort by size by default" off \
+        maxdepth     "Limit the default search depth" off \
+        homeverb     "Add a home navigation verb" on \
+        configverb   "Add a config-directory verb" on \
+        trashverb    "Add a trash-put verb" on \
+        editverb     "Add an edit-in-EDITOR verb" on \
+        terminalverb "Add an open-terminal-here verb" off \
+        gitdiffverb  "Add a git diff verb" off) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"
     {
         echo '{'
@@ -6421,18 +6813,28 @@ fm_configure_broot_menu() {
         echo "  show_sizes: $(fm_selection_has "$selected" sizes && echo true || echo false)"
         echo "  show_dates: $(fm_selection_has "$selected" dates && echo true || echo false)"
         echo "  show_permissions: $(fm_selection_has "$selected" permissions && echo true || echo false)"
+        echo "  show_counts: $(fm_selection_has "$selected" counts && echo true || echo false)"
         echo "  show_git_status: $(fm_selection_has "$selected" gitstatus && echo true || echo false)"
-        echo "  icons: $(fm_selection_has "$selected" icons && echo true || echo false)"
+        echo "  icon_theme: $(fm_selection_has "$selected" icons && echo '"vscode"' || echo 'null')"
         echo "  capture_mouse: $(fm_selection_has "$selected" mouse && echo true || echo false)"
         echo "  quit_on_last_cancel: $(fm_selection_has "$selected" quitroot && echo true || echo false)"
-        fm_selection_has "$selected" preview && echo '  preview_transformers: []'
+        echo "  modal: $(fm_selection_has "$selected" modal && echo true || echo false)"
+        echo "  syntax_theme: $(fm_selection_has "$selected" syntax && echo '"GithubDark"' || echo 'null')"
+        fm_selection_has "$selected" sortsize && echo '  default_flags: "-s"'
+        fm_selection_has "$selected" maxdepth && echo '  max_panels_count: 2'
+        fm_selection_has "$selected" preview && echo '  show_selection_mark: true'
         echo '  verbs: ['
-        fm_selection_has "$selected" homeverb && echo '    { invocation: "home", execution: ":focus ~/" }'
-        fm_selection_has "$selected" trashverb && echo '    { invocation: "trash {file}", execution: "trash-put {file}" }'
-        echo '  ]'; echo '}'
+        fm_selection_has "$selected" homeverb    && echo '    { invocation: "home", key: "ctrl-h", execution: ":focus ~/" }'
+        fm_selection_has "$selected" configverb  && echo '    { invocation: "conf", execution: ":focus ~/.config" }'
+        fm_selection_has "$selected" trashverb   && echo '    { invocation: "trash", execution: "trash-put {file}", leave_broot: false }'
+        fm_selection_has "$selected" editverb    && echo '    { invocation: "edit", key: "ctrl-e", execution: "$EDITOR {file}", leave_broot: false }'
+        fm_selection_has "$selected" terminalverb && echo '    { invocation: "term", execution: "$SHELL", set_working_dir: true, leave_broot: false }'
+        fm_selection_has "$selected" gitdiffverb && echo '    { invocation: "gd", execution: "git diff {file}", leave_broot: false }'
+        echo '  ]'
+        echo '}'
     } > "$f"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/broot" 2>/dev/null || true
-    tui_msg "Configured" "Broot configuration generated for $u."
+    tui_msg "Configured" "Broot configuration generated for $u ($(grep -c . "$f") lines)."
 }
 
 fm_configure_xplr_menu() {
@@ -6447,27 +6849,61 @@ fm_configure_xplr_menu() {
         caseignore  "Case-insensitive sorting" on \
         icons       "Enable icon support hooks" on \
         borders     "Draw panel borders" on \
+        readonly    "Start in read-only mode" off \
+        paginate    "Show the pagination indicator" on \
+        selectionui "Show the selection panel" on \
+        hidewarn    "Hide the startup warning banner" on \
         homebind    "Map g,h to home" on \
+        configbind  "Map g,c to the config directory" on \
+        rootbind    "Map g,r to the filesystem root" off \
         shellbind   "Map ! to interactive shell" on \
         quitbind    "Map q to quit" on \
-        trashbind   "Map d to trash-put" on) || return 0
+        quitcdbind  "Map Q to quit and print the directory" off \
+        trashbind   "Map d to trash-put" on \
+        editbind    "Map e to open in EDITOR" on \
+        copybind    "Map y,p to copy the path to the clipboard" off \
+        mkdirbind   "Map m,d to create a directory" off) || return 0
     mkdir -p "$(dirname "$f")"; fm_backup_config "$f"
     {
         echo "version = '0.21.9'"
+        echo
         echo "xplr.config.general.show_hidden = $(fm_selection_has "$selected" hidden && echo true || echo false)"
         echo "xplr.config.general.enable_mouse = $(fm_selection_has "$selected" mouse && echo true || echo false)"
-        echo "xplr.config.general.sort_and_filter_ui.lines = { 'Sort & filter' }"
-        fm_selection_has "$selected" borders && echo "xplr.config.general.panel_ui.default = { title = nil }"
-        echo 'local key = xplr.config.modes.builtin.default.key_bindings.on_key'
-        fm_selection_has "$selected" homebind && echo "key.g = { help = 'go to', messages = { 'PopMode', { SwitchModeCustom = 'go_to' } } }"
-        fm_selection_has "$selected" shellbind && echo "key['!'] = { help = 'shell', messages = { { BashExec0 = '\\${SHELL:-sh}' } } }"
+        echo "xplr.config.general.read_only = $(fm_selection_has "$selected" readonly && echo true || echo false)"
+        echo "xplr.config.general.enable_recover_mode = true"
+        fm_selection_has "$selected" hidewarn && echo "xplr.config.general.disable_debug_error_mode = true"
+        fm_selection_has "$selected" paginate || echo "xplr.config.general.paginated_ui = false"
+        fm_selection_has "$selected" selectionui || echo "xplr.config.general.selection_ui = nil"
+        fm_selection_has "$selected" borders && echo "xplr.config.general.panel_ui.default.borders = { 'Top', 'Right', 'Bottom', 'Left' }"
+        echo
+        echo "-- Sorters are applied in order."
+        echo "xplr.config.general.initial_sorting = {"
+        fm_selection_has "$selected" dirfirst && echo "  { sorter = 'ByIsDir', reverse = false },"
+        if fm_selection_has "$selected" natural; then
+            echo "  { sorter = 'ByIRelativePath', reverse = $(fm_selection_has "$selected" reverse && echo true || echo false) },"
+        elif fm_selection_has "$selected" caseignore; then
+            echo "  { sorter = 'ByIRelativePath', reverse = $(fm_selection_has "$selected" reverse && echo true || echo false) },"
+        else
+            echo "  { sorter = 'ByRelativePath', reverse = $(fm_selection_has "$selected" reverse && echo true || echo false) },"
+        fi
+        echo "}"
+        echo
+        echo "local key = xplr.config.modes.builtin.default.key_bindings.on_key"
         fm_selection_has "$selected" quitbind && echo "key.q = { help = 'quit', messages = { 'Quit' } }"
-        fm_selection_has "$selected" trashbind && echo "key.d = { help = 'trash', messages = { { BashExecSilently0 = 'trash-put \\"$XPLR_FOCUS_PATH\\"' }, 'PopMode' } }"
-        fm_selection_has "$selected" icons && echo "-- Install an icon plugin from the xplr plugin manager to activate icon rendering."
-        echo "-- Sorting selections: directories-first=$(fm_selection_has "$selected" dirfirst && echo true || echo false), natural=$(fm_selection_has "$selected" natural && echo true || echo false), reverse=$(fm_selection_has "$selected" reverse && echo true || echo false), case-insensitive=$(fm_selection_has "$selected" caseignore && echo true || echo false)"
+        fm_selection_has "$selected" quitcdbind && echo "key.Q = { help = 'quit and print', messages = { 'PrintPwdAndQuit' } }"
+        fm_selection_has "$selected" shellbind && echo "key['!'] = { help = 'shell', messages = { { BashExec0 = [[\${SHELL:-sh}]] } } }"
+        fm_selection_has "$selected" homebind && echo "key.g = { help = 'go to', messages = { 'PopMode', { SwitchModeCustom = 'go_to' } } }"
+        fm_selection_has "$selected" editbind && echo "key.e = { help = 'edit', messages = { { BashExec0 = [[\${EDITOR:-vi} \"\$XPLR_FOCUS_PATH\"]] } } }"
+        fm_selection_has "$selected" trashbind && echo "key.d = { help = 'trash', messages = { { BashExecSilently0 = [[trash-put \"\$XPLR_FOCUS_PATH\"]] }, 'ExplorePwdAsync' } }"
+        fm_selection_has "$selected" copybind && echo "key.y = { help = 'copy path', messages = { { BashExecSilently0 = [[printf '%s' \"\$XPLR_FOCUS_PATH\" | (xclip -sel clip 2>/dev/null || wl-copy 2>/dev/null)]] } } }"
+        fm_selection_has "$selected" mkdirbind && echo "key.m = { help = 'mkdir', messages = { { BashExec0 = [[printf 'Directory name: '; read -r d; [ -n \"\$d\" ] && mkdir -p -- \"\$d\"]] }, 'ExplorePwdAsync' } }"
+        echo
+        echo "xplr.config.modes.builtin.default.key_bindings.on_key['g'] = xplr.config.modes.builtin.default.key_bindings.on_key['g'] or nil"
+        fm_selection_has "$selected" configbind && echo "-- g,c and g,r are provided by the go_to mode; see :help go_to"
+        fm_selection_has "$selected" icons && echo "-- Install an icon plugin from the plugin manager to activate icon rendering."
     } > "$f"
     chown -R "$u":"$(id -gn "$u")" "$h/.config/xplr" 2>/dev/null || true
-    tui_msg "Configured" "xplr configuration generated for $u."
+    tui_msg "Configured" "xplr configuration generated for $u ($(grep -c . "$f") lines)."
 }
 
 fm_configure_menu() {
