@@ -3,7 +3,7 @@
 PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$PROV_RUNTIME_DIR/runtime.sh" ] && . "$PROV_RUNTIME_DIR/runtime.sh"
 
-provision_devuan() {
+provision_devuan_impl() {
     provision_require_family devuan || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
@@ -105,4 +105,13 @@ NICETIES
     tui_msg "Devuan Provisioning Complete" "Devuan has been provisioned successfully!"
 }
 
-export -f provision_devuan
+# Provisioning mutates the live system, so it wants fail-fast semantics. That
+# used to come from a shell-wide `set -eE` in config.sh, which also applied to
+# the interactive TUI and turned every dialog Cancel into a fatal error. The
+# strictness now lives here, scoped to this routine and contained in a subshell
+# so a failure aborts the provisioning run without tearing down the menu.
+provision_devuan() {
+    run_strict "provision_devuan" provision_devuan_impl "$@"
+}
+
+export -f provision_devuan_impl provision_devuan

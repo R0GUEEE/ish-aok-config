@@ -1230,7 +1230,13 @@ rootfs_continue_generation() { # <target>
     tui_msg "Recovery complete" "Generation recovery finished for:\n$t\n\nReview the log for any package-specific warnings: $LOGFILE"
 }
 
+# Entry point kept thin: the build itself runs fail-fast inside run_strict so a
+# mid-build failure aborts the build rather than the whole TUI.
 rootfs_builder() {
+    run_strict "rootfs_builder" rootfs_builder_impl "$@"
+}
+
+rootfs_builder_impl() {
     local distro backend release arch mirror target pkgs hostname_v rootpw
     local init_choice init_pkgs="" preset use_qemu=0
 

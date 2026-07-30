@@ -17,7 +17,7 @@ PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   • Additional user/group management
 ###############################################################################
 
-provision_arch_enhanced() {
+provision_arch_enhanced_impl() {
     provision_require_family archlinux || return $?
     local cfg_file="$1"
     
@@ -369,4 +369,13 @@ Auto-Update: $([ $enable_autoupdate = 1 ] && echo enabled || echo disabled)
 Re-login to activate changes.\n\nServices enabled: $services"
 }
 
-export -f provision_arch_enhanced
+# Provisioning mutates the live system, so it wants fail-fast semantics. That
+# used to come from a shell-wide `set -eE` in config.sh, which also applied to
+# the interactive TUI and turned every dialog Cancel into a fatal error. The
+# strictness now lives here, scoped to this routine and contained in a subshell
+# so a failure aborts the provisioning run without tearing down the menu.
+provision_arch_enhanced() {
+    run_strict "provision_arch_enhanced" provision_arch_enhanced_impl "$@"
+}
+
+export -f provision_arch_enhanced_impl provision_arch_enhanced

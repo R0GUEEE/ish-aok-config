@@ -3,7 +3,13 @@
 # systui — Core Configuration & System Detection
 ###############################################################################
 
-set -eE
+# Strict mode is deliberately NOT enabled here.
+#
+# config.sh is sourced by the interactive TUI, and `dialog` returns 1 on Cancel
+# and 255 on ESC as ordinary control flow. Under a shell-wide `set -e` plus an
+# ERR trap, any call site that forgets `|| ...` turns a user pressing Escape
+# into a fatal error and a full exit. Provisioning routines -- which do want
+# fail-fast semantics -- opt in explicitly via run_strict() below.
 
 # Project info
 SYSTUI_VERSION="1.0.0"
@@ -21,9 +27,32 @@ SYSTUI_TMP=$(mktemp -d "$SYSTUI_TMP_ROOT/systui.XXXXXX") || exit 1
 chmod 700 "$SYSTUI_TMP"
 : > "$SYSTUI_TMP/.systui-owned"
 export SYSTUI_TMP
-LOGFILE="$SYSTUI_TMP/systui.log"
+# The log must outlive the workspace: the EXIT trap removes $SYSTUI_TMP, and
+# run_cmd tells the user to go read $LOGFILE after a failure. Prefer a durable
+# location, fall back to the workspace only if that is not writable.
+systui_pick_logfile() {
+    local candidate
+    for candidate in "${SYSTUI_LOGFILE:-}" /var/log/systui.log "$HOME/.local/state/systui.log"; do
+        [ -n "$candidate" ] || continue
+        mkdir -p "$(dirname "$candidate")" 2>/dev/null || continue
+        if : >> "$candidate" 2>/dev/null; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    printf '%s\n' "$SYSTUI_TMP/systui.log"
+}
+LOGFILE=$(systui_pick_logfile)
 WARNFILE="$SYSTUI_TMP/systui.warnings"
-: > "$LOGFILE"
+chmod 0640 "$LOGFILE" 2>/dev/null || true
+log_rotate_if_large() {
+    # Keep one previous generation; the log is append-only across runs now.
+    local max=$((5 * 1024 * 1024)) size
+    size=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
+    [ "${size:-0}" -gt "$max" ] && mv -f "$LOGFILE" "$LOGFILE.1" 2>/dev/null && : > "$LOGFILE"
+    return 0
+}
+log_rotate_if_large
 : > "$WARNFILE"
 cleanup_systui_tmp() {
     case "${SYSTUI_TMP:-}" in
@@ -67,7 +96,25 @@ die() {
     exit 1
 }
 
-trap 'die "Unexpected error on line $LINENO"' ERR
+###############################################################################
+# STRICT EXECUTION (opt-in)
+###############################################################################
+
+# run_strict <function> [args...]
+#
+# Runs one routine with fail-fast semantics in a subshell, so a failure aborts
+# that routine without tearing down the TUI around it. Provisioning and rootfs
+# build routines use this; menu and widget code must not.
+#
+# Returns the routine's exit status; 1 if it tripped the ERR trap.
+run_strict() {
+    local desc="$1"; shift
+    (
+        set -eE
+        trap 'warn "$desc: unexpected error on line $LINENO"; exit 1' ERR
+        "$@"
+    )
+}
 
 ###############################################################################
 # SYSTEM DETECTION
@@ -173,24 +220,59 @@ show_warnings() {
     fi
 }
 
-# Simple configuration reader
-get_config() {
-    local key="$1" default="${2:-}"
-    if [ -f ~/.systui/config ]; then
-        grep "^$key=" ~/.systui/config | cut -d= -f2- || echo "$default"
+# Configuration lives in one place regardless of how root was obtained. Using
+# a bare ~ is ambiguous under sudo: whether HOME is reset to /root or kept as
+# the invoking user's home depends on the distribution's sudoers policy, so the
+# same install would read and write two different files.
+systui_config_dir() {
+    if [ -n "${SYSTUI_CONFIG_DIR:-}" ]; then
+        printf '%s\n' "$SYSTUI_CONFIG_DIR"
+    elif [ "$(id -u)" -eq 0 ]; then
+        printf '%s\n' /etc/systui
     else
-        echo "$default"
+        printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systui"
+    fi
+}
+
+systui_config_file() {
+    printf '%s/config\n' "$(systui_config_dir)"
+}
+
+get_config() {
+    local key="$1" default="${2:-}" file value
+    file=$(systui_config_file)
+    [ -f "$file" ] || { printf '%s\n' "$default"; return 0; }
+    # `grep ... | cut ...` cannot report "key absent": grep exits 1 but cut
+    # exits 0 with empty output, so the pipeline succeeds and a trailing
+    # `|| echo "$default"` never fires. Test the captured value instead.
+    value=$(grep -m1 "^$key=" "$file" 2>/dev/null) || value=""
+    if [ -z "$value" ]; then
+        printf '%s\n' "$default"
+    else
+        printf '%s\n' "${value#*=}"
     fi
 }
 
 set_config() {
-    local key="$1" value="$2"
-    mkdir -p ~/.systui
-    if grep -q "^$key=" ~/.systui/config 2>/dev/null; then
-        sed -i "s|^$key=.*|$key=$value|" ~/.systui/config
-    else
-        echo "$key=$value" >> ~/.systui/config
-    fi
+    local key="$1" value="$2" file dir tmp
+    dir=$(systui_config_dir); file="$dir/config"
+    mkdir -p "$dir" || return 1
+    [ -f "$file" ] || : > "$file"
+    # Rewritten with awk rather than `sed s|...|$value|`: an unescaped value
+    # containing | & or \ either breaks the expression outright or silently
+    # expands (& is "the whole match" in a sed replacement).
+    tmp=$(mktemp "$dir/.config.XXXXXX") || return 1
+    # Passed through the environment rather than -v: awk applies backslash
+    # escape processing to -v assignments, so -v val='a\c' would silently
+    # become 'ac'. ENVIRON[] is taken literally.
+    SYSTUI_CFG_KEY="$key" SYSTUI_CFG_VAL="$value" awk '
+        BEGIN { key = ENVIRON["SYSTUI_CFG_KEY"]; val = ENVIRON["SYSTUI_CFG_VAL"]; done = 0 }
+        index($0, key "=") == 1 { if (!done) { print key "=" val; done = 1 } ; next }
+        { print }
+        END { if (!done) print key "=" val }
+    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 0644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file"
 }
 
-export -f log warn die get_config set_config
+export -f log warn die get_config set_config systui_config_dir systui_config_file run_strict

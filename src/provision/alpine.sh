@@ -5,7 +5,7 @@ PROV_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # systui — Provision Alpine Linux 3.23+
 ###############################################################################
 
-provision_alpine() {
+provision_alpine_impl() {
     provision_require_family alpine || return $?
     local tz="$1" user="$2" host="$3" nopass="$4"
     
@@ -109,4 +109,13 @@ NICETIES
     tui_msg "Alpine Provisioning Complete" "Alpine Linux has been provisioned successfully.\n\nRe-login to activate bash + MOTD.\n\nServices enabled: sshd, syslog-ng, cronie, chronyd"
 }
 
-export -f provision_alpine
+# Provisioning mutates the live system, so it wants fail-fast semantics. That
+# used to come from a shell-wide `set -eE` in config.sh, which also applied to
+# the interactive TUI and turned every dialog Cancel into a fatal error. The
+# strictness now lives here, scoped to this routine and contained in a subshell
+# so a failure aborts the provisioning run without tearing down the menu.
+provision_alpine() {
+    run_strict "provision_alpine" provision_alpine_impl "$@"
+}
+
+export -f provision_alpine_impl provision_alpine
