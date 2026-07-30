@@ -275,14 +275,25 @@ check "menu_flatpak_install exists"     function_exists menu_flatpak_install
 check "menu_snap_install exists"        function_exists menu_snap_install
 # Root-compatible Homebrew installer tests
 check "menu_brew_install exists"               function_exists menu_brew_install
-check "brew root installer embedded"           contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" "Root-managed Homebrew installer"
+check "brew root installer helper exists"      function_exists brew_root_compat_script
+check "brew root env helper exists"            function_exists brew_root_compat_env_file
+check "brew root installer moved to share/"    test -f "$PROJECT_DIR/share/homebrew/install-homebrew-root.sh"
+check "brew sysconfig uses shared installer path" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'share/homebrew/install-homebrew-root.sh'
 check "brew root install checks root UID"      contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "Root privileges are required"
-check "brew LD_PRELOAD shim present"           contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" "libhomebrew_fakeuid.so"
-check "brew linuxbrew prefix present"          contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" "/home/linuxbrew/.linuxbrew"
+check "brew installer defines LD_PRELOAD shim" contains \
+    "$PROJECT_DIR/share/homebrew/install-homebrew-root.sh" "libhomebrew_fakeuid.so"
+check "brew installer defines linuxbrew prefix" contains \
+    "$PROJECT_DIR/share/homebrew/install-homebrew-root.sh" "/home/linuxbrew/.linuxbrew"
+check "brew installer defines permanent env dir" contains \
+    "$PROJECT_DIR/share/homebrew/install-homebrew-root.sh" 'readonly ROOT_ENV_DIR="/etc/systui"'
+check "brew installer defines permanent env file variable" contains \
+    "$PROJECT_DIR/share/homebrew/install-homebrew-root.sh" 'readonly ROOT_ENV_FILE="${ROOT_ENV_DIR}/homebrew.env"'
+check "brew advanced config targets permanent env file when active" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "/etc/systui/homebrew.env"
+check "brew installer is no longer embedded in sysconfig" not_contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Root-managed Homebrew installer for Debian arm64 on iSH-AOK."
 check "brew pm install option removed" not_contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" 'Package manager (${PM} install brew)'
 check "nix determinate installer URL present" contains \

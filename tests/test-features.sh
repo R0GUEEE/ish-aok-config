@@ -352,10 +352,14 @@ run advrun >/dev/null 2>&1
 
 for pair in "pip:.config/pip/pip.conf" "npm:.npmrc" "pnpm:.config/pnpm/rc" "yarn:.yarnrc" \
             "cargo:.cargo/config.toml" "gem:.gemrc" "go:.config/go/env" \
-            "composer:.config/composer/config.json" "nix:.config/nix/nix.conf" \
-            "brew:.config/homebrew/brew.env"; do
+            "composer:.config/composer/config.json" "brew:.config/homebrew/brew.env"; do
     check "${pair%%:*} advanced menu writes ${pair#*:}" test -s "$HOME/${pair#*:}"
 done
+if [ "$(id -u)" -eq 0 ]; then
+    check "nix advanced menu writes /etc/nix/nix.conf when root" test -s /etc/nix/nix.conf
+else
+    check "nix advanced menu writes .config/nix/nix.conf" test -s "$HOME/.config/nix/nix.conf"
+fi
 
 helper cargotoml <<'EOF'
 python3 - <<'PY'

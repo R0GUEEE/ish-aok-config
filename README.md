@@ -68,6 +68,8 @@ systui/
 │       └── ultimate-provision.sh # Quick-setup lifecycle menu
 │
 ├── share/                    # Non-code resources
+│   ├── homebrew/             # Root-compatible Homebrew compatibility layer
+│   │   └── install-homebrew-root.sh
 │   └── config/               # Configuration templates
 │       └── provision-example.conf # Example provisioning config
 │
@@ -583,6 +585,11 @@ The RootFS Builder now opens a categorized package catalogue after preset select
 ## Expanded package-manager configuration
 
 System Configuration > Packages > Managers now provides configuration and maintenance hubs for APT, apt-fast, Nala, aptitude, pacman, yay, paru, DNF, YUM, zypper, apk, XBPS, Portage, Flatpak, Snap, Nix, Homebrew, pip, pipx, npm, pnpm, Yarn, Cargo, RubyGems, Composer, and Go tools.
+
+Homebrew is managed through a permanent root-compatibility layer for iSH-AOK /
+Debian arm64: a shared installer under `share/homebrew/`, a system wrapper at
+`/usr/local/bin/brew`, a UID shim at `/usr/local/lib/homebrew-root/`, and a
+managed environment file at `/etc/systui/homebrew.env`.
 
 ## Notes on behaviour
 
