@@ -3,10 +3,19 @@ set -eu
 
 PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 SYSTUI_PROVISION_CONFIG="${TMPDIR:-/tmp}/systui-provision-menu-test.$$"
+SYSTUI_PROVISION_TOOL="${TMPDIR:-/tmp}/systui-provision-tool-test.$$"
+LIBDIR="$PROJECT_DIR"
 export SYSTUI_PROVISION_CONFIG
-trap 'rm -f -- "$SYSTUI_PROVISION_CONFIG"' EXIT
+export SYSTUI_PROVISION_TOOL LIBDIR
+trap 'rm -f -- "$SYSTUI_PROVISION_CONFIG" "$SYSTUI_PROVISION_TOOL"' EXIT
 
 . "$PROJECT_DIR/src/features/provision-system.sh"
+
+# Provisioning is reachable only from System Configuration, not Main Menu.
+! grep -q 'provision "Provision System' "$PROJECT_DIR/install.sh"
+grep -q 'provision.*"Provision tool (install, configure, and manage)"' \
+    "$PROJECT_DIR/src/features/sysconfig.sh"
+grep -q 'provision).*menu_provision_tool' "$PROJECT_DIR/src/features/sysconfig.sh"
 
 SCRIPT_PROV_TZ=UTC
 SCRIPT_PROV_USER=tester
@@ -29,4 +38,11 @@ unset SCRIPT_PROV_TZ
 script_provision_load
 [ ! -e /tmp/systui-provision-menu-injected ]
 
-echo "ok - provision menu settings round-trip safely"
+[ "$(script_provision_tool_status)" = "not installed" ]
+script_provision_install_tool
+[ -x "$SYSTUI_PROVISION_TOOL" ]
+[ "$(script_provision_tool_status)" = "installed (current)" ]
+script_provision_remove_tool
+[ ! -e "$SYSTUI_PROVISION_TOOL" ]
+
+echo "ok - provision tool settings and lifecycle work safely"

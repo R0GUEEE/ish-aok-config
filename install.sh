@@ -291,7 +291,6 @@ main_menu() {
     while true; do
         local choice
         choice=$(tui_menu "Main Menu" "systui — choose a section:" \
-            provision "Provision System (configure and run script)" \
             rootfs    "Rootfs Builder (create minimal systems)" \
             config    "System Configuration" \
             awesome   "Awesome Linux (software catalogue)" \
@@ -299,9 +298,6 @@ main_menu() {
             quit      "Quit") || return 0
         
         case "$choice" in
-            provision)
-                menu_provision_system
-                ;;
             rootfs)
                 menu_rootfs
                 ;;
@@ -346,9 +342,7 @@ systui is a terminal-based user interface for Linux system configuration,
 provisioning, and management.
 .SH FEATURES
 .IP "•" 2
-Provision System: Configure and run the bundled Debian-family setup script
-.IP "•" 2
-System Configuration: Shells, repositories, packages
+System Configuration: Provision tool, shells, repositories, packages
 .IP "•" 2
 Dialog-based TUI: Easy navigation and configuration
 .SH REQUIREMENTS

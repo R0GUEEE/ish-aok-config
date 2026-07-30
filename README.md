@@ -30,9 +30,10 @@ sudo systui
 ```bash
 sudo systui
 → Main Menu
-→ Provision System
+→ System Configuration → Provision Tool
+→ Install or update provision tool
 → Configure (set timezone, username, hostname, sudo preference)
-→ Run Provision Script
+→ Run installed provision tool
 → Re-login to activate changes
 ```
 
@@ -213,10 +214,13 @@ sudo systui
 
 # Navigate with arrow keys, Enter to select
 Main Menu
-  → Provision System
-    → Configure script settings
-    → Review settings and detected system
-    → Run provision script
+  → System Configuration
+    → Provision Tool
+      → Install or update provision tool
+      → Configure provision tool
+      → Show tool status and settings
+      → Run installed provision tool
+      → Remove provision tool
 ```
 
 ### Provisioning a Fresh System
@@ -224,12 +228,13 @@ Main Menu
 ```bash
 # On Debian, Ubuntu, Kali, Devuan, or another compatible APT system
 sudo systui
-→ Provision System → Configure Script Settings
+→ System Configuration → Provision Tool → Install or Update Provision Tool
+→ Configure Provision Tool
 → Timezone: UTC
 → Username: admin
 → Hostname: myserver
 → Sudo: password required (or passwordless)
-→ Run Provision Script
+→ Run Installed Provision Tool
 
 # Provisioning starts automatically
 # Takes 5-15 minutes depending on internet speed
@@ -241,15 +246,15 @@ sudo systui
 For automation/CI-CD:
 
 ```bash
-# Run the bundled script directly
-sudo sh /usr/local/lib/systui/src/provision/provision-system.sh
+# Run the installed tool directly
+sudo provision-system
 
 # Pre-set environment variables for non-interactive mode
 TZ_NAME=UTC \
 TARGET_USER=admin \
 NEW_HOSTNAME=prod-server \
 SUDO_NOPASSWD=0 \
-sudo -E sh /usr/local/lib/systui/src/provision/provision-system.sh
+sudo -E provision-system
 ```
 
 ## Configuration
@@ -465,12 +470,13 @@ The package catalogue now includes:
   version-hold and package-integrity actions.
 - Package-name translation for APT, APK, Pacman and DNF environments.
 
-## Provision System
+## Provision Tool
 
-The Provision System menu configures and runs the bundled
-`src/provision/provision-system.sh` script. It exposes the script's supported
-settings: timezone, primary login, hostname, and sudo authentication policy.
-Settings are saved in `/etc/systui/provision-system.conf`.
+The Provision Tool manager is under **System Configuration**. It installs or
+updates the bundled `src/provision/provision-system.sh` as
+`/usr/local/sbin/provision-system`, configures it, shows its status, runs it,
+and removes it. Settings are saved in `/etc/systui/provision-system.conf` and
+are retained when the tool is removed.
 
 Before execution, the menu shows a full review and asks for confirmation. The
 script installs its terminal toolset and configures services, shell defaults,

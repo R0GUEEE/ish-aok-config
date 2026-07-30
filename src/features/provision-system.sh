@@ -1,5 +1,42 @@
 #!/bin/bash
-# Menu for configuring and running the bundled provision-system script.
+# Install, configure, and manage the standalone provision tool.
+
+script_provision_source_path() {
+    printf '%s\n' "$LIBDIR/src/provision/provision-system.sh"
+}
+
+script_provision_tool_path() {
+    printf '%s\n' "${SYSTUI_PROVISION_TOOL:-/usr/local/sbin/provision-system}"
+}
+
+script_provision_tool_status() {
+    local source tool
+    source=$(script_provision_source_path)
+    tool=$(script_provision_tool_path)
+    if [ ! -f "$tool" ]; then
+        printf '%s\n' "not installed"
+    elif [ -r "$source" ] && cmp -s "$source" "$tool"; then
+        printf '%s\n' "installed (current)"
+    else
+        printf '%s\n' "installed (update available or locally modified)"
+    fi
+}
+
+script_provision_install_tool() {
+    local source tool tool_dir
+    source=$(script_provision_source_path)
+    tool=$(script_provision_tool_path)
+    tool_dir=$(dirname "$tool")
+    [ -r "$source" ] || return 1
+    mkdir -p "$tool_dir" || return 1
+    install -m 0755 "$source" "$tool"
+}
+
+script_provision_remove_tool() {
+    local tool
+    tool=$(script_provision_tool_path)
+    [ ! -e "$tool" ] || rm -f -- "$tool"
+}
 
 script_provision_defaults() {
     : "${SCRIPT_PROV_TZ:=America/Los_Angeles}"
@@ -48,11 +85,14 @@ script_provision_save() {
 }
 
 script_provision_review() {
-    local review_file="$SYSTUI_TMP/provision-system.review"
+    local review_file="$SYSTUI_TMP/provision-system.review" tool
+    tool=$(script_provision_tool_path)
     {
-        echo "PROVISION SYSTEM"
+        echo "PROVISION TOOL"
         echo
-        echo "Script: $LIBDIR/src/provision/provision-system.sh"
+        echo "Bundled source: $(script_provision_source_path)"
+        echo "Installed tool: $tool"
+        echo "Status: $(script_provision_tool_status)"
         echo "Detected system: ${DISTRO_PRETTY_NAME:-${DISTRO:-unknown}}"
         echo "Package manager: ${PM:-unknown}"
         echo "Init system: ${INIT:-unknown}"
@@ -132,10 +172,44 @@ script_provision_configure() {
     done
 }
 
+script_provision_install_action() {
+    local status
+    status=$(script_provision_tool_status)
+    if [ "$status" != "not installed" ]; then
+        tui_yesno "Update Provision Tool" "Replace the installed provision tool with the bundled version?" || return 0
+    fi
+    if script_provision_install_tool; then
+        tui_msg "Provision Tool" "The provision tool is installed and current at:\n$(script_provision_tool_path)"
+    else
+        tui_msg "Installation Failed" "Could not install the bundled provision tool."
+    fi
+}
+
+script_provision_remove_action() {
+    local tool config_file
+    tool=$(script_provision_tool_path)
+    config_file=$(script_provision_config_file)
+    [ -e "$tool" ] || {
+        tui_msg "Provision Tool" "The provision tool is not installed."
+        return 0
+    }
+    tui_yesno "Remove Provision Tool" "Remove the installed tool?\n\n$tool\n\nSaved configuration will be kept." || return 0
+    if script_provision_remove_tool; then
+        tui_msg "Provision Tool Removed" "Removed $tool\n\nConfiguration was kept at:\n$config_file"
+    else
+        tui_msg "Removal Failed" "Could not remove $tool"
+    fi
+}
+
+script_provision_status() {
+    script_provision_review
+}
+
 script_provision_run() {
-    local script="$LIBDIR/src/provision/provision-system.sh" rc=0
-    [ -r "$script" ] || {
-        tui_msg "Provision Script Missing" "The bundled provision script was not found at:\n$script"
+    local script rc=0
+    script=$(script_provision_tool_path)
+    [ -x "$script" ] || {
+        tui_msg "Provision Tool Not Installed" "Install the provision tool before running it."
         return 0
     }
     if ! command -v apt-get >/dev/null 2>&1; then
@@ -149,7 +223,7 @@ script_provision_run() {
     if env TZ_NAME="$SCRIPT_PROV_TZ" \
         TARGET_USER="$SCRIPT_PROV_USER" \
         NEW_HOSTNAME="$SCRIPT_PROV_HOST" \
-        SUDO_NOPASS="$SCRIPT_PROV_NOPASS" \
+        SUDO_NOPASSWD="$SCRIPT_PROV_NOPASS" \
         sh "$script"; then
         rc=0
     else
@@ -165,23 +239,27 @@ script_provision_run() {
     return 0
 }
 
-menu_provision_system() {
+menu_provision_tool() {
     local choice
     script_provision_load
     while true; do
-        choice=$(tui_menu "Provision System" \
-            "Configure and run the bundled Debian-family terminal provision script." \
-            configure "Configure script settings" \
-            review "Review settings and detected system" \
-            run "Run provision script" \
-            back "Back to main menu") || return 0
+        choice=$(tui_menu "Provision Tool" \
+            "Status: $(script_provision_tool_status)" \
+            install "Install or update provision tool" \
+            configure "Configure provision tool" \
+            status "Show tool status and settings" \
+            run "Run installed provision tool" \
+            remove "Remove provision tool" \
+            back "Back to System Configuration") || return 0
         case "$choice" in
+            install) script_provision_install_action ;;
             configure) script_provision_configure ;;
-            review) script_provision_review ;;
+            status) script_provision_status ;;
             run) script_provision_run ;;
+            remove) script_provision_remove_action ;;
             back) return 0 ;;
         esac
     done
 }
 
-export -f menu_provision_system
+export -f menu_provision_tool
