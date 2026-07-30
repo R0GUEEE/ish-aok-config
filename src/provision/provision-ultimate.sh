@@ -58,9 +58,8 @@ detect_distro() {
 detect_init_system() {
     if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         INIT_SYSTEM="systemd"
-    elif [ -x /sbin/init ] && /sbin/init --version 2>&1 | grep -q sysvinit; then
-        INIT_SYSTEM="sysvinit"
-    elif [ -L /sbin/init ] && readlink /sbin/init | grep -q sysvinit; then
+    elif ([ -L /sbin/init ] && readlink /sbin/init 2>/dev/null | grep -q sysvinit) || \
+         ([ -x /sbin/init ] && /sbin/init --version 2>&1 | grep -qi sysvinit); then
         INIT_SYSTEM="sysvinit"
     elif command -v rc-service >/dev/null 2>&1; then
         INIT_SYSTEM="openrc"
@@ -101,7 +100,7 @@ SUDO_NOPASSWD="${SUDO_NOPASSWD:-0}"
 DEF_TZ="${TZ_NAME:-America/Los_Angeles}"
 DEF_USER="${TARGET_USER:-${SUDO_USER:-}}"
 if [ -z "$DEF_USER" ] || [ "$DEF_USER" = root ]; then
-    DEF_USER="$(awk -F: '$3>=1000 && $3<2000 {print $1; exit}' /etc/passwd)"
+    DEF_USER="$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd)"
 fi
 [ -n "$DEF_USER" ] || DEF_USER="aok"
 DEF_HOSTNAME="$(cat /etc/hostname 2>/dev/null)"
@@ -156,8 +155,12 @@ case "$PACKAGE_MANAGER" in
 esac
 
 # Pre-seed the timezone so the tzdata postinst never tries to prompt.
-ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime 2>/dev/null || true
-printf '%s\n' "$TZ_NAME" > /etc/timezone
+if [ -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
+    ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime 2>/dev/null || true
+    printf '%s\n' "$TZ_NAME" > /etc/timezone
+else
+    warn "Timezone $TZ_NAME not found in zoneinfo; clock preset skipped"
+fi
 
 refresh_packages() {
     case "$PACKAGE_MANAGER" in
@@ -218,7 +221,9 @@ fi
 # command names in /usr/local/bin so muscle memory (and the fzf/profile glue
 # below) works. Only created when the target exists and the name is free.
 link_alt() {  # <real-binary> <wanted-name>
-    if command -v "$1" >/dev/null 2>&1 && ! command -v "$2" >/dev/null 2>&1; then
+    command -v "$1" >/dev/null 2>&1 || return 0
+    # Refresh if the wrapper symlink is absent or ours; skip real installed binaries.
+    if [ ! -e "/usr/local/bin/$2" ] || [ -L "/usr/local/bin/$2" ]; then
         ln -sf "$(command -v "$1")" "/usr/local/bin/$2" && note "ln /usr/local/bin/$2 -> $1"
     fi
 }
@@ -417,12 +422,51 @@ chmod 0644 /etc/profile.d/40-aok-tools.sh
 note "wrote /etc/profile.d/30-aok-niceties.sh and 40-aok-tools.sh"
 
 # ===========================================================================
+log "SSH hardening"
+# ===========================================================================
+if command -v sshd >/dev/null 2>&1; then
+    _SSH_MAIN=/etc/ssh/sshd_config
+    _SSH_DROP=/etc/ssh/sshd_config.d/20-systui.conf
+    # Use a drop-in if the main config already has an Include directive (sshd >=7.3)
+    if grep -q "^Include" "$_SSH_MAIN" 2>/dev/null && [ -d /etc/ssh/sshd_config.d ]; then
+        note "Writing SSH hardening drop-in: $_SSH_DROP"
+        cat > "$_SSH_DROP" <<'_SSHEOF'
+# Managed by systui provision -- do not edit manually.
+Port 22
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+StrictModes yes
+ClientAliveInterval 300
+ClientAliveCountMax 3
+_SSHEOF
+    else
+        note "Applying SSH hardening in-place: $_SSH_MAIN"
+        for _pair in "Port:22" "PermitRootLogin:no" "PasswordAuthentication:yes" \
+                     "PubkeyAuthentication:yes" "StrictModes:yes" \
+                     "ClientAliveInterval:300" "ClientAliveCountMax:3"; do
+            _k=${_pair%%:*}; _v=${_pair#*:}
+            if grep -qE "^[[:space:]]*#?[[:space:]]*${_k}[[:space:]]" "$_SSH_MAIN" 2>/dev/null; then
+                sed -i "s|^[[:space:]]*#*[[:space:]]*${_k}[[:space:]].*|${_k} ${_v}|" "$_SSH_MAIN"
+            else
+                printf '%s %s\n' "$_k" "$_v" >> "$_SSH_MAIN"
+            fi
+        done
+    fi
+    if sshd -t 2>/dev/null; then
+        service_restart sshd ssh 2>/dev/null || true
+        note "SSH hardening applied"
+    else
+        warn "sshd -t validation failed after hardening -- check $_SSH_MAIN"
+    fi
+fi
+
+# ===========================================================================
 log "chrony (iSH-aware: monitor only, host owns the clock)"
 # ===========================================================================
 if command -v chronyd >/dev/null 2>&1 || command -v chronyc >/dev/null 2>&1; then
-    if [ -d /etc/chrony ]; then CHRONY_CONFIG=/etc/chrony/chrony.conf
-    elif [ -d /etc/chrony.d ]; then CHRONY_CONFIG=/etc/chrony.conf
-    else CHRONY_CONFIG=/etc/chrony.conf
+    if [ -d /etc/chrony ]; then CHRONY_CONFIG=/etc/chrony/chrony.conf   # Debian/Ubuntu
+    else CHRONY_CONFIG=/etc/chrony.conf                                   # Fedora, Alpine, Arch
     fi
     cat > "$CHRONY_CONFIG" <<'CHRONYCONF'
 # chrony.conf -- tuned for iSH-AOK (monitoring mode; chronyd runs with -x)
@@ -589,7 +633,8 @@ write_tmux() {  # <homedir> <owner>
 set -g mouse on
 
 setw -g mode-keys vi
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
+# For system clipboard via X11/Wayland replace with: copy-pipe-and-cancel "xclip -selection clipboard"
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel
 
 # reload config file
 bind r source-file ~/.tmux.conf

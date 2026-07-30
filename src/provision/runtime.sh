@@ -80,6 +80,11 @@ provision_add_packages_available() {
             for p in "$@"; do apt-cache show "$p" >/dev/null 2>&1 && apt-get install -y --no-install-recommends "$p" || log "Skipping unavailable package: $p"; done ;;
         apk) for p in "$@"; do apk search -e "$p" >/dev/null 2>&1 && apk add --no-progress "$p" || log "Skipping unavailable package: $p"; done ;;
         pacman) for p in "$@"; do pacman -Si "$p" >/dev/null 2>&1 && pacman -S --needed --noconfirm "$p" || log "Skipping unavailable package: $p"; done ;;
+        dnf|yum) for p in "$@"; do dnf info "$p" >/dev/null 2>&1 && dnf install -y "$p" || log "Skipping unavailable package: $p"; done ;;
+        zypper) for p in "$@"; do zypper search -e "$p" >/dev/null 2>&1 && zypper --non-interactive install "$p" || log "Skipping unavailable package: $p"; done ;;
+        xbps) for p in "$@"; do xbps-query -Rs "$p" >/dev/null 2>&1 && xbps-install -y "$p" || log "Skipping unavailable package: $p"; done ;;
+        portage) for p in "$@"; do emerge --info "$p" >/dev/null 2>&1 && emerge -v "$p" || log "Skipping unavailable package: $p"; done ;;
+        *) log "provision_add_packages_available: unsupported PROV_PM=$PROV_PM, skipping: $*" ;;
     esac
 }
 
@@ -169,7 +174,7 @@ provision_configure_sshd_inplace() {
     for pair in "$@"; do
         key=${pair%%:*}; value=${pair#*:}
         if grep -qE "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]" "$cfg"; then
-            sed -i "0,/^[[:space:]]*#\?[[:space:]]*${key}[[:space:]].*/s//${key} ${value}/" "$cfg"
+            sed -i "0,/^[[:space:]]*#\{0,1\}[[:space:]]*${key}[[:space:]].*/s//${key} ${value}/" "$cfg"
         else
             printf '%s %s\n' "$key" "$value" >> "$cfg"
         fi
