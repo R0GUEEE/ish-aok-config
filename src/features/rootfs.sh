@@ -13,6 +13,13 @@
 
 ROOTFS_BASE="/opt/rootfs"
 
+# Reports are written into the private 0700 workspace, never into a shared
+# world-writable directory: systui runs as root and a predictable path in /tmp
+# lets any local user pre-create a symlink and redirect the write (CWE-59).
+rootfs_report_file() {
+    printf '%s/rootfs-report' "${SYSTUI_TMP:?private workspace is not initialized}"
+}
+
 rootfs_fetch_text() { # <url>
     if command -v curl >/dev/null 2>&1; then
         curl -4 -LfsS --connect-timeout 10 --max-time 120 "$1"
@@ -2360,25 +2367,25 @@ rootfs_pkg_menu() { # <target>
             apt:install)    rootfs_chroot_exec "$t" "apt install $p" "apt-get update && apt-get install -y $p" ;;
             apt:remove)     rootfs_chroot_exec "$t" "apt remove $p" "apt-get remove -y $p" ;;
             apt:upgrade)    rootfs_chroot_exec "$t" "apt upgrade" "apt-get update && apt-get upgrade -y" ;;
-            apt:list)       rootfs_exec_raw "$t" dpkg-query -W -f='${Package} ${Version}\n' > /tmp/systui.rfs 2>&1 ;;
+            apt:list)       rootfs_exec_raw "$t" dpkg-query -W -f='${Package} ${Version}\n' > "$(rootfs_report_file)" 2>&1 ;;
             apk:install)    rootfs_chroot_exec "$t" "apk add $p" "apk update && apk add $p" ;;
             apk:remove)     rootfs_chroot_exec "$t" "apk del $p" "apk del $p" ;;
             apk:upgrade)    rootfs_chroot_exec "$t" "apk upgrade" "apk update && apk upgrade" ;;
-            apk:list)       rootfs_exec_raw "$t" apk info -v > /tmp/systui.rfs 2>&1 ;;
+            apk:list)       rootfs_exec_raw "$t" apk info -v > "$(rootfs_report_file)" 2>&1 ;;
             pacman:install) rootfs_chroot_exec "$t" "pacman -S $p" "pacman -Sy --noconfirm --needed $p" ;;
             pacman:remove)  rootfs_chroot_exec "$t" "pacman -R $p" "pacman -Rns --noconfirm $p" ;;
             pacman:upgrade) rootfs_chroot_exec "$t" "pacman -Syu" "pacman -Syu --noconfirm" ;;
-            pacman:list)    rootfs_exec_raw "$t" pacman -Q > /tmp/systui.rfs 2>&1 ;;
+            pacman:list)    rootfs_exec_raw "$t" pacman -Q > "$(rootfs_report_file)" 2>&1 ;;
             dnf:install)    rootfs_chroot_exec "$t" "dnf install $p" "dnf install -y $p" ;;
             dnf:remove)     rootfs_chroot_exec "$t" "dnf remove $p" "dnf remove -y $p" ;;
             dnf:upgrade)    rootfs_chroot_exec "$t" "dnf upgrade" "dnf upgrade -y" ;;
-            dnf:list)       rootfs_exec_raw "$t" rpm -qa > /tmp/systui.rfs 2>&1 ;;
+            dnf:list)       rootfs_exec_raw "$t" rpm -qa > "$(rootfs_report_file)" 2>&1 ;;
             xbps:install)   rootfs_chroot_exec "$t" "xbps-install $p" "xbps-install -Sy $p" ;;
             xbps:remove)    rootfs_chroot_exec "$t" "xbps-remove $p" "xbps-remove -y $p" ;;
             xbps:upgrade)   rootfs_chroot_exec "$t" "xbps upgrade" "xbps-install -Syu" ;;
-            xbps:list)      rootfs_exec_raw "$t" xbps-query -l > /tmp/systui.rfs 2>&1 ;;
+            xbps:list)      rootfs_exec_raw "$t" xbps-query -l > "$(rootfs_report_file)" 2>&1 ;;
         esac
-        [ "$c" = list ] && tui_text "Installed in $(basename "$t") ($rpm_)" /tmp/systui.rfs
+        [ "$c" = list ] && tui_text "Installed in $(basename "$t") ($rpm_)" "$(rootfs_report_file)"
     done
 }
 
@@ -2533,8 +2540,8 @@ EOF
                   echo
                   echo "Detected PM  : $(rootfs_detect_pm "$t")"
                   echo "Detected init: $rinit"
-                } > /tmp/systui.rfs
-                tui_text "OS info: $(basename "$t")" /tmp/systui.rfs ;;
+                } > "$(rootfs_report_file)"
+                tui_text "OS info: $(basename "$t")" "$(rootfs_report_file)" ;;
             back) return 0 ;;
         esac
     done
@@ -2621,8 +2628,8 @@ rootfs_manage() {
                     tui_msg "No manifest" "No /etc/systui-build.conf in this rootfs\n(built by hand or with the manifest option off)."
                 fi ;;
             size)
-                du -xh --max-depth=1 "$sel" 2>/dev/null | sort -hr | head -25 > /tmp/systui.rfs
-                tui_text "Size: $(basename "$sel")" /tmp/systui.rfs ;;
+                du -xh --max-depth=1 "$sel" 2>/dev/null | sort -hr | head -25 > "$(rootfs_report_file)"
+                tui_text "Size: $(basename "$sel")" "$(rootfs_report_file)" ;;
             compress)
                 local comp
                 comp=$(tui_radio "Compress" "Format (SPACE to select):" \

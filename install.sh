@@ -59,6 +59,8 @@ detect_pm() {
         echo "dnf"
     elif command -v zypper >/dev/null 2>&1; then
         echo "zypper"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
     elif command -v xbps-install >/dev/null 2>&1; then
         echo "xbps"
     elif command -v emerge >/dev/null 2>&1; then
@@ -74,9 +76,9 @@ package_is_installed() { # <package-manager> <native-package>
         apt) dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' ;;
         apk) apk info -e "$pkg" >/dev/null 2>&1 ;;
         pacman) pacman -Q "$pkg" >/dev/null 2>&1 ;;
-        dnf|zypper) rpm -q "$pkg" >/dev/null 2>&1 ;;
+        dnf|yum|zypper) rpm -q "$pkg" >/dev/null 2>&1 ;;
         xbps) xbps-query -p pkgver "$pkg" >/dev/null 2>&1 ;;
-        emerge) has_version "$pkg" >/dev/null 2>&1 ;;
+        emerge) [ -n "$(portageq match / "$pkg" 2>/dev/null)" ] ;;
         *) return 1 ;;
     esac
 }
@@ -91,6 +93,7 @@ refresh_package_metadata() { # <package-manager>
         apk) apk update ;;
         pacman) pacman -Sy --noconfirm ;;
         dnf) dnf makecache -y ;;
+        yum) yum makecache -y ;;
         zypper) zypper --non-interactive refresh ;;
         xbps) xbps-install -S ;;
         emerge) return 0 ;;
@@ -115,6 +118,7 @@ install_native_packages() { # <package-manager> <packages...>
         apk) apk add --no-progress "${missing[@]}" ;;
         pacman) pacman -S --noconfirm --needed "${missing[@]}" ;;
         dnf) dnf install -y --setopt=install_weak_deps=False "${missing[@]}" ;;
+        yum) yum install -y "${missing[@]}" ;;
         zypper) zypper --non-interactive install --no-recommends "${missing[@]}" ;;
         xbps) xbps-install -y "${missing[@]}" ;;
         emerge) emerge --noreplace "${missing[@]}" ;;
@@ -128,6 +132,7 @@ install_native_packages() { # <package-manager> <packages...>
             apk) apk add --no-progress "$pkg" ;;
             pacman) pacman -S --noconfirm --needed "$pkg" ;;
             dnf) dnf install -y --setopt=install_weak_deps=False "$pkg" ;;
+            yum) yum install -y "$pkg" ;;
             zypper) zypper --non-interactive install --no-recommends "$pkg" ;;
             xbps) xbps-install -y "$pkg" ;;
             emerge) emerge --noreplace "$pkg" ;;
@@ -156,7 +161,7 @@ install_dependencies() {
     # Package names are shared by the supported binary distributions. Gentoo
     # uses category-qualified atoms.
     case "$pm" in
-        apt|apk|pacman|dnf|zypper|xbps)
+        apt|apk|pacman|dnf|yum|zypper|xbps)
             pkg_bash="bash"; pkg_dialog="dialog"; pkg_coreutils="coreutils"
             pkg_grep="grep"; pkg_sed="sed"; pkg_awk="gawk"; pkg_find="findutils"
             pkg_curl="curl"; pkg_ca="ca-certificates"
@@ -222,7 +227,14 @@ verify_dependencies() {
 
 install_project() {
     info "Installing systui to $LIB_DIR..."
-    
+
+    # Refuse to run when the checkout *is* the install target: the managed
+    # content is deleted before it is copied, which would destroy the source.
+    if [ "$PROJECT_DIR" = "$LIB_DIR" ]; then
+        error "Refusing to install: the source directory and \$LIB_DIR are the same path ($LIB_DIR).
+Run install.sh from a separate checkout, or set INSTALL_PREFIX to another prefix."
+    fi
+
     mkdir -p "$LIB_DIR"
     mkdir -p "$BIN_DIR"
     
@@ -232,7 +244,7 @@ install_project() {
 
     # Copy the latest project files.
     cp -r "$PROJECT_DIR/src" "$LIB_DIR/"
-    cp -r "$PROJECT_DIR/share" "$LIB_DIR/"
+    [ -d "$PROJECT_DIR/share" ] && cp -r "$PROJECT_DIR/share" "$LIB_DIR/" || true
     [ -d "$PROJECT_DIR/docs" ] && cp -r "$PROJECT_DIR/docs" "$LIB_DIR/" || true
     if [ -f "$PROJECT_DIR/update.sh" ]; then
         install -m 0755 "$PROJECT_DIR/update.sh" "$LIB_DIR/update.sh"
@@ -273,9 +285,12 @@ LIBDIR="__SYSTUI_LIBDIR__"
 . "$LIBDIR/src/core/tui-widgets.sh" || exit 1
 . "$LIBDIR/src/core/common.sh" || exit 1
 
-# Source feature modules (if they exist)
+# Source feature modules (if they exist). The explicit `continue` keeps an
+# unmatched glob or a module whose last statement returns non-zero from
+# becoming the loop's exit status.
 for feature in "$LIBDIR/src/features"/*.sh; do
-    [ -f "$feature" ] && . "$feature"
+    [ -f "$feature" ] || continue
+    . "$feature" || { echo "systui: failed to load $feature" >&2; exit 1; }
 done
 
 # Initialize system detection
@@ -283,8 +298,11 @@ detect_pm
 detect_init
 detect_distro
 
-# Require root for most operations
-require_root 2>/dev/null || warn "Some features may require root access"
+# systui needs root for rootfs builds and system configuration. require_root
+# calls die(), which exits -- so it must not be wrapped in a `||` fallback and
+# its message must not be redirected to /dev/null, or a non-root invocation
+# terminates silently with no output at all.
+require_root
 
 # Main menu
 main_menu() {
@@ -324,7 +342,11 @@ main_menu() {
 # Run main menu
 main_menu
 WRAPPER
-    sed -i "s|__SYSTUI_LIBDIR__|$LIB_DIR|g" "$wrapper_tmp"
+    # Escape sed replacement metacharacters so a prefix containing | & or \
+    # cannot corrupt (or inject into) the generated wrapper.
+    local lib_dir_escaped
+    lib_dir_escaped=$(printf '%s' "$LIB_DIR" | sed -e 's/[\\&|]/\\&/g')
+    sed -i "s|__SYSTUI_LIBDIR__|$lib_dir_escaped|g" "$wrapper_tmp"
     install -m 0755 "$wrapper_tmp" "$BIN_DIR/systui"
     rm -f -- "$wrapper_tmp"
     success "Executable installed/replaced at $BIN_DIR/systui"
