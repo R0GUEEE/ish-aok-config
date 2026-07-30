@@ -153,7 +153,9 @@ detect_init() {
         INIT="openrc"
     elif command -v service >/dev/null 2>&1 && [ -d /etc/init.d ]; then
         INIT="sysvinit"
-    elif command -v runit >/dev/null 2>&1; then
+    elif command -v sv >/dev/null 2>&1 && { [ -d /etc/sv ] || [ -d /var/service ] || [ -d /service ]; }; then
+        # `runit` itself is PID 1 and normally not on PATH; the service tool is
+        # `sv`, paired with one of the standard service directories.
         INIT="runit"
     else
         INIT=""

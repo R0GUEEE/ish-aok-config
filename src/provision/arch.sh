@@ -26,7 +26,11 @@ provision_arch_impl() {
     
     run_cmd "Installing packages" pacman -Sy --noconfirm --needed $pkgs || true
     
-    ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime 2>/dev/null || true
+    if [ -f "/usr/share/zoneinfo/$tz" ]; then
+        ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+    else
+        log "WARN: unknown timezone '$tz'; leaving the system timezone unchanged."
+    fi
     echo "$tz" > /etc/timezone
     
     if ! grep -q '^LANG=' /etc/environment 2>/dev/null; then

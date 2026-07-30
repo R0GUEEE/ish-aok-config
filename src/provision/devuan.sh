@@ -10,8 +10,15 @@ provision_devuan_impl() {
     log "Starting Devuan Linux provisioning..."
     export DEBIAN_FRONTEND=noninteractive
     
-    ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime 2>/dev/null || true
-    printf '%s\n' "$tz" > /etc/timezone
+    # Validate before committing: an unknown zone previously produced a
+    # dangling /etc/localtime symlink plus an /etc/timezone that disagreed with
+    # it, with the error suppressed by `|| true`.
+    if [ -f "/usr/share/zoneinfo/$tz" ]; then
+        ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+        printf '%s\n' "$tz" > /etc/timezone
+    else
+        log "WARN: unknown timezone '$tz'; leaving the system timezone unchanged."
+    fi
     run_cmd "apt-get update" apt-get update >/dev/null 2>&1 || true
     
     local pkgs="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux bsdextrautils procps passwd adduser file less sysvinit-core locales openssh-client openssh-server sudo rsyslog iputils-ping wtmpdb chrony cron logrotate tzdata ca-certificates openssl man-db manpages curl wget rsync bind9-dnsutils iproute2 git strace build-essential gdb python3 python3-pip python3-venv vim neovim nano tmux sysstat htop btop ncdu lsof pv tree mc fzf ripgrep fd-find bat eza jq most w3m lynx nmap socat netcat-openbsd mtr-tiny tar unzip zip p7zip-full bzip2 gzip zstd xz-utils fastfetch figlet ncurses-bin ncurses-term"

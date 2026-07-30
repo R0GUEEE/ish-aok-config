@@ -20,6 +20,31 @@ rootfs_report_file() {
     printf '%s/rootfs-report' "${SYSTUI_TMP:?private workspace is not initialized}"
 }
 
+# systui explicitly targets Alpine and iSH-AOK, where coreutils/tar are
+# BusyBox applets that do not accept these GNU long options. Probe once and
+# degrade instead of failing outright.
+rootfs_rm_tree() { # <path> -- recursive delete, staying on one filesystem if supported
+    if rm --one-file-system -rf -- /nonexistent-systui-probe 2>/dev/null; then
+        rm -rf --one-file-system -- "$1"
+    else
+        rm -rf -- "$1"
+    fi
+}
+
+rootfs_du_summary() { # <path> -- one level of directory sizes, largest first
+    if du -xh --max-depth=1 "$1" >/dev/null 2>&1; then
+        du -xh --max-depth=1 "$1" 2>/dev/null
+    elif du -xh -d 1 "$1" >/dev/null 2>&1; then
+        du -xh -d 1 "$1" 2>/dev/null
+    else
+        du -sh "$1" 2>/dev/null
+    fi | { sort -hr 2>/dev/null || sort -r; }
+}
+
+rootfs_tar_supports() { # <option>
+    tar "$1" --help >/dev/null 2>&1 || tar --help 2>&1 | grep -q -- "$1"
+}
+
 rootfs_fetch_text() { # <url>
     if command -v curl >/dev/null 2>&1; then
         curl -4 -LfsS --connect-timeout 10 --max-time 120 "$1"
@@ -2643,6 +2668,11 @@ rootfs_manage() {
                 local dst
                 dst=$(tui_input "Rename" "New name (directory under $base):" "$(basename "$sel")") || continue
                 [ -z "$dst" ] || [ "$dst" = "$(basename "$sel")" ] && continue
+                # A name, not a path: "../.." here would move the rootfs out of
+                # the managed base directory.
+                case "$dst" in
+                    */*|.|..) tui_msg "Invalid name" "Enter a directory name, not a path."; continue ;;
+                esac
                 [ -e "$base/$dst" ] && { tui_msg "Exists" "$base/$dst already exists."; continue; }
                 mv "$sel" "$base/$dst" && tui_msg "Done" "Renamed to $base/$dst" ;;
             manifest)
@@ -2652,7 +2682,7 @@ rootfs_manage() {
                     tui_msg "No manifest" "No /etc/systui-build.conf in this rootfs\n(built by hand or with the manifest option off)."
                 fi ;;
             size)
-                du -xh --max-depth=1 "$sel" 2>/dev/null | sort -hr | head -25 > "$(rootfs_report_file)"
+                rootfs_du_summary "$sel" | head -25 > "$(rootfs_report_file)"
                 tui_text "Size: $(basename "$sel")" "$(rootfs_report_file)" ;;
             compress)
                 local comp
@@ -2672,7 +2702,7 @@ rootfs_manage() {
                 tui_yesno "DELETE" "Recursively delete:\n$sel\n\nThis cannot be undone. Continue?" || continue
                 typed=$(tui_input "Type to confirm" "Type the directory name ($(basename "$sel")) to confirm:" "") || continue
                 [ "$typed" != "$(basename "$sel")" ] && { tui_msg "Aborted" "Confirmation did not match."; continue; }
-                run_cmd "Deleting $sel" rm -rf --one-file-system "$sel" ;;
+                run_cmd "Deleting $sel" rootfs_rm_tree "$sel" ;;
             back) : ;;
         esac
     done

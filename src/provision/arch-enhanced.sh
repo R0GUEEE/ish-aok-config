@@ -95,7 +95,11 @@ provision_arch_enhanced_impl() {
     }
     
     # ========== TIMEZONE & LOCALE ==========
-    ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime 2>/dev/null || true
+    if [ -f "/usr/share/zoneinfo/$tz" ]; then
+        ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+    else
+        log "WARN: unknown timezone '$tz'; leaving the system timezone unchanged."
+    fi
     run_cmd "Setting timezone to $tz" timedatectl set-timezone "$tz" >/dev/null 2>&1 || true
     
     if ! grep -q '^LANG=' /etc/locale.conf 2>/dev/null; then

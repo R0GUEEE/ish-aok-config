@@ -123,4 +123,4 @@ tui_wait() {
     read -rp "$msg" _ 2>/dev/null || true
 }
 
-export -f tui_msg tui_yesno tui_input tui_password tui_menu tui_radio tui_check tui_text tui_progress run_cmd tui_confirm tui_wait
+export -f tui_msg tui_yesno tui_input tui_password tui_menu tui_menu_no_tags tui_radio tui_check tui_text tui_progress run_cmd tui_confirm tui_wait

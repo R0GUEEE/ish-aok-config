@@ -65,8 +65,15 @@ provision_debian_enhanced_impl() {
     fi
     
     # ========== TIMEZONE & LOCALE ==========
-    ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime 2>/dev/null || true
-    printf '%s\n' "$tz" > /etc/timezone
+    # Validate before committing: an unknown zone previously produced a
+    # dangling /etc/localtime symlink plus an /etc/timezone that disagreed with
+    # it, with the error suppressed by `|| true`.
+    if [ -f "/usr/share/zoneinfo/$tz" ]; then
+        ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime
+        printf '%s\n' "$tz" > /etc/timezone
+    else
+        log "WARN: unknown timezone '$tz'; leaving the system timezone unchanged."
+    fi
     
     # ========== KEYBOARD LAYOUT ==========
     if [ -n "$keyboard" ] && [ "$keyboard" != "default" ]; then

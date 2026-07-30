@@ -6892,15 +6892,40 @@ install_flatpak() {
   flatpak install -y flathub "\$ref"
 }
 install_snap() { command -v snap >/dev/null 2>&1 && snap info "\$PACKAGE" >/dev/null 2>&1 && as_root snap install "\$PACKAGE"; }
+# The URL comes from a community-maintained README, so it is shown in full and
+# confirmed before anything is fetched or executed. Set SYSTUI_ASSUME_YES=1 to
+# skip the prompt in an unattended run -- that is an explicit opt-in, not the
+# default.
+confirm_repo() {
+  [ "\${SYSTUI_ASSUME_YES:-0}" = 1 ] && return 0
+  [ -t 0 ] || { echo "Refusing to build \$NAME from source on a non-interactive stdin." >&2
+                echo "Re-run interactively, or set SYSTUI_ASSUME_YES=1 to accept." >&2; return 1; }
+  echo
+  echo "About to clone and BUILD AS ROOT:"
+  echo "    project    : \$NAME"
+  echo "    repository : \$GITHUB"
+  echo "    destination: \$DEST"
+  echo
+  echo "This runs the project's own build system, and its install.sh if it ships"
+  echo "one, with root privileges. Review the repository before continuing."
+  printf 'Type the word yes to proceed: '
+  read -r _reply || return 1
+  [ "\$_reply" = yes ] || { echo "Aborted." >&2; return 1; }
+}
 clone_source() {
   [ -n "\$GITHUB" ] || { echo "No GitHub repository is listed for \$NAME" >&2; return 1; }
   command -v git >/dev/null 2>&1 || { echo "git is required" >&2; return 1; }
+  case "\$GITHUB" in
+    https://github.com/*) : ;;
+    *) echo "Refusing a non-GitHub repository URL: \$GITHUB" >&2; return 1 ;;
+  esac
+  confirm_repo || return 1
   mkdir -p "\$(dirname "\$DEST")"
   if [ -d "\$DEST/.git" ]; then git -C "\$DEST" pull --ff-only; else git clone --recursive "\$GITHUB" "\$DEST"; fi
   git -C "\$DEST" submodule update --init --recursive
 }
 show_guide() {
-  clone_source
+  SYSTUI_GUIDE_ONLY=1 clone_source
   guide=""
   for f in INSTALL.md INSTALL README.md README.rst README.txt README; do [ -s "\$DEST/\$f" ] && { guide="\$DEST/\$f"; break; }; done
   [ -n "\$guide" ] || guide=\$(find "\$DEST/docs" -maxdepth 2 -type f \( -iname '*install*.md' -o -iname '*build*.md' \) 2>/dev/null | head -n 1 || true)
@@ -6926,7 +6951,17 @@ install_github() {
 }
 method=\${1:-auto}
 case "\$method" in
-  auto) install_native || install_flatpak || install_snap || install_github ;;
+  # install_github is deliberately NOT in this chain. It clones a third-party
+  # repository and runs its build (and, where present, its own install.sh) as
+  # root. That is a reasonable thing to ask for explicitly; it is not a
+  # reasonable thing to fall through to because a distro package was missing.
+  auto) install_native || install_flatpak || install_snap || {
+          echo "\$NAME is not available as a native, Flatpak or Snap package." >&2
+          echo "To build it from source, review the project first, then run:" >&2
+          echo "    \$0 show-guide     # print the project's own install steps" >&2
+          echo "    \$0 github         # clone and build as root (asks first)" >&2
+          exit 3
+        } ;;
   native) install_native ;;
   flatpak) install_flatpak ;;
   snap) install_snap ;;
@@ -7220,8 +7255,16 @@ awesome_linux_run_installer() { # <name> <github-url>
         awesome_linux_generate_github_installer "$name" "$github" >/dev/null || return 1
         script=$(awesome_linux_installer_path "$name") || return 1
     fi
-    tui_yesno "Run generated installer" "Review is recommended before execution. Run:\n\n$script" || return 0
-    run_cmd "Installing $name from its generated GitHub guide" /bin/sh "$script"
+    # Name the repository that is about to be built as root. The catalogue is
+    # generated from a community-maintained README, so the user needs to see
+    # the actual URL -- not just the path of the wrapper script -- before
+    # agreeing to run a third-party build with root privileges.
+    local typed
+    tui_yesno "Build $name from source" \
+"This clones a third-party repository and runs its build system as root,\nincluding the project's own install.sh if it ships one.\n\n  Repository: ${github:-<none listed>}\n  Installer : $script\n\nReview the repository and the generated script first.\nContinue?" || return 0
+    typed=$(tui_input "Confirm build" "Type the word yes to build $name from ${github:-source}:" "") || return 0
+    [ "$typed" = yes ] || { tui_msg "Aborted" "Confirmation did not match; nothing was run."; return 0; }
+    run_cmd "Installing $name from its generated GitHub guide" env SYSTUI_ASSUME_YES=1 /bin/sh "$script" github
 }
 
 awesome_linux_github_build() { # compatibility wrapper
@@ -7274,7 +7317,9 @@ awesome_linux_project_menu() { # TSV fields
                 elif flat=$(awesome_linux_flatpak_ref "$name") && flatpak info "$flat" >/dev/null 2>&1; then run_cmd "Removing $flat" flatpak uninstall -y "$flat"
                 elif snap=$(awesome_linux_snap_name "$name") && snap list "$snap" >/dev/null 2>&1; then run_cmd "Removing $snap" snap remove "$snap"
                 elif [ -d "$(awesome_linux_source_dir "$name")/.git" ]; then
-                    tui_yesno "Remove source" "Delete cloned source directory?\n$(awesome_linux_source_dir "$name")" && rm -rf --one-file-system "$(awesome_linux_source_dir "$name")"
+                    tui_yesno "Remove source" "Delete cloned source directory?\n$(awesome_linux_source_dir "$name")" && { rm --one-file-system -rf -- /nonexistent-systui-probe 2>/dev/null \
+                        && rm -rf --one-file-system -- "$(awesome_linux_source_dir "$name")" \
+                        || rm -rf -- "$(awesome_linux_source_dir "$name")"; }
                 else tui_msg "Not detected" "No managed installation of $name was detected."; fi ;;
             homepage) awesome_linux_open_url "$url" ;;
             back) return 0 ;;
