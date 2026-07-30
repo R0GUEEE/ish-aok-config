@@ -53,7 +53,7 @@ provision_alpine_enhanced() {
     fi
     
     log "Starting Enhanced Alpine Linux provisioning..."
-    log "Profile: $profile | Shell: $shell | SSH: port $ssh_port (root_login=$ssh_root_login)"
+    log "Profile: $profile | Shell: $shell | SSH: port $ssh_port (root_login=$ssh_root_login) | Syslog: $syslog_level"
     
     # ========== PACKAGE PROFILES ==========
     local pkgs_base="bash bash-completion coreutils findutils grep sed gawk diffutils util-linux-misc procps-ng shadow file less openrc openssh ca-certificates openssl man-db man-pages curl wget rsync ca-certificates tzdata"
@@ -316,7 +316,9 @@ NICETIES
     [ "$enable_audit" = 1 ] && services="$services audit"
     
     for s in $services; do
-        run_cmd "Enabling service $s" rc-update add "$s" $([ "$s" = sshd ] && echo default || echo boot) >/dev/null 2>&1 || true
+        local runlevel=boot
+        [ "$s" = sshd ] && runlevel=default
+        run_cmd "Enabling service $s" rc-update add "$s" "$runlevel" >/dev/null 2>&1 || true
         rc-service "$s" restart >/dev/null 2>&1 || rc-service "$s" start >/dev/null 2>&1 || true
     done
     

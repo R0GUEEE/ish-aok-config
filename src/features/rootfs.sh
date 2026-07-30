@@ -977,7 +977,7 @@ EOF
 }
 
 rootfs_catalog_select_category() { # category title
-    local category="$1" title="$2" line tag desc state
+    local category="$1" title="$2" tag desc state
     local args=()
     while IFS='|' read -r tag desc state; do
         [ -n "$tag" ] || continue

@@ -54,7 +54,7 @@ provision_devuan_enhanced() {
     fi
     
     log "Starting Enhanced Devuan GNU+Linux provisioning..."
-    log "Profile: $profile | Shell: $shell | SSH: port $ssh_port (root_login=$ssh_root_login)"
+    log "Profile: $profile | Shell: $shell | SSH: port $ssh_port (root_login=$ssh_root_login) | Syslog: $syslog_level"
     
     export DEBIAN_FRONTEND=noninteractive
     

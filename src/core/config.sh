@@ -9,6 +9,7 @@ set -eE
 SYSTUI_VERSION="1.0.0"
 SYSTUI_TITLE="systui — Linux System TUI"
 BACKTITLE="iSH-AOK · systui v${SYSTUI_VERSION}"
+export SYSTUI_TITLE BACKTITLE
 
 # Logging. Never trust a caller-provided SYSTUI_TMP as an owned directory: the
 # application runs as root and removes its workspace on exit. Callers may
@@ -45,6 +46,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+export RED GREEN YELLOW BLUE CYAN NC
 
 ###############################################################################
 # LOGGING & ERROR HANDLING

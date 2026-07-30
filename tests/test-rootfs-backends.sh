@@ -48,6 +48,7 @@ check "saved mmdebstrap mode round-trips" equals "$ROOTFS_MMDEBSTRAP_MODE" unsha
 ROOTFS_MULTISTRAP_CLEANUP=yes
 ROOTFS_MULTISTRAP_MARKAUTO=yes
 ROOTFS_MULTISTRAP_IMPORTANT=no
+export ROOTFS_MULTISTRAP_CLEANUP ROOTFS_MULTISTRAP_MARKAUTO ROOTFS_MULTISTRAP_IMPORTANT
 multistrap_conf="$tmpdir/multistrap.conf"
 rootfs_multistrap_config_write "$multistrap_conf" arm64 /opt/rootfs/test \
     https://deb.debian.org/debian trixie "main,contrib,non-free-firmware" \
