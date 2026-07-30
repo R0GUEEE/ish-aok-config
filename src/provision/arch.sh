@@ -20,11 +20,15 @@ provision_arch_impl() {
         chown -R --from=501 0:0 / 2>/dev/null || true
     fi
     
-    run_cmd "pacman -Sy" pacman -Sy >/dev/null 2>&1 || true
+    # `pacman -Sy` followed by `-S` is the partial-upgrade pattern that breaks
+    # Arch installs: it refreshes the sync database without upgrading the
+    # installed packages, so the next install pulls in libraries built against
+    # newer versions than the ones on disk. -Syu keeps the two in step.
+    run_cmd "pacman -Syu" pacman -Syu --noconfirm >/dev/null 2>&1 || true
     
     local pkgs="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps-ng shadow file less base-devel gcc make openssh sudo syslog-ng chrony cronie tzdata ca-certificates openssl man-db man-pages curl wget rsync bind git strace gdb linux-headers python python-pip vim neovim nano tmux htop btop ncdu lsof pv tree mc fzf ripgrep fd bat eza jq yq most w3m lynx nmap socat openbsd-netcat mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses lazygit"
     
-    run_cmd "Installing packages" pacman -Sy --noconfirm --needed $pkgs || true
+    run_cmd "Installing packages" pacman -S --noconfirm --needed $pkgs || true
     
     if [ -f "/usr/share/zoneinfo/$tz" ]; then
         ln -sf "/usr/share/zoneinfo/$tz" /etc/localtime

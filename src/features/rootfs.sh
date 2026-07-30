@@ -1276,7 +1276,7 @@ rootfs_continue_generation() { # <target>
 # Entry point kept thin: the build itself runs fail-fast inside run_strict so a
 # mid-build failure aborts the build rather than the whole TUI.
 rootfs_builder() {
-    run_strict "rootfs_builder" rootfs_builder_impl "$@"
+    run_strict "rootfs_builder" rootfs_builder_impl
 }
 
 rootfs_builder_impl() {
@@ -1745,7 +1745,7 @@ EOF
     case " $postcfg " in *" machineid "*)
         : > "$target/etc/machine-id"; in_chroot "$target" sh -c 'command -v systemd-machine-id-setup >/dev/null && systemd-machine-id-setup || true' ;; esac
     case " $postcfg " in *" pkgupdate "*)
-        case "$pmcmd" in apt) in_chroot "$target" apt-get update ;; apk) in_chroot "$target" apk update ;; pacman) in_chroot "$target" pacman -Sy --noconfirm ;; dnf) in_chroot "$target" dnf makecache ;; zypper) in_chroot "$target" zypper --non-interactive refresh ;; emerge) in_chroot "$target" emerge --sync ;; xbps) in_chroot "$target" xbps-install -S ;; esac || true ;; esac
+        case "$pmcmd" in apt) in_chroot "$target" apt-get update ;; apk) in_chroot "$target" apk update ;; pacman) in_chroot "$target" pacman -Syu --noconfirm ;; dnf) in_chroot "$target" dnf makecache ;; zypper) in_chroot "$target" zypper --non-interactive refresh ;; emerge) in_chroot "$target" emerge --sync ;; xbps) in_chroot "$target" xbps-install -S ;; esac || true ;; esac
     case " $postcfg " in *" upgrade "*)
         case "$pmcmd" in apt) in_chroot "$target" apt-get upgrade -y ;; apk) in_chroot "$target" apk upgrade ;; pacman) in_chroot "$target" pacman -Syu --noconfirm ;; dnf) in_chroot "$target" dnf upgrade -y ;; zypper) in_chroot "$target" zypper --non-interactive update ;; emerge) in_chroot "$target" emerge -uDN @world ;; xbps) in_chroot "$target" xbps-install -yu ;; esac || true ;; esac
     case " $postcfg " in *" cleanup "*)
@@ -2421,7 +2421,7 @@ rootfs_pkg_menu() { # <target>
             apk:remove)     rootfs_chroot_exec "$t" "apk del $p" "apk del $p" ;;
             apk:upgrade)    rootfs_chroot_exec "$t" "apk upgrade" "apk update && apk upgrade" ;;
             apk:list)       rootfs_exec_raw "$t" apk info -v > "$(rootfs_report_file)" 2>&1 ;;
-            pacman:install) rootfs_chroot_exec "$t" "pacman -S $p" "pacman -Sy --noconfirm --needed $p" ;;
+            pacman:install) rootfs_chroot_exec "$t" "pacman -S $p" "pacman -Syu --noconfirm --needed $p" ;;
             pacman:remove)  rootfs_chroot_exec "$t" "pacman -R $p" "pacman -Rns --noconfirm $p" ;;
             pacman:upgrade) rootfs_chroot_exec "$t" "pacman -Syu" "pacman -Syu --noconfirm" ;;
             pacman:list)    rootfs_exec_raw "$t" pacman -Q > "$(rootfs_report_file)" 2>&1 ;;
@@ -2533,7 +2533,7 @@ rootfs_cfg_menu() { # <target>
                 sed -i -E "s/^#?Port .*/Port $port/; s/^#?PermitRootLogin .*/PermitRootLogin $([ "$rootlogin" = yes ] && echo yes || echo prohibit-password)/; s/^#?PasswordAuthentication .*/PasswordAuthentication $passauth/" "$t/etc/ssh/sshd_config"
                 rootfs_chroot_exec "$t" "Validate sshd configuration" "sshd -t" || true ;;
             pkgupdate)
-                case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt update" "apt-get update" ;; apk) rootfs_chroot_exec "$t" "apk update" "apk update" ;; pacman) rootfs_chroot_exec "$t" "pacman sync" "pacman -Sy --noconfirm" ;; dnf) rootfs_chroot_exec "$t" "dnf cache" "dnf makecache" ;; xbps) rootfs_chroot_exec "$t" "xbps sync" "xbps-install -S" ;; esac ;;
+                case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt update" "apt-get update" ;; apk) rootfs_chroot_exec "$t" "apk update" "apk update" ;; pacman) rootfs_chroot_exec "$t" "pacman sync" "pacman -Syu --noconfirm" ;; dnf) rootfs_chroot_exec "$t" "dnf cache" "dnf makecache" ;; xbps) rootfs_chroot_exec "$t" "xbps sync" "xbps-install -S" ;; esac ;;
             upgrade)
                 case "$(rootfs_detect_pm "$t")" in apt) rootfs_chroot_exec "$t" "apt upgrade" "apt-get upgrade -y" ;; apk) rootfs_chroot_exec "$t" "apk upgrade" "apk upgrade" ;; pacman) rootfs_chroot_exec "$t" "pacman upgrade" "pacman -Syu --noconfirm" ;; dnf) rootfs_chroot_exec "$t" "dnf upgrade" "dnf upgrade -y" ;; xbps) rootfs_chroot_exec "$t" "xbps upgrade" "xbps-install -yu" ;; esac ;;
             cleanup)

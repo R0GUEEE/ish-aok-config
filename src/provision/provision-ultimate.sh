@@ -52,6 +52,7 @@ detect_distro() {
         DISTRO_NAME="Linux"
         DISTRO_VERSION="unknown"
     fi
+    export DISTRO_ID DISTRO_NAME DISTRO_VERSION
 }
 
 detect_init_system() {
@@ -162,7 +163,7 @@ refresh_packages() {
     case "$PACKAGE_MANAGER" in
         apt) apt-get update ;;
         apk) apk update ;;
-        pacman) pacman -Sy --noconfirm ;;
+        pacman) pacman -Syu --noconfirm ;;   # -Sy alone desynchronises the system
         dnf) dnf -y makecache ;;
         yum) yum -y makecache ;;
         zypper) zypper --non-interactive refresh ;;

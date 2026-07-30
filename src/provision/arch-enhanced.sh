@@ -89,7 +89,11 @@ provision_arch_enhanced_impl() {
     esac
     
     # ========== PACKAGE INSTALLATION ==========
-    run_cmd "pacman -Sy" pacman -Sy --noconfirm >/dev/null 2>&1 || true
+    # `pacman -Sy` followed by `-S` is the partial-upgrade pattern that breaks
+    # Arch installs: it refreshes the sync database without upgrading the
+    # installed packages, so the next install pulls in libraries built against
+    # newer versions than the ones on disk. -Syu keeps the two in step.
+    run_cmd "pacman -Syu" pacman -Syu --noconfirm >/dev/null 2>&1 || true
     run_cmd "Installing packages ($profile profile)" pacman -S --needed --noconfirm $pkgs || {
         log "WARN: pacman reported errors; continuing"
     }

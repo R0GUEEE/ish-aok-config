@@ -11,6 +11,10 @@
 # into a fatal error and a full exit. Provisioning routines -- which do want
 # fail-fast semantics -- opt in explicitly via run_strict() below.
 
+# Root of the installed tree, so run_strict can re-source it in a child shell.
+SYSTUI_LIBDIR="${SYSTUI_LIBDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+export SYSTUI_LIBDIR
+
 # Project info
 SYSTUI_VERSION="1.0.0"
 SYSTUI_TITLE="systui — Linux System TUI"
@@ -23,9 +27,20 @@ export SYSTUI_TITLE BACKTITLE
 SYSTUI_TMP_ROOT="${SYSTUI_TMP_ROOT:-${TMPDIR:-/tmp}}"
 [ -d "$SYSTUI_TMP_ROOT" ] || { echo "Temporary directory does not exist: $SYSTUI_TMP_ROOT" >&2; exit 1; }
 SYSTUI_TMP_ROOT=$(cd -- "$SYSTUI_TMP_ROOT" && pwd -P)
-SYSTUI_TMP=$(mktemp -d "$SYSTUI_TMP_ROOT/systui.XXXXXX") || exit 1
-chmod 700 "$SYSTUI_TMP"
-: > "$SYSTUI_TMP/.systui-owned"
+# A run_strict child re-sources this file. It must reuse the workspace that the
+# parent created and own neither its creation nor its removal -- otherwise each
+# strict routine would leak a directory, and the child's EXIT would delete a
+# workspace the parent is still using. Note this is keyed off an internal flag,
+# not off SYSTUI_TMP itself: a caller-provided SYSTUI_TMP is still never
+# adopted (see tests/test-regressions.sh).
+if [ "${SYSTUI_STRICT_CHILD:-0}" = 1 ] && [ -n "${SYSTUI_TMP:-}" ] && [ -f "${SYSTUI_TMP}/.systui-owned" ]; then
+    SYSTUI_TMP_INHERITED=1
+else
+    SYSTUI_TMP_INHERITED=0
+    SYSTUI_TMP=$(mktemp -d "$SYSTUI_TMP_ROOT/systui.XXXXXX") || exit 1
+    chmod 700 "$SYSTUI_TMP"
+    : > "$SYSTUI_TMP/.systui-owned"
+fi
 export SYSTUI_TMP
 # The log must outlive the workspace: the EXIT trap removes $SYSTUI_TMP, and
 # run_cmd tells the user to go read $LOGFILE after a failure. Prefer a durable
@@ -35,7 +50,10 @@ systui_pick_logfile() {
     for candidate in "${SYSTUI_LOGFILE:-}" /var/log/systui.log "$HOME/.local/state/systui.log"; do
         [ -n "$candidate" ] || continue
         mkdir -p "$(dirname "$candidate")" 2>/dev/null || continue
-        if : >> "$candidate" 2>/dev/null; then
+        # The redirection must be inside the group: bash applies redirections
+        # left to right, so `: >> "$c" 2>/dev/null` still prints the "Permission
+        # denied" for the >> before the 2>/dev/null takes effect.
+        if { : >> "$candidate"; } 2>/dev/null; then
             printf '%s\n' "$candidate"
             return 0
         fi
@@ -55,6 +73,7 @@ log_rotate_if_large() {
 log_rotate_if_large
 : > "$WARNFILE"
 cleanup_systui_tmp() {
+    [ "${SYSTUI_TMP_INHERITED:-0}" = 1 ] && return 0
     case "${SYSTUI_TMP:-}" in
         "$SYSTUI_TMP_ROOT"/systui.*)
             [ -f "$SYSTUI_TMP/.systui-owned" ] && rm -rf -- "$SYSTUI_TMP"
@@ -100,20 +119,53 @@ die() {
 # STRICT EXECUTION (opt-in)
 ###############################################################################
 
-# run_strict <function> [args...]
+# run_strict <description> <function> [args...]
 #
-# Runs one routine with fail-fast semantics in a subshell, so a failure aborts
-# that routine without tearing down the TUI around it. Provisioning and rootfs
-# build routines use this; menu and widget code must not.
+# Runs one routine with fail-fast semantics, so an unexpected failure aborts
+# that routine instead of continuing to configure a half-broken system -- and
+# without tearing down the TUI around it. Provisioning and rootfs build
+# routines use this; menu and widget code must not.
+#
+# This deliberately uses a child *process* rather than a subshell. Bash
+# suppresses `set -e` for the entire dynamic extent of any command that is part
+# of a `&&` or `||` list, and that suppression propagates through subshells and
+# command substitutions. So with a subshell implementation, a caller writing
+#
+#     provision_debian || tui_msg "Failed" "..."
+#
+# would silently get no fail-fast at all: the routine would run to completion
+# past its first error. A separate process does not inherit the suppression.
 #
 # Returns the routine's exit status; 1 if it tripped the ERR trap.
 run_strict() {
-    local desc="$1"; shift
-    (
+    local desc="$1" fn="$2"; shift 2
+    if ! declare -F "$fn" >/dev/null; then
+        warn "run_strict: no such function: $fn"
+        return 127
+    fi
+    SYSTUI_STRICT_CHILD=1 \
+    SYSTUI_TMP="$SYSTUI_TMP" \
+    SYSTUI_LIBDIR="$SYSTUI_LIBDIR" \
+    SYSTUI_LOGFILE="$LOGFILE" \
+    SYSTUI_STRICT_DESC="$desc" \
+    bash -c '
         set -eE
-        trap 'warn "$desc: unexpected error on line $LINENO"; exit 1' ERR
+        . "$SYSTUI_LIBDIR/src/core/config.sh"
+        . "$SYSTUI_LIBDIR/src/core/tui-widgets.sh"
+        . "$SYSTUI_LIBDIR/src/core/common.sh"
+        # Features only -- the same set the generated wrapper loads. Files under
+        # src/provision are NOT sourced here: provision-ultimate.sh is a
+        # standalone script that runs (and exits) at source time. The provision
+        # routines reach the child through `export -f` instead, which is why
+        # those files export themselves.
+        for _f in "$SYSTUI_LIBDIR"/src/features/*.sh; do
+            [ -f "$_f" ] || continue
+            . "$_f" || exit 1
+        done
+        detect_pm; detect_init; detect_distro
+        trap '"'"'warn "$SYSTUI_STRICT_DESC: unexpected error on line $LINENO"; exit 1'"'"' ERR
         "$@"
-    )
+    ' _ "$fn" "$@"
 }
 
 ###############################################################################

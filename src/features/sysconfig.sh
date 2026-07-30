@@ -2046,8 +2046,18 @@ catalogue_updates() {
     case "$PM" in
         apt) apt-get update >/dev/null 2>&1; apt list --upgradable 2>/dev/null | tail -n +2 ;;
         apk) apk update >/dev/null 2>&1; apk version -l '<' 2>/dev/null ;;
-        pacman) pacman -Sy >/dev/null 2>&1; pacman -Qu 2>/dev/null ;;
-        dnf) dnf check-update 2>/dev/null | awk 'NF==3' ;;
+        # A bare `pacman -Sy` leaves the sync database newer than the installed
+        # packages, which is the precondition for a partial upgrade the next
+        # time anything is installed. checkupdates (pacman-contrib) syncs into
+        # a temporary database instead; without it, report against the existing
+        # database rather than desynchronising the system to produce a list.
+        pacman)
+            if command -v checkupdates >/dev/null 2>&1; then checkupdates 2>/dev/null
+            else pacman -Qu 2>/dev/null
+            fi ;;
+        dnf|yum) dnf check-update 2>/dev/null | awk 'NF==3' ;;
+        zypper) zypper --non-interactive list-updates 2>/dev/null | awk -F'|' 'NR>4 {print $3, $5}' ;;
+        xbps) xbps-install -Sun 2>/dev/null ;;
     esac > ${SYSTUI_TMP}/pkg
     if [ -s ${SYSTUI_TMP}/pkg ]; then local n; n=$(wc -l < ${SYSTUI_TMP}/pkg); tui_text "Updates available ($n)" ${SYSTUI_TMP}/pkg; tui_yesno "Upgrade" "Install all $n updates now?" && pm_update; else tui_msg "Up to date" "No updates available."; fi
 }

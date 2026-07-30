@@ -91,7 +91,7 @@ refresh_package_metadata() { # <package-manager>
     case "$pm" in
         apt) apt-get update ;;
         apk) apk update ;;
-        pacman) pacman -Sy --noconfirm ;;
+        pacman) pacman -Syu --noconfirm ;;   # -Sy alone desynchronises the system
         dnf) dnf makecache -y ;;
         yum) yum makecache -y ;;
         zypper) zypper --non-interactive refresh ;;
