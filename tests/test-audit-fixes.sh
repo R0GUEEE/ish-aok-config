@@ -155,44 +155,54 @@ check "a dialog Cancel does not terminate the shell" \
 # run_strict must keep fail-fast even when the caller puts it in a || list.
 # Bash suppresses set -e for the whole dynamic extent of a tested command, and
 # that suppression crosses subshells -- so this only holds for a child process.
+#
+# run_strict re-sources $SYSTUI_LIBDIR in a child, so these checks need a probe
+# module inside a source tree. They use a throwaway copy: a test must never
+# write into the tree it is testing, or a failure part-way through leaves debris
+# behind in the user's checkout.
+libcopy="$tmpdir/libcopy"
+mkdir -p "$libcopy"
+cp -R "$PROJECT_DIR/src" "$libcopy/"
+
+strict_probe() { # <body> -> writes the probe module into the copied tree
+    printf '%s\n' "$1" > "$libcopy/src/features/zz-strict-probe.sh"
+}
+
+strict_probe 'sr_boom() { false; echo REACHED; }'
 check "run_strict aborts a failing routine (bare call)" \
-    bash -c '
-        . "$1/src/core/config.sh"
-        printf "sr_boom() { false; echo REACHED; }\n" > "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
+    env SYSTUI_LIBDIR="$libcopy" bash -c '
+        . "$SYSTUI_LIBDIR/src/core/config.sh"
         . "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         out=$(run_strict probe sr_boom 2>/dev/null)
-        rm -f "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         [ -z "$out" ]
-    ' _ "$PROJECT_DIR"
+    '
 check "run_strict aborts a failing routine inside a || list" \
-    bash -c '
-        . "$1/src/core/config.sh"
-        printf "sr_boom() { false; echo REACHED; }\n" > "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
+    env SYSTUI_LIBDIR="$libcopy" bash -c '
+        . "$SYSTUI_LIBDIR/src/core/config.sh"
         . "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         out=$(run_strict probe sr_boom 2>/dev/null) || true
-        rm -f "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         [ -z "$out" ]
-    ' _ "$PROJECT_DIR"
+    '
+strict_probe 'sr_ok() { echo FINE; }'
 check "run_strict returns output and 0 on success" \
-    bash -c '
-        . "$1/src/core/config.sh"
-        printf "sr_ok() { echo FINE; }\n" > "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
+    env SYSTUI_LIBDIR="$libcopy" bash -c '
+        . "$SYSTUI_LIBDIR/src/core/config.sh"
         . "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         out=$(run_strict probe sr_ok 2>/dev/null); rc=$?
-        rm -f "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         [ "$rc" = 0 ] && [ "$out" = FINE ]
-    ' _ "$PROJECT_DIR"
+    '
 check "run_strict does not leak or delete the parent workspace" \
-    bash -c '
-        . "$1/src/core/config.sh"
-        printf "sr_ok() { echo FINE; }\n" > "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
+    env SYSTUI_LIBDIR="$libcopy" bash -c '
+        . "$SYSTUI_LIBDIR/src/core/config.sh"
         . "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         before=$(find "$SYSTUI_TMP_ROOT" -maxdepth 1 -name "systui.*" | wc -l)
         run_strict probe sr_ok >/dev/null 2>&1
         after=$(find "$SYSTUI_TMP_ROOT" -maxdepth 1 -name "systui.*" | wc -l)
-        rm -f "$SYSTUI_LIBDIR/src/features/zz-strict-probe.sh"
         [ "$before" = "$after" ] && [ -d "$SYSTUI_TMP" ]
-    ' _ "$PROJECT_DIR"
+    '
+# The source tree must be exactly as it was before these checks ran.
+check "the run_strict checks leave no debris in the source tree" \
+    test ! -e "$PROJECT_DIR/src/features/zz-strict-probe.sh"
 
 # --- M11: a config file cannot clobber systui internals -----------------------
 printf 'user=someone\nLOGFILE=/tmp/attacker.log\nPM=pacman\n' > "$tmpdir/evil.conf"
