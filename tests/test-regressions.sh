@@ -84,11 +84,24 @@ check "nushell popular plugins include highlight" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_highlight|"
 check "nushell popular plugins include dns" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_dns|"
+check "nushell popular plugins include plot" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_plot|"
+check "nushell popular plugins include dbus" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_dbus|"
+check "nushell popular plugins include tree" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_tree|"
+check "nushell popular plugins include units" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_units|"
 check "nushell popular plugins include skim" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "nu_plugin_skim|"
 check "nushell plugin install helper exists" function_exists nu_plugin_install_from_list
 check "nushell plugin update-all helper exists" function_exists nu_plugin_update_all
 check "nushell plugin cargo bin helper exists" function_exists nu_plugin_cargo_bin
+check "nushell plugin display-name helper exists" function_exists nu_plugin_display_name
+check "nushell plugin labels strip the nu_plugin prefix" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'name=${name#nu_plugin_}'
+check "nushell plugin labels replace underscores with dashes" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" '${name//_/-}'
 check "nushell plugin menu has core action" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" 'core    "Install core plugins'
 check "nushell plugin menu has popular action" contains \

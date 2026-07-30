@@ -4401,9 +4401,11 @@ nu_plugin_gstat|gstat — structured Git repository status as Nu data
 nu_plugin_query|Query — SQL, XML, JSON, HTML selector and webpage metadata queries
 nu_plugin_inc|inc — increment a value or semantic version number"
 
-# Popular third-party plugins (curated from awesome-nu, 0.110+ compatible)
+# Popular third-party plugins (curated from active GitHub repos / awesome-nu,
+# biased toward current non-archived projects that install cleanly via cargo)
 NU_PLUGINS_POPULAR="nu_plugin_highlight|Syntax highlighting for code snippets (cptpiepmatz)
 nu_plugin_dns|DNS queries returned as structured Nu data (dead10ck)
+nu_plugin_plot|Plot numeric lists and tables inline from Nu pipelines (Euphrasiologist)
 nu_plugin_emoji|Emoji search and insertion (fdncred)
 nu_plugin_file|Identify file types using libmagic — like the file(1) command (fdncred)
 nu_plugin_json_path|JSONPath queries on JSON data (fdncred)
@@ -4412,6 +4414,8 @@ nu_plugin_regex|Regex search with named capture groups as records (fdncred)
 nu_plugin_semver|Parse and compare SemVer version strings (abusch)
 nu_plugin_skim|skim (sk) fuzzy-finder integrated with Nu structured data (idanarye)
 nu_plugin_compress|Compress/decompress via zstd, gzip, bzip2 and xz (yybit)
+nu_plugin_dbus|Query and call D-Bus services from Nushell (devyn)
+nu_plugin_bio|Bioinformatics helpers and sequence tooling (Euphrasiologist)
 nu_plugin_clipboard|Read/write the system clipboard (FMotalleb)
 nu_plugin_desktop_notifications|Send desktop notifications from Nu scripts (FMotalleb)
 nu_plugin_port_extension|List active connections and scan ports (FMotalleb)
@@ -4421,6 +4425,9 @@ nu_plugin_hmac|HMAC message authentication codes (fnuttens)
 nu_plugin_net|Enumerate network interfaces as structured data (fennewald)
 nu_plugin_mongo|Query MongoDB databases (WindSoilder)
 nu_plugin_prometheus|Query Prometheus metrics as Nu tables (drbrain)
+nu_plugin_tree|Tree views for structured data and filesystems (fdncred)
+nu_plugin_units|Unit conversion helpers for structured numeric data (JosephTLyons)
+nu_plugin_periodic_table|Periodic table lookups and element metadata (JosephTLyons)
 nu_plugin_x509|Parse and inspect X.509 / TLS certificates (yybit)
 nu_plugin_bson|BSON (Binary JSON) format encode/decode (Kissaki)
 nu_plugin_hcl|HashiCorp Configuration Language (HCL) parser (Yethal)
@@ -4451,16 +4458,24 @@ nu_plugin_cargo_bin() {
     su - "$u" -c 'printf "%s" "${CARGO_HOME:-$HOME/.cargo}/bin"' 2>/dev/null
 }
 
+nu_plugin_display_name() {
+    local name="$1"
+    name=${name#nu_plugin_}
+    name=${name#nu-plugin-}
+    printf '%s\n' "${name//_/-}"
+}
+
 # Install a checklist of nu plugins via cargo and auto-register them
 nu_plugin_install_from_list() { # title list-string user home
     local title="$1" list="$2" u="$3" home_dir="$4"
-    local args=() crate desc
+    local args=() crate desc label
     while IFS='|' read -r crate desc; do
         [ -z "$crate" ] && continue
-        args+=("$crate" "$desc" off)
+        label=$(nu_plugin_display_name "$crate")
+        args+=("$label" "$desc" off)
     done <<< "$list"
     [ ${#args[@]} -eq 0 ] && { tui_msg "Empty" "No plugins in this list."; return; }
-    local sel
+    local sel chosen target_crate
     sel=$(tui_check "$title — $u" \
         "SPACE selects plugins to install via Cargo, ENTER confirms.\nRequires the Rust toolchain (cargo):" \
         "${args[@]}") || return 0
@@ -4472,12 +4487,19 @@ nu_plugin_install_from_list() { # title list-string user home
         command -v cargo >/dev/null 2>&1 || { tui_msg "Error" "Cargo could not be installed."; return; }
     }
     local cargo_bin; cargo_bin=$(nu_plugin_cargo_bin "$u")
-    local p
-    for p in $sel; do
-        run_cmd "cargo install $p" su - "$u" -c "cargo install '$p' --locked 2>&1 || cargo install '$p'"
-        local bin="$cargo_bin/$p"
+    for chosen in $sel; do
+        target_crate=
+        while IFS='|' read -r crate desc; do
+            [ -z "$crate" ] && continue
+            [ "$(nu_plugin_display_name "$crate")" = "$chosen" ] || continue
+            target_crate="$crate"
+            break
+        done <<< "$list"
+        [ -n "$target_crate" ] || { warn "Unknown Nu plugin selection: $chosen"; continue; }
+        run_cmd "cargo install $target_crate" su - "$u" -c "cargo install '$target_crate' --locked 2>&1 || cargo install '$target_crate'"
+        local bin="$cargo_bin/$target_crate"
         if su - "$u" -c "[ -x '$bin' ]" 2>/dev/null; then
-            run_cmd "plugin add $p" nu_run_as "$u" "plugin add $(nu_quote "$bin")"
+            run_cmd "plugin add $chosen" nu_run_as "$u" "plugin add $(nu_quote "$bin")"
         else
             warn "Binary $bin not found after install — run 'plugin add <path>' manually in Nu."
         fi
