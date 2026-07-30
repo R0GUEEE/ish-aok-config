@@ -49,8 +49,7 @@ provision_debian_enhanced_impl() {
     
     # Load configuration from file if provided
     if [ -n "$cfg_file" ] && [ -f "$cfg_file" ]; then
-        # shellcheck source=/dev/null
-        source "$cfg_file" || log "WARN: Failed to source config file $cfg_file"
+        provision_load_config "$cfg_file"
     fi
     
     log "Starting Enhanced Debian Linux provisioning..."
@@ -194,14 +193,7 @@ EOF
     
     # ========== SSH CONFIGURATION ==========
     if [ "$enable_ssh" = 1 ]; then
-        run_cmd "Configuring SSH" sh -c "
-            sed -i 's/^#Port .*/Port $ssh_port/' /etc/ssh/sshd_config
-            sed -i 's/^#PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-            sed -i 's/^PermitRootLogin .*/PermitRootLogin $([ $ssh_root_login = 1 ] && echo yes || echo no)/' /etc/ssh/sshd_config
-            sed -i 's/^#X11Forwarding .*/X11Forwarding no/' /etc/ssh/sshd_config
-            sed -i 's/^#StrictModes .*/StrictModes yes/' /etc/ssh/sshd_config
-            sed -i 's/^#ClientAliveInterval .*/ClientAliveInterval 300/' /etc/ssh/sshd_config
-        "
+        run_cmd "Configuring SSH" provision_configure_sshd "$ssh_port" "$ssh_root_login" "no"
     fi
     
     # ========== FIREWALL CONFIGURATION ==========

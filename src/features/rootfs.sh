@@ -597,6 +597,10 @@ rootfs_mount_chroot_fs() { # <target>
     local t="$1"
     ROOTFS_ACTIVE_MOUNTS=""
     ROOTFS_DNS_BACKUP=""
+    # Remembered so teardown never has to reverse-engineer the target from the
+    # mount list -- see rootfs_unmount_chroot_fs.
+    ROOTFS_MOUNT_TARGET="$t"
+    export ROOTFS_MOUNT_TARGET
     mkdir -p "$t/proc" "$t/sys" "$t/dev" "$t/dev/pts" "$t/etc" || return 1
     if ! mountpoint -q "$t/proc" 2>/dev/null; then
         mount -t proc proc "$t/proc" 2>>"$LOGFILE" && ROOTFS_ACTIVE_MOUNTS="$t/proc $ROOTFS_ACTIVE_MOUNTS" || warn "Could not mount proc in $t"
@@ -638,25 +642,39 @@ rootfs_mount_chroot_fs() { # <target>
     return 0
 }
 
-rootfs_unmount_chroot_fs() { # [mount-list]
-    local mounts="${1:-${ROOTFS_ACTIVE_MOUNTS:-}}" m
+rootfs_unmount_chroot_fs() { # <target> [mount-list]
+    # The target is now passed in. It used to be recovered by stripping mount
+    # suffixes off the mount list, which failed in two ways on exactly the
+    # restricted hosts this code warns about:
+    #   * every mount refused -> empty list -> loop never ran -> the target
+    #     kept the host's resolv.conf permanently, because it is copied in
+    #     unconditionally regardless of whether any mount succeeded; and
+    #   * only the /AOK bind mount succeeded -> no suffix matched -> teardown
+    #     ran `rm -f "$target/AOK/etc/resolv.conf"`, i.e. against the host's
+    #     bind-mounted /AOK tree.
+    local t="${1:-${ROOTFS_MOUNT_TARGET:-}}" mounts="${2:-${ROOTFS_ACTIVE_MOUNTS:-}}" m
     for m in $mounts; do
         umount -l "$m" 2>>"$LOGFILE" || true
     done
     ROOTFS_ACTIVE_MOUNTS=""
     if [ -n "${ROOTFS_DNS_BACKUP:-}" ] && [ -d "$ROOTFS_DNS_BACKUP" ]; then
-        local t=""
-        for m in $mounts; do t=${m%/proc}; t=${t%/sys}; t=${t%/dev/pts}; t=${t%/dev}; [ -d "$t/etc" ] && break; done
-        if [ -n "$t" ]; then
+        if [ -n "$t" ] && [ -d "$t/etc" ]; then
             rm -f "$t/etc/resolv.conf" 2>/dev/null || true
-            if [ -f "$ROOTFS_DNS_BACKUP/link" ]; then ln -s "$(cat "$ROOTFS_DNS_BACKUP/link")" "$t/etc/resolv.conf" 2>/dev/null || true
-            elif [ -e "$ROOTFS_DNS_BACKUP/file" ]; then cp -a "$ROOTFS_DNS_BACKUP/file" "$t/etc/resolv.conf" 2>/dev/null || true
+            if [ -f "$ROOTFS_DNS_BACKUP/link" ]; then
+                ln -s "$(cat "$ROOTFS_DNS_BACKUP/link")" "$t/etc/resolv.conf" 2>/dev/null || true
+            elif [ -e "$ROOTFS_DNS_BACKUP/file" ]; then
+                cp -a "$ROOTFS_DNS_BACKUP/file" "$t/etc/resolv.conf" 2>/dev/null || true
             fi
+            # A "$ROOTFS_DNS_BACKUP/missing" marker means the rootfs had no
+            # resolv.conf before we ran; the rm above already restored that.
+        else
+            warn "Could not restore DNS configuration: unknown rootfs target."
         fi
         rm -rf "$ROOTFS_DNS_BACKUP"
     fi
     ROOTFS_DNS_BACKUP=""
-    export ROOTFS_ACTIVE_MOUNTS ROOTFS_DNS_BACKUP
+    ROOTFS_MOUNT_TARGET=""
+    export ROOTFS_ACTIVE_MOUNTS ROOTFS_DNS_BACKUP ROOTFS_MOUNT_TARGET
 }
 
 rootfs_qemu_chroot_exec_raw() { # <target> <arch> <command> [args...]
@@ -673,12 +691,12 @@ rootfs_run_second_stage() { # <target> <arch> <use_qemu>
     if chroot "$t" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
         rc=0
     elif [ "$use_qemu" = 1 ]; then
-        setup_qemu_chroot "$t" "$arch" || { rootfs_unmount_chroot_fs "$mounts"; return 1; }
+        setup_qemu_chroot "$t" "$arch" || { rootfs_unmount_chroot_fs "$t" "$mounts"; return 1; }
         if rootfs_qemu_chroot_exec_raw "$t" "$arch" /bin/sh /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
             rc=0
         fi
     fi
-    rootfs_unmount_chroot_fs "$mounts"
+    rootfs_unmount_chroot_fs "$t" "$mounts"
     return "$rc"
 }
 
@@ -2289,7 +2307,7 @@ enter_chroot() { # enter_chroot <target>
     else
         rootfs_exec_raw "$t" "$shell" -lc "cd '$workdir' 2>/dev/null || cd /; exec '$shell' -l" || rc=$?
     fi
-    rootfs_unmount_chroot_fs "$mounts"
+    rootfs_unmount_chroot_fs "$t" "$mounts"
     echo "Left chroot; temporary mounts detached."
     read -rp "(press Enter)" _ || true
     return "$rc"
@@ -2327,10 +2345,10 @@ rootfs_chroot_exec() { # <target> <description> <sh -c command string>
     local t="$1" desc="$2" cmd="$3" mounts="" rc=0
     rootfs_mount_chroot_fs "$t" || true
     mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
-    trap 'rootfs_unmount_chroot_fs "$mounts"' INT TERM HUP
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"' INT TERM HUP
     run_cmd "$desc" rootfs_exec_raw "$t" /bin/sh -c "$cmd" || rc=$?
     trap - INT TERM HUP
-    rootfs_unmount_chroot_fs "$mounts"
+    rootfs_unmount_chroot_fs "$t" "$mounts"
     return "$rc"
 }
 rootfs_chroot_exec_args() { # <target> <description> <command> [args...]
@@ -2338,10 +2356,10 @@ rootfs_chroot_exec_args() { # <target> <description> <command> [args...]
     local mounts="" rc=0
     rootfs_mount_chroot_fs "$t" || true
     mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
-    trap 'rootfs_unmount_chroot_fs "$mounts"' INT TERM HUP
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"' INT TERM HUP
     run_cmd "$desc" rootfs_exec_raw "$t" "$@" || rc=$?
     trap - INT TERM HUP
-    rootfs_unmount_chroot_fs "$mounts"
+    rootfs_unmount_chroot_fs "$t" "$mounts"
     return "$rc"
 }
 
