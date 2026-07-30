@@ -3181,21 +3181,35 @@ pm_advanced_menu() { # <manager-id>
 # Each function presents multiple installation methods for a specific manager.
 # Called by menu_cfg_cli_manager when the manager binary is not found.
 
+brew_target_user() {
+    local def u
+    def="${SUDO_USER:-$(logname 2>/dev/null)}"
+    [ -n "$def" ] && [ "$def" != root ] || def=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
+    u=$(tui_input "Homebrew user" "Install Homebrew for which non-root user?" "${def:-}") || return 1
+    id "$u" >/dev/null 2>&1 || { tui_msg "Homebrew" "User '$u' does not exist."; return 1; }
+    [ "$u" = root ] && { tui_msg "Homebrew" "Homebrew must be installed as a non-root user."; return 1; }
+    printf '%s\n' "$u"
+}
+
 menu_brew_install() {
-    local c
-    c=$(tui_menu "Install Homebrew" "Choose installation method:" \
+    local c u home_dir _prefix
+    c=$(tui_menu "Install Homebrew" "Choose installation method (non-root only):" \
         script  "Official install script (recommended)" \
-        pm      "Package manager (${PM} install brew)" \
-        manual  "Manual git clone to /opt/homebrew or /home/linuxbrew" \
+        manual  "Manual git clone into user home directory" \
         back    "Back") || return 0
     case "$c" in
-        script)  run_cmd "Install Homebrew" bash -c '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' ;;
-        pm)      pm_install brew ;;
+        script)
+            u=$(brew_target_user) || return 0
+            run_cmd "Install Homebrew for $u" su - "$u" -c \
+                "bash -lc '/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"'" ;;
         manual)
-            local _prefix
-            [ "$(uname -s)" = Linux ] && _prefix=/home/linuxbrew/.linuxbrew || _prefix=/opt/homebrew
-            run_cmd "Clone Homebrew" git clone https://github.com/Homebrew/brew "$_prefix"
-            tui_msg "Homebrew manual" "Add ${_prefix}/bin to PATH, then run:\n  brew update --force --quiet" ;;
+            u=$(brew_target_user) || return 0
+            home_dir=$(user_home "$u")
+            [ -n "$home_dir" ] || { tui_msg "Homebrew" "Unable to determine home directory for '$u'."; return 0; }
+            [ "$(uname -s)" = Linux ] && _prefix="$home_dir/.linuxbrew" || _prefix="$home_dir/.homebrew"
+            run_cmd "Clone Homebrew for $u" su - "$u" -c \
+                "bash -lc '[ -d \"$_prefix/.git\" ] || git clone https://github.com/Homebrew/brew \"$_prefix\"'"
+            tui_msg "Homebrew manual" "As $u, add Homebrew to PATH:\n  eval \"\$($_prefix/bin/brew shellenv)\"" ;;
         back|"") return 0 ;;
     esac
 }

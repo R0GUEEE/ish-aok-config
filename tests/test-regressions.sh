@@ -260,10 +260,17 @@ check "menu_pipx_install exists"        function_exists menu_pipx_install
 check "menu_pip_install exists"         function_exists menu_pip_install
 check "menu_flatpak_install exists"     function_exists menu_flatpak_install
 check "menu_snap_install exists"        function_exists menu_snap_install
+check "brew_target_user exists"         function_exists brew_target_user
 
 # Key install method strings are present in the source file
 check "brew install script URL present" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "Homebrew/install/HEAD/install.sh"
+check "brew install enforces non-root" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Homebrew must be installed as a non-root user."
+check "brew install runs via su target user" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'Install Homebrew for $u" su - "$u" -c'
+check "brew pm install option removed" not_contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'Package manager (${PM} install brew)'
 check "nix determinate installer URL present" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "install.determinate.systems/nix"
 check "nix official multi-user install present" contains \
