@@ -30,9 +30,9 @@ sudo systui
 ```bash
 sudo systui
 → Main Menu
-→ Ultimate Provision
+→ Provision System
 → Configure (set timezone, username, hostname, sudo preference)
-→ Run (provisioning starts automatically)
+→ Run Provision Script
 → Re-login to activate changes
 ```
 
@@ -213,24 +213,23 @@ sudo systui
 
 # Navigate with arrow keys, Enter to select
 Main Menu
-  → Ultimate Provision
-    → Review (see what gets installed)
-    → Configure (set options)
-    → Run (start provisioning)
-    → Info (detailed reference)
+  → Provision System
+    → Configure script settings
+    → Review settings and detected system
+    → Run provision script
 ```
 
 ### Provisioning a Fresh System
 
 ```bash
-# On Alpine 3.23+
+# On Debian, Ubuntu, Kali, Devuan, or another compatible APT system
 sudo systui
-→ Ultimate Provision → Configure
+→ Provision System → Configure Script Settings
 → Timezone: UTC
 → Username: admin
 → Hostname: myserver
 → Sudo: password required (or passwordless)
-→ Run
+→ Run Provision Script
 
 # Provisioning starts automatically
 # Takes 5-15 minutes depending on internet speed
@@ -242,15 +241,15 @@ sudo systui
 For automation/CI-CD:
 
 ```bash
-# Direct provision script calls (with TUI built-in)
-sudo bash /usr/local/lib/systui/src/provision/debian.sh
+# Run the bundled script directly
+sudo sh /usr/local/lib/systui/src/provision/provision-system.sh
 
 # Pre-set environment variables for non-interactive mode
 TZ_NAME=UTC \
 TARGET_USER=admin \
 NEW_HOSTNAME=prod-server \
 SUDO_NOPASSWD=0 \
-sudo bash /usr/local/lib/systui/src/provision/debian.sh
+sudo -E sh /usr/local/lib/systui/src/provision/provision-system.sh
 ```
 
 ## Configuration
@@ -466,24 +465,16 @@ The package catalogue now includes:
   version-hold and package-integrity actions.
 - Package-name translation for APT, APK, Pacman and DNF environments.
 
-## Expanded Ultimate Provision Configuration
+## Provision System
 
-The Ultimate Provision menu now includes grouped configuration for:
+The Provision System menu configures and runs the bundled
+`src/provision/provision-system.sh` script. It exposes the script's supported
+settings: timezone, primary login, hostname, and sudo authentication policy.
+Settings are saved in `/etc/systui/provision-system.conf`.
 
-- Identity, hostname, timezone, locale, and sudo policy
-- Default shell and editor
-- Selectable package profiles: core, development, terminal, networking,
-  server, security, multimedia, backup, and containers
-- Service startup selection for SSH, cron, time synchronization, logging,
-  mDNS, and web services
-- SSH port, root-login policy, and password-authentication policy
-- Optional firewall and conservative filesystem/SSH hardening
-- iSH-AOK compatibility, balanced, and performance profiles
-- Optional 512 MiB swap file and post-install package cleanup
-- Full review screen before provisioning and reset-to-default support
-
-The compatibility profile is recommended for constrained iSH-AOK filesystems.
-Kernel-dependent features are skipped safely when unavailable.
+Before execution, the menu shows a full review and asks for confirmation. The
+script installs its terminal toolset and configures services, shell defaults,
+Neovim, tmux, timezone, hostname, and sudo on compatible APT-based systems.
 
 
 ## Expanded rootfs and package management
@@ -515,16 +506,6 @@ Kernel-dependent features are skipped safely when unavailable.
 ## Additional rootfs distributions
 
 Kali Linux, openSUSE Leap, openSUSE Tumbleweed, and Gentoo stage3 are available from the Rootfs Builder.
-
-## Distribution Provision Templates
-
-Ultimate Provision now includes two distribution-oriented tools:
-
-- **List Distribution Provision Templates** shows built-in and generated templates for Alpine, Arch Linux, Debian, Devuan, Ubuntu, Kali, Fedora, Void, openSUSE Leap, openSUSE Tumbleweed, and Gentoo.
-- **Generate Provision Scripts** uses a SPACE-to-select checklist and creates standalone scripts for selected distributions when a template is missing. Existing generated scripts require explicit overwrite confirmation.
-
-Generated scripts are stored in `share/generated-provision/` inside the systui installation and support minimal, standard, developer, and server package profiles through the `INSTALL_PROFILE` environment variable.
-
 
 ## System Health
 
@@ -578,13 +559,6 @@ System Configuration > Shells separates Managers from Plugins. Each Bash, Zsh, a
 - xplr
 
 Each entry supports installation/removal, a recommended starter configuration, direct configuration editing, launching, and a GitHub-backed add-on manager. Add-ons are installed per user under the applicable `~/.config` directory; custom Git repositories are also supported.
-
-### Adaptive provision scripts
-Provision templates now run a system preflight before making changes. The preflight reads
-`os-release`, verifies the target distribution family and package manager, detects the init
-system, architecture, container/chroot state, and uses the appropriate service adapter.
-Standalone scripts generated by Ultimate Provision include the same checks and refuse to run
-against an incompatible distribution.
 
 ### Shell plugin configuration managers
 System Configuration > Shells > Plugins now opens a per-user manager for each plugin. Starship, fzf, completions, zoxide, Atuin, direnv, Carapace, Zsh syntax highlighting, and Zsh autosuggestions include install/remove actions, shell integration, editable configuration, status inspection, and cleanup controls.
