@@ -230,6 +230,12 @@ check "bootstrap tools menu includes qemu-user-static" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "qemu-user-static"
 check "bootstrap tools menu maps packages via _bs_pkg" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "_bs_pkg"
+check "rootfs init selector includes runit option" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "runit    \"runit\" off"
+check "rootfs init selector includes custom init path" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "Other/custom init (manual package list)"
+check "rootfs init selector prompts for custom init packages" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "Custom init packages"
 
 # Generated catalogue installers must be complete and syntactically valid.
 SYSTUI_AWESOME_CACHE="$tmpdir/awesome"

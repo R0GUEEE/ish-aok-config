@@ -1442,10 +1442,12 @@ user creation). Install on the host first if you haven't:
     case "$distro" in
         debian|ubuntu)
             init_choice=$(tui_radio "Rootfs Builder 5/13" \
-                "Init system (SPACE to select).\nsystemd is the distro default; alternatives are swapped in via --include:" \
+                "Init system (SPACE to select).\nAlternatives are installed into the rootfs package set:" \
                 systemd  "systemd (distro default)" on \
                 sysvinit "SysVinit (sysvinit-core)" off \
-                openrc   "OpenRC" off) || return 0
+                openrc   "OpenRC" off \
+                runit    "runit" off \
+                custom   "Other/custom init (manual package list)" off) || return 0
             case "$init_choice" in
                 sysvinit)
                     init_pkgs="sysvinit-core sysvinit-utils"
@@ -1453,18 +1455,53 @@ user creation). Install on the host first if you haven't:
                     ;;
                 openrc)
                     init_pkgs="openrc"
-                    warn "OpenRC on $distro still uses sysv-rc scripts underneath; review /etc/rc.conf after first boot."
+                    warn "OpenRC on $distro typically still relies on sysv-rc scripts; review /etc/rc.conf after first boot."
+                    ;;
+                runit)
+                    init_pkgs="runit-init"
+                    ;;
+                custom)
+                    init_choice=$(tui_input "Custom init label" "Name shown in rootfs manifest (for example: s6, shepherd):" "custom") || return 0
+                    [ -n "$init_choice" ] || init_choice="custom"
+                    init_pkgs=$(tui_input "Custom init packages" "Packages to install for your init (space-separated):" "") || return 0
                     ;;
             esac ;;
         devuan)
             init_choice=$(tui_radio "Rootfs Builder 5/13" \
-                "Init system for Devuan (SPACE to select; systemd is not an option here):" \
+                "Init system for Devuan (SPACE to select):" \
                 sysvinit "SysVinit (Devuan default)" on \
                 openrc   "OpenRC" off \
-                runit    "runit" off) || return 0
+                runit    "runit" off \
+                custom   "Other/custom init (manual package list)" off) || return 0
             case "$init_choice" in
                 openrc) init_pkgs="openrc" ;;
                 runit)  init_pkgs="runit-init" ;;
+                custom)
+                    init_choice=$(tui_input "Custom init label" "Name shown in rootfs manifest (for example: dinit):" "custom") || return 0
+                    [ -n "$init_choice" ] || init_choice="custom"
+                    init_pkgs=$(tui_input "Custom init packages" "Packages to install for your init (space-separated):" "") || return 0
+                    ;;
+            esac ;;
+        kali)
+            init_choice=$(tui_radio "Rootfs Builder 5/13" \
+                "Init system for Kali (SPACE to select):" \
+                systemd  "systemd (Kali default)" on \
+                sysvinit "SysVinit (sysvinit-core)" off \
+                openrc   "OpenRC" off \
+                runit    "runit" off \
+                custom   "Other/custom init (manual package list)" off) || return 0
+            case "$init_choice" in
+                sysvinit) init_pkgs="sysvinit-core sysvinit-utils" ;;
+                openrc)
+                    init_pkgs="openrc"
+                    warn "OpenRC on Kali can require SysV compatibility scripts for services."
+                    ;;
+                runit) init_pkgs="runit-init" ;;
+                custom)
+                    init_choice=$(tui_input "Custom init label" "Name shown in rootfs manifest:" "custom") || return 0
+                    [ -n "$init_choice" ] || init_choice="custom"
+                    init_pkgs=$(tui_input "Custom init packages" "Packages to install for your init (space-separated):" "") || return 0
+                    ;;
             esac ;;
         alpine) init_choice="openrc"
                 tui_msg "Init system" "Alpine uses OpenRC (included in alpine-base)." ;;
@@ -1472,7 +1509,6 @@ user creation). Install on the host first if you haven't:
                 tui_msg "Init system" "Official Arch Linux is systemd-only.\n(For alternatives on an Arch-like base, see Artix.)" ;;
         fedora|opensuse|tumbleweed) init_choice="systemd"
                 tui_msg "Init system" "$distro uses systemd." ;;
-        kali)  init_choice="systemd" ;;
         gentoo) init_choice="$release"
                 tui_msg "Init system" "Gentoo stage3 flavor selected: $release." ;;
         void)   init_choice="runit"
