@@ -244,5 +244,88 @@ check "healthy systemd state is reported as clean" contains "$service_report" "N
 case "$(health_tmp private)" in "$SYSTUI_TMP"/*) private_ok=1 ;; *) private_ok=0 ;; esac
 check "health reports stay in the private workspace" test "$private_ok" -eq 1
 
+# ---- Per-manager install menus ---------------------------------------------
+check "menu_brew_install exists"        function_exists menu_brew_install
+check "menu_nix_install exists"         function_exists menu_nix_install
+check "menu_yay_install exists"         function_exists menu_yay_install
+check "menu_paru_install exists"        function_exists menu_paru_install
+check "menu_cargo_install exists"       function_exists menu_cargo_install
+check "menu_npm_install exists"         function_exists menu_npm_install
+check "menu_pnpm_install exists"        function_exists menu_pnpm_install
+check "menu_yarn_install exists"        function_exists menu_yarn_install
+check "menu_gem_install exists"         function_exists menu_gem_install
+check "menu_composer_install exists"    function_exists menu_composer_install
+check "menu_go_install exists"          function_exists menu_go_install
+check "menu_pipx_install exists"        function_exists menu_pipx_install
+check "menu_pip_install exists"         function_exists menu_pip_install
+check "menu_flatpak_install exists"     function_exists menu_flatpak_install
+check "menu_snap_install exists"        function_exists menu_snap_install
+
+# Key install method strings are present in the source file
+check "brew install script URL present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Homebrew/install/HEAD/install.sh"
+check "nix determinate installer URL present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "install.determinate.systems/nix"
+check "nix official multi-user install present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nixos.org/nix/install"
+check "yay AUR git clone present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "aur.archlinux.org/yay.git"
+check "paru AUR git clone present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "aur.archlinux.org/paru.git"
+check "cargo rustup install script present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "sh.rustup.rs"
+check "npm nvm install script present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nvm-sh/nvm"
+check "npm fnm install script present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "fnm.vercel.app/install"
+check "npm nodesource APT setup present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "deb.nodesource.com"
+check "pnpm official install script present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "get.pnpm.io/install.sh"
+check "yarn corepack enable present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "corepack enable"
+check "gem rbenv install present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "rbenv.org/install.sh"
+check "gem rvm install present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "get.rvm.io"
+check "composer official installer present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "getcomposer.org/installer"
+check "go official tarball URL present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "go.dev/dl"
+check "pip get-pip.py URL present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "bootstrap.pypa.io/get-pip.py"
+check "pip ensurepip method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "ensurepip --upgrade"
+check "pipx pip install method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "pip3 install --user pipx"
+check "flatpak Flathub remote add present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "dl.flathub.org/repo/flathub.flatpakrepo"
+check "snap enable service method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "snapd.service"
+
+# menu_cfg_cli_manager accepts 5th install-fn argument
+check "menu_cfg_cli_manager install_fn param" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" 'install_fn='
+check "menu_cfg_cli_manager calls install_fn" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" '"$install_fn"'
+
+# Wiring: install functions passed into menu_package_managers dispatch
+check "brew wired with menu_brew_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_brew_install"
+check "nix wired with menu_nix_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_nix_install"
+check "cargo wired with menu_cargo_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_cargo_install"
+check "npm wired with menu_npm_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_npm_install"
+check "yay wired with menu_yay_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_yay_install"
+check "paru wired with menu_paru_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_paru_install"
+check "flatpak guard uses menu_flatpak_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_flatpak_install"
+check "snap guard uses menu_snap_install" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_snap_install"
+
 printf '1..%d\n' "$checks"
 [ "$failures" -eq 0 ]

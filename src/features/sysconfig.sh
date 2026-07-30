@@ -2263,11 +2263,15 @@ menu_cfg_apt() {
     done
 }
 
-menu_cfg_cli_manager() { # id command config install-package
-    local id="$1" cmd="$2" cfg="$3" pkg="${4:-$2}" c q
+menu_cfg_cli_manager() { # id command config install-package [install-fn]
+    local id="$1" cmd="$2" cfg="$3" pkg="${4:-$2}" install_fn="${5:-}" c q
     if ! command -v "$cmd" >/dev/null 2>&1; then
         tui_yesno "$id" "$id is not installed. Install it now?" || return 0
-        pm_install "$pkg" || return 0
+        if [ -n "$install_fn" ] && declare -f "$install_fn" >/dev/null 2>&1; then
+            "$install_fn" || return 0
+        else
+            pm_install "$pkg" || return 0
+        fi
     fi
     while true; do
         c=$(tui_menu "$id configuration" "Manage $id:" \
@@ -2359,7 +2363,7 @@ menu_cfg_cli_manager() { # id command config install-package
 }
 
 menu_cfg_flatpak() {
-    command -v flatpak >/dev/null 2>&1 || { tui_yesno "Flatpak" "Install Flatpak now?" || return; pm_install flatpak; }
+    command -v flatpak >/dev/null 2>&1 || { tui_yesno "Flatpak" "Install Flatpak now?" || return; menu_flatpak_install; }
     while true; do
         local c q
         c=$(tui_menu "Flatpak configuration" "Manage Flatpak:" advanced "Advanced settings (SPACE to select)" remotes "Manage/list remotes" flathub "Add Flathub" permissions "Show application overrides" repair "Repair installation" unused "Remove unused runtimes" update "Update all" config "Edit global installation config" back "Back") || return
@@ -2378,7 +2382,7 @@ menu_cfg_flatpak() {
 }
 
 menu_cfg_snap() {
-    command -v snap >/dev/null 2>&1 || { tui_yesno "Snap" "Install snapd now?" || return; pm_install snapd; }
+    command -v snap >/dev/null 2>&1 || { tui_yesno "Snap" "Install snapd now?" || return; menu_snap_install; }
     while true; do
         local c v
         c=$(tui_menu "Snap configuration" "Manage snapd:" advanced "Advanced settings (SPACE to select)" changes "Recent changes" refresh "Refresh all snaps" schedule "Show refresh schedule" hold "Set refresh hold" snapshots "List snapshots" connections "List interfaces/connections" config "Show system configuration" back "Back") || return
@@ -3019,6 +3023,308 @@ pm_advanced_menu() { # <manager-id>
     esac
 }
 
+# ---- Per-manager install menus ----------------------------------------------
+# Each function presents multiple installation methods for a specific manager.
+# Called by menu_cfg_cli_manager when the manager binary is not found.
+
+menu_brew_install() {
+    local c
+    c=$(tui_menu "Install Homebrew" "Choose installation method:" \
+        script  "Official install script (recommended)" \
+        pm      "Package manager (${PM} install brew)" \
+        manual  "Manual git clone to /opt/homebrew or /home/linuxbrew" \
+        back    "Back") || return 0
+    case "$c" in
+        script)  run_cmd "Install Homebrew" bash -c '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' ;;
+        pm)      pm_install brew ;;
+        manual)
+            local _prefix
+            [ "$(uname -s)" = Linux ] && _prefix=/home/linuxbrew/.linuxbrew || _prefix=/opt/homebrew
+            run_cmd "Clone Homebrew" git clone https://github.com/Homebrew/brew "$_prefix"
+            tui_msg "Homebrew manual" "Add ${_prefix}/bin to PATH, then run:\n  brew update --force --quiet" ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_nix_install() {
+    local c
+    c=$(tui_menu "Install Nix" "Choose installation method:" \
+        official    "Official multi-user install (nixos.org)" \
+        determinate "Determinate Systems nix-installer (fast & robust)" \
+        single      "Official single-user install" \
+        pm          "Package manager (${PM} install nix)" \
+        back        "Back") || return 0
+    case "$c" in
+        official)    run_cmd "Install Nix (multi-user)" sh -c 'curl -L https://nixos.org/nix/install | sh -s -- --daemon' ;;
+        determinate) run_cmd "Install Nix (Determinate)" sh -c 'curl --proto "=https" --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install' ;;
+        single)      run_cmd "Install Nix (single-user)" sh -c 'curl -L https://nixos.org/nix/install | sh -s -- --no-daemon' ;;
+        pm)          pm_install nix ;;
+        back|"")     return 0 ;;
+    esac
+}
+
+menu_yay_install() {
+    if ! command -v pacman >/dev/null 2>&1; then
+        tui_msg "yay" "yay is an AUR helper and requires Arch Linux (pacman)."
+        return 0
+    fi
+    local c
+    c=$(tui_menu "Install yay" "Choose installation method:" \
+        makepkg "git clone + makepkg (official AUR method)" \
+        binary  "Download prebuilt binary from GitHub releases" \
+        back    "Back") || return 0
+    case "$c" in
+        makepkg) run_cmd "Install yay" bash -c \
+            'cd /tmp && git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si --noconfirm && cd / && rm -rf /tmp/yay' ;;
+        binary)  run_cmd "Install yay (binary)" bash -c '
+tag=$(curl -fsSL https://api.github.com/repos/Jguer/yay/releases/latest | sed -n "s/.*\"tag_name\":.*\"\([^\"]*\)\".*/\1/p")
+arch=$(uname -m); [ "$arch" = x86_64 ] && arch=x86_64 || arch=aarch64
+url="https://github.com/Jguer/yay/releases/download/${tag}/yay_${tag#v}_${arch}.tar.gz"
+tmp=$(mktemp -d)
+curl -fsSL "$url" | tar -xz -C "$tmp"
+install -m 0755 "$(find "$tmp" -name yay -type f | head -1)" /usr/local/bin/yay
+rm -rf "$tmp"' ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_paru_install() {
+    if ! command -v pacman >/dev/null 2>&1; then
+        tui_msg "paru" "paru is an AUR helper and requires Arch Linux (pacman)."
+        return 0
+    fi
+    local c
+    c=$(tui_menu "Install paru" "Choose installation method:" \
+        makepkg "git clone + makepkg (official AUR method)" \
+        cargo   "cargo install paru" \
+        binary  "Download prebuilt binary from GitHub releases" \
+        back    "Back") || return 0
+    case "$c" in
+        makepkg) run_cmd "Install paru" bash -c \
+            'cd /tmp && git clone https://aur.archlinux.org/paru.git && cd paru && makepkg -si --noconfirm && cd / && rm -rf /tmp/paru' ;;
+        cargo)   command -v cargo >/dev/null || { tui_msg "paru" "cargo is required. Install Rust/Cargo first."; return 0; }
+                 run_cmd "Install paru (cargo)" cargo install paru ;;
+        binary)  run_cmd "Install paru (binary)" bash -c '
+tag=$(curl -fsSL https://api.github.com/repos/morganamilo/paru/releases/latest | sed -n "s/.*\"tag_name\":.*\"\([^\"]*\)\".*/\1/p")
+arch=$(uname -m); [ "$arch" = x86_64 ] && arch=x86_64 || arch=aarch64
+url="https://github.com/morganamilo/paru/releases/download/${tag}/paru-${tag}-${arch}.tar.zst"
+tmp=$(mktemp -d)
+curl -fsSL "$url" | tar --zstd -x -C "$tmp" 2>/dev/null || curl -fsSL "$url" | tar -xI zstd -C "$tmp" 2>/dev/null
+install -m 0755 "$(find "$tmp" -name paru -type f | head -1)" /usr/local/bin/paru
+rm -rf "$tmp"' ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_cargo_install() {
+    local c
+    c=$(tui_menu "Install Cargo/Rust" "Choose installation method:" \
+        rustup "rustup (official, recommended) — installs rustup + cargo + rustc" \
+        pm     "Package manager (${PM} install cargo rustc)" \
+        snap   "Snap: snap install rustup --classic" \
+        back   "Back") || return 0
+    case "$c" in
+        rustup) run_cmd "Install Rust via rustup" sh -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' ;;
+        pm)     pm_install cargo rustc ;;
+        snap)   command -v snap >/dev/null || { tui_msg "snap" "snapd is not installed."; return 0; }
+                run_cmd "Install rustup via snap" snap install rustup --classic ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_npm_install() {
+    local c
+    c=$(tui_menu "Install Node.js/npm" "Choose installation method:" \
+        nvm        "nvm — Node Version Manager (user-level, recommended)" \
+        fnm        "fnm — Fast Node Manager (user-level)" \
+        nodesource "NodeSource APT/RPM repo (system-wide LTS)" \
+        pm         "Package manager (${PM} install nodejs npm)" \
+        back       "Back") || return 0
+    case "$c" in
+        nvm)  run_cmd "Install nvm" bash -c 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash' ;;
+        fnm)  run_cmd "Install fnm" bash -c 'curl -fsSL https://fnm.vercel.app/install | bash' ;;
+        nodesource)
+            case "$PM" in
+                apt) run_cmd "Add NodeSource LTS (APT)" bash -c 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -' ;;
+                dnf|yum) run_cmd "Add NodeSource LTS (RPM)" bash -c 'curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -' ;;
+                *) tui_msg "NodeSource" "NodeSource setup scripts support APT and DNF/YUM only." ;;
+            esac ;;
+        pm) pm_install nodejs npm ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_pnpm_install() {
+    local c
+    c=$(tui_menu "Install pnpm" "Choose installation method:" \
+        script "Official install script (recommended)" \
+        npm    "npm: npm install -g pnpm" \
+        brew   "Homebrew: brew install pnpm" \
+        pm     "Package manager (${PM} install pnpm)" \
+        back   "Back") || return 0
+    case "$c" in
+        script) run_cmd "Install pnpm" sh -c 'curl -fsSL https://get.pnpm.io/install.sh | sh -' ;;
+        npm)    command -v npm >/dev/null || { tui_msg "pnpm" "npm is required. Install Node.js first."; return 0; }
+                run_cmd "Install pnpm via npm" npm install -g pnpm ;;
+        brew)   command -v brew >/dev/null || { tui_msg "pnpm" "Homebrew is not installed."; return 0; }
+                run_cmd "Install pnpm via brew" brew install pnpm ;;
+        pm)     pm_install pnpm ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_yarn_install() {
+    local c
+    c=$(tui_menu "Install Yarn" "Choose installation method:" \
+        corepack "corepack enable (Node.js ≥16, recommended)" \
+        npm      "npm: npm install -g yarn" \
+        brew     "Homebrew: brew install yarn" \
+        pm       "Package manager (${PM} install yarn)" \
+        back     "Back") || return 0
+    case "$c" in
+        corepack) command -v node >/dev/null || { tui_msg "Yarn" "Node.js is required. Install it first."; return 0; }
+                  run_cmd "Enable Yarn via corepack" corepack enable ;;
+        npm)      command -v npm >/dev/null || { tui_msg "Yarn" "npm is required. Install Node.js first."; return 0; }
+                  run_cmd "Install Yarn via npm" npm install -g yarn ;;
+        brew)     command -v brew >/dev/null || { tui_msg "Yarn" "Homebrew is not installed."; return 0; }
+                  run_cmd "Install Yarn via brew" brew install yarn ;;
+        pm)       pm_install yarn ;;
+        back|"")  return 0 ;;
+    esac
+}
+
+menu_gem_install() {
+    local c
+    c=$(tui_menu "Install Ruby/RubyGems" "Choose installation method:" \
+        rbenv "rbenv — per-user Ruby version manager (recommended)" \
+        rvm   "RVM — Ruby Version Manager" \
+        asdf  "asdf ruby plugin" \
+        pm    "Package manager (${PM} install ruby)" \
+        back  "Back") || return 0
+    case "$c" in
+        rbenv) run_cmd "Install rbenv + ruby-build" bash -c 'curl -fsSL https://rbenv.org/install.sh | bash' ;;
+        rvm)   run_cmd "Install RVM" bash -c '\curl -sSL https://get.rvm.io | bash -s stable --ruby' ;;
+        asdf)  command -v asdf >/dev/null || { tui_msg "asdf" "asdf is not installed."; return 0; }
+               run_cmd "Install Ruby via asdf" bash -c 'asdf plugin add ruby && asdf install ruby latest && asdf global ruby latest' ;;
+        pm)    pm_install ruby ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_composer_install() {
+    local c
+    c=$(tui_menu "Install Composer" "Choose installation method:" \
+        official "Official PHP installer (getcomposer.org)" \
+        brew     "Homebrew: brew install composer" \
+        pm       "Package manager (${PM} install composer)" \
+        back     "Back") || return 0
+    case "$c" in
+        official)
+            command -v php >/dev/null || { tui_msg "Composer" "PHP is required. Install it first."; return 0; }
+            run_cmd "Install Composer" bash -c '
+php -r "copy(\"https://getcomposer.org/installer\", \"/tmp/composer-setup.php\");"
+HASH=$(curl -sS https://composer.github.io/installer.sig)
+php -r "if (hash_file(\"sha384\", \"/tmp/composer-setup.php\") !== getenv(\"HASH\")) { echo \"Installer corrupt\\n\"; unlink(\"/tmp/composer-setup.php\"); exit(1); }" 2>&1
+php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+rm -f /tmp/composer-setup.php' ;;
+        brew)    command -v brew >/dev/null || { tui_msg "Composer" "Homebrew is not installed."; return 0; }
+                 run_cmd "Install Composer via brew" brew install composer ;;
+        pm)      pm_install composer ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_go_install() {
+    local c
+    c=$(tui_menu "Install Go" "Choose installation method:" \
+        official "Official tarball — latest stable from go.dev/dl" \
+        snap     "Snap: snap install go --classic" \
+        brew     "Homebrew: brew install go" \
+        pm       "Package manager (${PM} install golang)" \
+        back     "Back") || return 0
+    case "$c" in
+        official) run_cmd "Install Go (official tarball)" bash -c '
+arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; *) arch=386;; esac
+ver=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1)
+url="https://go.dev/dl/${ver}.linux-${arch}.tar.gz"
+rm -rf /usr/local/go
+curl -fsSL "$url" | tar -xz -C /usr/local
+ln -sf /usr/local/go/bin/go /usr/local/bin/go
+ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt' ;;
+        snap)     command -v snap >/dev/null || { tui_msg "snap" "snapd is not installed."; return 0; }
+                  run_cmd "Install Go via snap" snap install go --classic ;;
+        brew)     command -v brew >/dev/null || { tui_msg "Go" "Homebrew is not installed."; return 0; }
+                  run_cmd "Install Go via brew" brew install go ;;
+        pm)       pm_install golang-go 2>/dev/null || pm_install go ;;
+        back|"")  return 0 ;;
+    esac
+}
+
+menu_pipx_install() {
+    local c
+    c=$(tui_menu "Install pipx" "Choose installation method:" \
+        pip  "pip: pip3 install --user pipx" \
+        brew "Homebrew: brew install pipx" \
+        pm   "Package manager (${PM} install pipx)" \
+        back "Back") || return 0
+    case "$c" in
+        pip)  command -v pip3 >/dev/null || { tui_msg "pipx" "pip3 is required. Install Python 3 first."; return 0; }
+              run_cmd "Install pipx via pip" pip3 install --user pipx ;;
+        brew) command -v brew >/dev/null || { tui_msg "pipx" "Homebrew is not installed."; return 0; }
+              run_cmd "Install pipx via brew" brew install pipx ;;
+        pm)   pm_install pipx ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_pip_install() {
+    local c
+    c=$(tui_menu "Install pip" "Choose installation method:" \
+        ensurepip "python3 -m ensurepip (bootstrap from stdlib)" \
+        getpip    "get-pip.py — PyPA official bootstrap script" \
+        pm        "Package manager (${PM} install python3-pip)" \
+        back      "Back") || return 0
+    case "$c" in
+        ensurepip) command -v python3 >/dev/null || { tui_msg "pip" "Python 3 is required."; return 0; }
+                   run_cmd "Bootstrap pip" python3 -m ensurepip --upgrade ;;
+        getpip)    command -v python3 >/dev/null || { tui_msg "pip" "Python 3 is required."; return 0; }
+                   run_cmd "Install pip via get-pip.py" bash -c \
+                       'curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3 /tmp/get-pip.py && rm -f /tmp/get-pip.py' ;;
+        pm)        pm_install python3-pip 2>/dev/null || pm_install python-pip ;;
+        back|"")   return 0 ;;
+    esac
+}
+
+menu_flatpak_install() {
+    local c
+    c=$(tui_menu "Install Flatpak" "Choose installation method:" \
+        pm      "Package manager (${PM} install flatpak) — recommended" \
+        flathub "Install Flatpak + add Flathub remote" \
+        back    "Back") || return 0
+    case "$c" in
+        pm)      pm_install flatpak ;;
+        flathub) pm_install flatpak
+                 command -v flatpak >/dev/null && \
+                     run_cmd "Add Flathub remote" flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo ;;
+        back|"") return 0 ;;
+    esac
+}
+
+menu_snap_install() {
+    local c
+    c=$(tui_menu "Install snapd" "Choose installation method:" \
+        pm     "Package manager (${PM} install snapd)" \
+        enable "Install snapd + enable and start snapd service" \
+        back   "Back") || return 0
+    case "$c" in
+        pm)     pm_install snapd ;;
+        enable) pm_install snapd
+                run_cmd "Enable snapd service" bash -c \
+                    'systemctl enable --now snapd.service 2>/dev/null; ln -sf /var/lib/snapd/snap /snap 2>/dev/null || true' ;;
+        back|"") return 0 ;;
+    esac
+}
+
 menu_package_managers() {
     while true; do
         local c
@@ -3045,20 +3351,21 @@ menu_package_managers() {
             apk) command -v apk >/dev/null && { PM_SAVE="$PM"; PM=apk; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "apk" "apk is not installed." ;;
             xbps) command -v xbps-install >/dev/null && { PM_SAVE="$PM"; PM=xbps; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "XBPS" "XBPS is not installed." ;;
             emerge) command -v emerge >/dev/null && { PM_SAVE="$PM"; PM=emerge; menu_cfg_native_full; PM="$PM_SAVE"; } || tui_msg "Portage" "emerge is not installed." ;;
-            yay|paru) menu_cfg_cli_manager "$c" "$c" "$HOME/.config/$c/config.json" "$c" ;;
+            yay)     menu_cfg_cli_manager yay  yay  "$HOME/.config/yay/config.json"   yay   menu_yay_install ;;
+            paru)    menu_cfg_cli_manager paru paru "$HOME/.config/paru/paru.conf"    paru  menu_paru_install ;;
             flatpak) menu_cfg_flatpak ;;
             snap) menu_cfg_snap ;;
-            nix) menu_cfg_cli_manager nix nix "$HOME/.config/nix/nix.conf" nix ;;
-            brew) menu_cfg_cli_manager brew brew "$HOME/.config/homebrew/brew.env" brew ;;
-            pip) menu_cfg_cli_manager pip pip3 "$HOME/.config/pip/pip.conf" python3-pip ;;
-            pipx) menu_cfg_cli_manager pipx pipx "$HOME/.config/pipx/config" pipx ;;
-            npm) menu_cfg_cli_manager npm npm "$HOME/.npmrc" npm ;;
-            pnpm) menu_cfg_cli_manager pnpm pnpm "$HOME/.config/pnpm/rc" pnpm ;;
-            yarn) menu_cfg_cli_manager yarn yarn "$HOME/.yarnrc" yarn ;;
-            cargo) menu_cfg_cli_manager cargo cargo "$HOME/.cargo/config.toml" cargo ;;
-            gem) menu_cfg_cli_manager gem gem "$HOME/.gemrc" ruby ;;
-            composer) menu_cfg_cli_manager composer composer "$HOME/.config/composer/config.json" composer ;;
-            go) menu_cfg_cli_manager go go "$HOME/.config/go/env" golang ;;
+            nix) menu_cfg_cli_manager nix nix "$HOME/.config/nix/nix.conf" nix menu_nix_install ;;
+            brew) menu_cfg_cli_manager brew brew "$HOME/.config/homebrew/brew.env" brew menu_brew_install ;;
+            pip) menu_cfg_cli_manager pip pip3 "$HOME/.config/pip/pip.conf" python3-pip menu_pip_install ;;
+            pipx) menu_cfg_cli_manager pipx pipx "$HOME/.config/pipx/config" pipx menu_pipx_install ;;
+            npm) menu_cfg_cli_manager npm npm "$HOME/.npmrc" npm menu_npm_install ;;
+            pnpm) menu_cfg_cli_manager pnpm pnpm "$HOME/.config/pnpm/rc" pnpm menu_pnpm_install ;;
+            yarn) menu_cfg_cli_manager yarn yarn "$HOME/.yarnrc" yarn menu_yarn_install ;;
+            cargo) menu_cfg_cli_manager cargo cargo "$HOME/.cargo/config.toml" cargo menu_cargo_install ;;
+            gem) menu_cfg_cli_manager gem gem "$HOME/.gemrc" ruby menu_gem_install ;;
+            composer) menu_cfg_cli_manager composer composer "$HOME/.config/composer/config.json" composer menu_composer_install ;;
+            go) menu_cfg_cli_manager go go "$HOME/.config/go/env" golang menu_go_install ;;
             back|"") return 0 ;;
         esac
     done
