@@ -4073,7 +4073,7 @@ menu_shells() {
             readline) safe_edit /etc/inputrc || true ;;
             bashopts) menu_shell_config ;;
             default) local u sh; u=$(tui_input "User" "Username:" "${SUDO_USER:-root}") || continue; sh=$(tui_radio "Default shell" "SPACE selects:" bash "Bash" on zsh "Zsh" off fish "Fish" off) || continue; chsh -s "$(command -v "$sh")" "$u" ;;
-            advanced) menu_shells_advanced ;;
+            advanced) menu_shell_advanced ;;
             back|"") return 0 ;;
         esac
     done
@@ -4654,7 +4654,7 @@ menu_users() {
                 else
                     run_cmd "adduser $u" adduser -D -s "$sh_" "$u"   # busybox
                 fi
-                p=$(tui_pass "Password" "Password for $u (blank = locked):")
+                p=$(tui_password "Password" "Password for $u (blank = locked):")
                 [ -n "$p" ] && echo "$u:$p" | chpasswd ;;
             del)
                 local u; u=$(tui_input "Delete user" "Username:" "") || continue; [ -z "$u" ] && continue
@@ -4663,7 +4663,7 @@ menu_users() {
             passwd)
                 local u p
                 u=$(tui_input "Password" "Username:" "${SUDO_USER:-root}") || continue
-                p=$(tui_pass "Password" "New password for $u:") || continue
+                p=$(tui_password "Password" "New password for $u:") || continue
                 [ -n "$p" ] && echo "$u:$p" | chpasswd && tui_msg "Done" "Password updated for $u." ;;
             aging)
                 command -v chage >/dev/null || { tui_msg "N/A" "chage not available (shadow suite missing)."; continue; }
@@ -5481,8 +5481,8 @@ menu_storage_advanced() {
                 tui_yesno "DESTRUCTIVE" "luksFormat will DESTROY ALL DATA on $dev.\nContinue?" || continue
                 typed=$(tui_input "Type to confirm" "Type the device path ($dev) to confirm:" "") || continue
                 [ "$typed" != "$dev" ] && { tui_msg "Aborted" "Confirmation did not match."; continue; }
-                p1=$(tui_pass "Passphrase" "LUKS passphrase:") || continue
-                p2=$(tui_pass "Passphrase" "Repeat passphrase:") || continue
+                p1=$(tui_password "Passphrase" "LUKS passphrase:") || continue
+                p2=$(tui_password "Passphrase" "Repeat passphrase:") || continue
                 [ "$p1" != "$p2" ] && { tui_msg "Mismatch" "Passphrases differ — aborted."; continue; }
                 [ -z "$p1" ] && { tui_msg "Empty" "Empty passphrase — aborted."; continue; }
                 printf '%s' "$p1" | run_cmd "cryptsetup luksFormat $dev" \
@@ -5500,7 +5500,7 @@ menu_storage_advanced() {
                         dev=$(tui_input "Open" "LUKS device (e.g. /dev/sdb1):" "") || continue
                         name=$(tui_input "Open" "Mapper name:" "cryptdata") || continue
                         [ -z "$dev" ] || [ -z "$name" ] && continue
-                        p=$(tui_pass "Passphrase" "LUKS passphrase:") || continue
+                        p=$(tui_password "Passphrase" "LUKS passphrase:") || continue
                         printf '%s' "$p" | cryptsetup open "$dev" "$name" - 2>>"$LOGFILE" \
                             && tui_msg "Open" "Unlocked as /dev/mapper/$name" \
                             || tui_msg "Failed" "Could not open $dev (wrong passphrase?)." ;;
@@ -6892,7 +6892,7 @@ show_guide() {
   [ -n "\$guide" ] || guide=\$(find "\$DEST/docs" -maxdepth 2 -type f \( -iname '*install*.md' -o -iname '*build*.md' \) 2>/dev/null | head -n 1 || true)
   [ -n "\$guide" ] || { echo "No installation guide detected"; return 1; }
   echo "Guide: \$guide"
-  awk 'BEGIN{IGNORECASE=1; active=0; fence=0} /^#{1,6}[[:space:]].*(install|build|compile|setup)/{active=1;next} active&&/^#{1,6}[[:space:]]/{active=0} active&&/^```/{fence=!fence;next} active&&fence{print}' "\$guide"
+  awk 'BEGIN{IGNORECASE=1; active=0; fence=0} /^#{1,6}[[:space:]].*(install|build|compile|setup)/{active=1;next} active&&/^#{1,6}[[:space:]]/{active=0} active&&substr(\$0,1,3)==sprintf("%c%c%c",96,96,96){fence=!fence;next} active&&fence{print}' "\$guide"
 }
 install_github() {
   clone_source

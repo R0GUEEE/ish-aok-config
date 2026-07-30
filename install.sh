@@ -157,9 +157,9 @@ install_dependencies() {
     # uses category-qualified atoms.
     case "$pm" in
         apt|apk|pacman|dnf|zypper|xbps)
-            pkg_bash=bash; pkg_dialog=dialog; pkg_coreutils=coreutils
-            pkg_grep=grep; pkg_sed=sed; pkg_awk=gawk; pkg_find=findutils
-            pkg_curl=curl; pkg_ca=ca-certificates
+            pkg_bash="bash"; pkg_dialog="dialog"; pkg_coreutils="coreutils"
+            pkg_grep="grep"; pkg_sed="sed"; pkg_awk="gawk"; pkg_find="findutils"
+            pkg_curl="curl"; pkg_ca="ca-certificates"
             ;;
         emerge)
             pkg_bash=app-shells/bash; pkg_dialog=dev-util/dialog
@@ -203,18 +203,18 @@ check_command() {
 verify_dependencies() {
     info "Verifying dependencies..."
     
-    local missing=""
+    local missing_commands=""
     for cmd in bash dialog sed awk grep cut tr head sort find; do
         if ! check_command "$cmd"; then
-            missing+="$cmd "
+            missing_commands+="$cmd "
         fi
     done
     if ! check_command curl && ! check_command wget; then
-        missing+="curl-or-wget "
+        missing_commands+="curl-or-wget "
     fi
     
-    if [ -n "$missing" ]; then
-        error "Missing required commands: $missing"
+    if [ -n "$missing_commands" ]; then
+        error "Missing required commands: $missing_commands"
     fi
     
     success "All dependencies present"

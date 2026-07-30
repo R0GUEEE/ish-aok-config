@@ -10,16 +10,30 @@ SYSTUI_VERSION="1.0.0"
 SYSTUI_TITLE="systui — Linux System TUI"
 BACKTITLE="iSH-AOK · systui v${SYSTUI_VERSION}"
 
-# Logging
-SYSTUI_TMP="${SYSTUI_TMP:-$(mktemp -d "${TMPDIR:-/tmp}/systui.XXXXXX")}"
+# Logging. Never trust a caller-provided SYSTUI_TMP as an owned directory: the
+# application runs as root and removes its workspace on exit. Callers may
+# choose the parent directory through SYSTUI_TMP_ROOT or TMPDIR instead.
+SYSTUI_TMP_ROOT="${SYSTUI_TMP_ROOT:-${TMPDIR:-/tmp}}"
+[ -d "$SYSTUI_TMP_ROOT" ] || { echo "Temporary directory does not exist: $SYSTUI_TMP_ROOT" >&2; exit 1; }
+SYSTUI_TMP_ROOT=$(cd -- "$SYSTUI_TMP_ROOT" && pwd -P)
+SYSTUI_TMP=$(mktemp -d "$SYSTUI_TMP_ROOT/systui.XXXXXX") || exit 1
 chmod 700 "$SYSTUI_TMP"
+: > "$SYSTUI_TMP/.systui-owned"
 export SYSTUI_TMP
 LOGFILE="$SYSTUI_TMP/systui.log"
 WARNFILE="$SYSTUI_TMP/systui.warnings"
 : > "$LOGFILE"
 : > "$WARNFILE"
-cleanup_systui_tmp() { [ -n "${SYSTUI_TMP:-}" ] && [ -d "$SYSTUI_TMP" ] && rm -rf -- "$SYSTUI_TMP"; }
-trap cleanup_systui_tmp EXIT INT TERM
+cleanup_systui_tmp() {
+    case "${SYSTUI_TMP:-}" in
+        "$SYSTUI_TMP_ROOT"/systui.*)
+            [ -f "$SYSTUI_TMP/.systui-owned" ] && rm -rf -- "$SYSTUI_TMP"
+            ;;
+    esac
+}
+trap cleanup_systui_tmp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Dialog
 export DIALOG="${DIALOG:-dialog}"

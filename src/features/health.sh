@@ -1,7 +1,11 @@
 #!/bin/bash
 # systui — System Health Scanner
 
-health_tmp() { printf '/tmp/systui-health-%s' "${1:-report}"; }
+health_tmp() {
+    local name="${1:-report}"
+    case "$name" in *[!A-Za-z0-9_.-]*) return 1 ;; esac
+    printf '%s/health-%s' "${SYSTUI_TMP:?private workspace is not initialized}" "$name"
+}
 health_has() { command -v "$1" >/dev/null 2>&1; }
 
 health_os_name() {
@@ -36,12 +40,16 @@ health_status_word() {
 }
 
 health_package_issues() {
-    local out="$1"
+    local out="$1" check
     : > "$out"
     case "$PM" in
         apt)
             dpkg --audit >>"$out" 2>&1 || true
-            apt-get check >>"$out" 2>&1 || true
+            check=$(health_tmp apt-check)
+            if ! apt-get check >"$check" 2>&1; then
+                cat "$check" >>"$out"
+            fi
+            rm -f -- "$check"
             ;;
         apk)
             apk audit --system >>"$out" 2>&1 || apk verify >>"$out" 2>&1 || true
@@ -64,7 +72,7 @@ health_service_issues() {
     : > "$out"
     case "$INIT" in
         systemd)
-            systemctl --failed --no-pager >>"$out" 2>&1 || true
+            systemctl --failed --no-legend --plain --no-pager >>"$out" 2>&1 || true
             ;;
         openrc)
             rc-status --crashed >>"$out" 2>&1 || true
@@ -286,7 +294,7 @@ health_cleanup() {
 
 menu_health_repairs() {
     while true; do
-        local c
+        local c out
         c=$(tui_menu "Health Repairs" "Conservative system repair and cleanup actions:" \
             packages "Repair package database/dependencies" \
             cleanup "Safe cleanup actions" \
@@ -298,10 +306,12 @@ menu_health_repairs() {
             cleanup) health_cleanup ;;
             ssh)
                 if health_has sshd; then
-                    if sshd -t > /tmp/systui-health-ssh 2>&1; then tui_msg "SSH Health" "OpenSSH server configuration is valid."; else tui_text "SSH Configuration Errors" /tmp/systui-health-ssh; fi
+                    out=$(health_tmp ssh)
+                    if sshd -t > "$out" 2>&1; then tui_msg "SSH Health" "OpenSSH server configuration is valid."; else tui_text "SSH Configuration Errors" "$out"; fi
                 else tui_msg "Unavailable" "sshd is not installed."; fi ;;
             mounts)
-                if mount -a -f > /tmp/systui-health-mounts 2>&1; then tui_msg "Mount Health" "/etc/fstab validation completed without errors."; else tui_text "Mount Errors" /tmp/systui-health-mounts; fi ;;
+                out=$(health_tmp mounts)
+                if mount -a -f > "$out" 2>&1; then tui_msg "Mount Health" "/etc/fstab validation completed without errors."; else tui_text "Mount Errors" "$out"; fi ;;
             back) return 0 ;;
         esac
     done

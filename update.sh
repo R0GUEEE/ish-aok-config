@@ -51,9 +51,12 @@ command -v git >/dev/null 2>&1 || die "git is required to update systui."
 
 # Re-exec as root so the reinstall and state update are consistent.
 if [ "$(id -u)" -ne 0 ]; then
+    elevate_args=()
+    [ "$FORCE" -eq 1 ] && elevate_args+=(--force)
+    [ "$NO_DEPS" -eq 1 ] && elevate_args+=(--no-deps)
     command -v sudo >/dev/null 2>&1 || die "Run this script as root."
     exec sudo --preserve-env=SYSTUI_REPO_URL,SYSTUI_BRANCH,INSTALL_PREFIX,SYSTUI_STATE_DIR,SYSTUI_BACKUP_DIR \
-        "$0" $([ "$FORCE" -eq 1 ] && printf '%s' '--force') $([ "$NO_DEPS" -eq 1 ] && printf '%s' '--no-deps')
+        "$0" "${elevate_args[@]}"
 fi
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"

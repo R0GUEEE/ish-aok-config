@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # ROOTFS BUILDER — expanded
 #
 # Distros: Debian/Devuan/Ubuntu/Kali (mmdebstrap, debootstrap, cdebootstrap,
@@ -192,8 +193,8 @@ rootfs_backend_edit_packages() { # <title> <current>; prints sanitized list
 rootfs_backend_keyring_menu() {
     local mode path
     mode=$(tui_radio "Repository verification" "Archive signing keyring:" \
-        auto "Automatically select the distribution keyring" $([ "$ROOTFS_BACKEND_KEYRING_MODE" = auto ] && echo on || echo off) \
-        custom "Use a custom keyring file" $([ "$ROOTFS_BACKEND_KEYRING_MODE" = custom ] && echo on || echo off)) || return 0
+        auto "Automatically select the distribution keyring" "$([ "$ROOTFS_BACKEND_KEYRING_MODE" = auto ] && echo on || echo off)" \
+        custom "Use a custom keyring file" "$([ "$ROOTFS_BACKEND_KEYRING_MODE" = custom ] && echo on || echo off)") || return 0
     if [ "$mode" = custom ]; then
         path=$(tui_input "Custom keyring" "Absolute path to a readable keyring file:" "$ROOTFS_BACKEND_KEYRING_PATH") || return 0
         case "$path" in /*) ;; *) tui_msg "Invalid keyring" "The keyring path must be absolute."; return 0;; esac
@@ -217,7 +218,7 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     merged "Merged /usr: $ROOTFS_BACKEND_MERGED" \
                     keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
-                    done "Use these settings") || return 1
+                    "done" "Use these settings") || return 1
                 case "$c" in
                     variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "debootstrap variant" "Base package set:" minbase "Required packages plus apt" on buildd "Build environment" off default "Required and important packages" off) || true ;;
                     components) value=$(tui_input "Archive components" "Comma-separated components:" "$ROOTFS_BACKEND_COMPONENTS") || continue; rootfs_backend_valid_components "$value" && ROOTFS_BACKEND_COMPONENTS="${value// /,}" || tui_msg "Invalid components" "Use names separated by commas, such as main,contrib,non-free." ;;
@@ -238,7 +239,7 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
                     prune "Exclude docs/locales: $ROOTFS_MMDEBSTRAP_PRUNE" \
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
-                    done "Use these settings") || return 1
+                    "done" "Use these settings") || return 1
                 case "$c" in
                     variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "mmdebstrap variant" "Base package set:" minbase "Minimal debootstrap-compatible root" on apt "Essential packages plus apt" off required "Required priority" off important "Required and important priority" off standard "Standard system" off buildd "Build environment" off) || true ;;
                     mode) ROOTFS_MMDEBSTRAP_MODE=$(tui_radio "mmdebstrap mode" "Filesystem ownership/execution mode:" root "Run directly as root" on auto "Let mmdebstrap choose" off unshare "User namespace mode" off) || true ;;
@@ -259,7 +260,7 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     keyring "Keyring: $ROOTFS_BACKEND_KEYRING_MODE" \
                     unauth "Allow unauthenticated: $ROOTFS_CDEBOOTSTRAP_ALLOW_UNAUTH" \
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
-                    done "Use these settings") || return 1
+                    "done" "Use these settings") || return 1
                 case "$c" in
                     flavour) ROOTFS_BACKEND_VARIANT=$(tui_radio "cdebootstrap flavour" "Base package set:" minimal "Essential packages plus apt" on standard "Required and important packages" off build "Build environment" off) || true ;;
                     include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
@@ -278,7 +279,7 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     markauto "Track dependency auto/manual state: $ROOTFS_MULTISTRAP_MARKAUTO" \
                     keypkg "Archive keyring package: ${ROOTFS_MULTISTRAP_KEYRING_PACKAGE:-automatic}" \
                     custom "Custom config file: ${ROOTFS_MULTISTRAP_CONFIG:-generated}" \
-                    done "Use these settings") || return 1
+                    "done" "Use these settings") || return 1
                 case "$c" in
                     include) value=$(rootfs_backend_edit_packages "multistrap packages" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
                     cleanup) [ "$ROOTFS_MULTISTRAP_CLEANUP" = yes ] && ROOTFS_MULTISTRAP_CLEANUP=no || ROOTFS_MULTISTRAP_CLEANUP=yes ;;
@@ -547,7 +548,9 @@ rootfs_chroot_options_menu() { # <target>
             back "Back") || return 0
         case "$c" in
             aok)
-                mount_aok=$(tui_radio "Mount /AOK" "Bind-mount the host /AOK directory inside the chroot:" yes Enabled $([ "$mount_aok" = yes ] && echo on || echo off) no Disabled $([ "$mount_aok" != yes ] && echo on || echo off)) || continue
+                mount_aok=$(tui_radio "Mount /AOK" "Bind-mount the host /AOK directory inside the chroot:" \
+                    yes "Enabled" "$([ "$mount_aok" = yes ] && echo on || echo off)" \
+                    no "Disabled" "$([ "$mount_aok" != yes ] && echo on || echo off)") || continue
                 rootfs_chroot_option_set "$t" MOUNT_AOK "$mount_aok" ;;
             shell)
                 local shv
@@ -985,7 +988,7 @@ rootfs_catalog_select_category() { # category title
 }
 
 rootfs_catalog_search() {
-    local q line tag desc state
+    local q tag desc state
     q=$(tui_input "Search package catalogue" "Package name or description:" "") || return 0
     [ -n "$q" ] || return 0
     local args=()
@@ -1029,7 +1032,7 @@ rootfs_package_catalog() { # distro existing-packages -> final package string
             manual "Enter native package names manually" \
             review "Review selected package names" \
             clear "Clear all additional packages" \
-            done "Finish package selection") || break
+            "done" "Finish package selection") || break
         case "$choice" in
             presets)
                 added=$(tui_check "Package presets" "SPACE toggles presets:" \
@@ -1293,7 +1296,7 @@ user creation). Install on the host first if you haven't:
 
     # ---- 4: init system ----
     case "$distro" in
-        debian|ubuntu|kali)
+        debian|ubuntu)
             init_choice=$(tui_radio "Rootfs Builder 5/13" \
                 "Init system (SPACE to select).\nsystemd is the distro default; alternatives are swapped in via --include:" \
                 systemd  "systemd (distro default)" on \
@@ -1699,7 +1702,10 @@ EOF
 # Test a repository path over IPv4. iSH-AOK environments may expose IPv6
 # DNS records even when no usable IPv6 route exists, producing "No route to host".
 rootfs_probe_deb_mirror() { # mirror release
-    local mirror="${1%/}" release="$2" probe="$mirror/dists/$release/InRelease"
+    local mirror release probe
+    mirror="${1%/}"
+    release="$2"
+    probe="$mirror/dists/$release/InRelease"
     if command -v curl >/dev/null 2>&1; then
         curl -4 -LfsS --connect-timeout 8 --max-time 20 --range 0-1023 "$probe" -o /dev/null 2>>"$LOGFILE"
     elif command -v wget >/dev/null 2>&1; then
@@ -1775,7 +1781,10 @@ EOF
 }
 
 rootfs_install_deb_packages() { # target "space separated packages"
-    local target="$1" pkgs="$2" script="$target/tmp/systui-install-packages.sh"
+    local target pkgs script
+    target="$1"
+    pkgs="$2"
+    script="$target/tmp/systui-install-packages.sh"
     [ -n "${pkgs//[[:space:]]/}" ] || return 0
     mkdir -p "$target/tmp" "$target/usr/sbin"
     cat >"$target/usr/sbin/policy-rc.d" <<'EOF'
