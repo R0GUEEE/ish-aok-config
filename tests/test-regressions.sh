@@ -48,10 +48,15 @@ source "$PROJECT_DIR/src/features/sysconfig.sh"
 source "$PROJECT_DIR/src/features/health.sh"
 
 check "advanced shell menu target exists" function_exists menu_shell_advanced
+check "nushell manager target exists" function_exists menu_nushell
 check "obsolete advanced shell target is absent" not_contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "menu_shells_advanced"
 check "all password prompts use the defined widget" not_contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "tui_pass "
+check "nushell is exposed in shell config choices" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "config.nu — Nushell startup config"
+check "nushell plugin manager is exposed" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Nushell plugins —"
 
 # Exercise the rootfs package helper without entering a real chroot.
 root_target="$tmpdir/rootfs"

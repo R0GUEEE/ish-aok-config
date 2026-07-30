@@ -147,6 +147,7 @@ SW_INVENTORY="
 bash|GNU Bash|Shells
 zsh|Zsh|Shells
 fish|Fish|Shells
+nu|Nushell|Shells
 starship|Starship prompt|Shells
 nano|nano|Editors
 vim|vim|Editors
@@ -3709,6 +3710,74 @@ menu_fisher() { # <user> <home>
     done
 }
 
+# ---- Nushell manager ----
+nu_quote() {
+    local s="$1"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '"%s"' "$s"
+}
+
+nu_cmd() {
+    printf 'nu -c %s' "$(nu_quote "$1")"
+}
+
+nu_run_as() { # user command
+    local u="$1" cmd="$2"
+    su - "$u" -c "$(nu_cmd "$cmd")"
+}
+
+menu_nushell_plugins() { # <user> <home>
+    local u="$1" home_dir="$2"
+    while true; do
+        local c plugin registry
+        c=$(tui_menu "Nushell plugins — $u" "Manage the Nu plugin registry:" \
+            list "List registered plugins" \
+            add "Register a plugin executable" \
+            remove "Remove a plugin from the registry" \
+            back "Back") || return 0
+        case "$c" in
+            list)
+                registry="$SYSTUI_TMP/nu-plugins.txt"
+                nu_run_as "$u" 'plugin list --registry' >"$registry" 2>&1 || true
+                tui_text "Nushell plugins — $u" "$registry" ;;
+            add)
+                plugin=$(tui_input "Add Nu plugin" \
+                    "Path to a plugin executable (for example: ~/.cargo/bin/nu_plugin_polars):" \
+                    "$home_dir/.cargo/bin/nu_plugin_") || continue
+                [ -n "$plugin" ] || continue
+                run_cmd "Nu plugin add $plugin" nu_run_as "$u" "plugin add $(nu_quote "$plugin")" ;;
+            remove)
+                plugin=$(tui_input "Remove Nu plugin" \
+                    "Plugin name or executable path to remove:" \
+                    "polars") || continue
+                [ -n "$plugin" ] || continue
+                run_cmd "Nu plugin rm $plugin" nu_run_as "$u" "plugin rm --force $(nu_quote "$plugin")" ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
+menu_nushell() { # <user> <home>
+    local u="$1" home_dir="$2"
+    while true; do
+        local c
+        c=$(tui_menu "Nushell — $u" "Install, configure and manage Nushell:" \
+            install "Install/reinstall Nushell" \
+            config "Edit config.nu / env.nu / login.nu" \
+            plugins "Manage Nushell plugins" \
+            remove "Uninstall Nushell" \
+            back "Back") || return 0
+        case "$c" in
+            install) case "$PM" in emerge) pm_install app-shells/nushell ;; *) pm_install nushell ;; esac ;;
+            config) menu_shell_config ;;
+            plugins) menu_nushell_plugins "$u" "$home_dir" ;;
+            remove) case "$PM" in emerge) pm_remove app-shells/nushell ;; *) pm_remove nushell ;; esac ;;
+            back) return 0 ;;
+        esac
+    done
+}
+
 # ---- tmux TPM manager ----
 menu_tpm() { # <user> <home>
     local u="$1" home_dir="$2"
@@ -3812,11 +3881,12 @@ menu_shell_hierarchy() {
     home_dir=$(user_home "$u"); [ -n "$home_dir" ] || { tui_msg "Error" "User not found."; return 0; }
     cur_shell=$(basename "$(getent passwd "$u" | cut -d: -f7)")
     while true; do
-        sh_=$(tui_radio "Shell Managers — $u" "SPACE selects a shell:" bash "Bash $(st bash)" "$([ "$cur_shell" = bash ] && echo on || echo off)" zsh "Zsh $(st zsh)" "$([ "$cur_shell" = zsh ] && echo on || echo off)" fish "Fish $(st fish)" "$([ "$cur_shell" = fish ] && echo on || echo off)" tmux "tmux plugins" off) || return 0
+        sh_=$(tui_radio "Shell Managers — $u" "SPACE selects a shell:" bash "Bash $(st bash)" "$([ "$cur_shell" = bash ] && echo on || echo off)" zsh "Zsh $(st zsh)" "$([ "$cur_shell" = zsh ] && echo on || echo off)" fish "Fish $(st fish)" "$([ "$cur_shell" = fish ] && echo on || echo off)" nu "Nushell $(st nu)" "$([ "$cur_shell" = nu ] && echo on || echo off)" tmux "tmux plugins" off) || return 0
         case "$sh_" in
             bash) m=$(tui_menu "Bash Manager" "Install, remove or configure:" install "Install/reinstall Bash" uninstall "Uninstall Bash" omb "oh-my-bash" bashit "Bash-it" blesh "ble.sh" back "Back") || continue; case "$m" in install) pm_install bash;; uninstall) safe_remove_shell bash;; omb) menu_omb "$u" "$home_dir";; bashit) menu_bashit "$u" "$home_dir";; blesh) menu_blesh "$u" "$home_dir";; esac;;
             zsh) m=$(tui_menu "Zsh Manager" "Install, remove or configure:" install "Install/reinstall Zsh" uninstall "Uninstall Zsh" omz "oh-my-zsh" zinit "zinit" back "Back") || continue; case "$m" in install) pm_install zsh;; uninstall) safe_remove_shell zsh;; omz) menu_omz "$u" "$home_dir";; zinit) menu_zinit "$u" "$home_dir";; esac;;
             fish) m=$(tui_menu "Fish Manager" "Install, remove or configure:" install "Install/reinstall Fish" uninstall "Uninstall Fish" fisher "Fisher" back "Back") || continue; case "$m" in install) pm_install fish;; uninstall) safe_remove_shell fish;; fisher) menu_fisher "$u" "$home_dir";; esac;;
+            nu) menu_nushell "$u" "$home_dir" ;;
             tmux) menu_tpm "$u" "$home_dir";;
         esac
     done
@@ -4425,6 +4495,9 @@ shellcfg_file_for() { # shellcfg_file_for <kind> <home>
         bash)    printf '%s/.bashrc\n' "$2" ;;
         zsh)     printf '%s/.zshrc\n' "$2" ;;
         fish)    printf '%s/.config/fish/config.fish\n' "$2" ;;
+        nuconfig) printf '%s/.config/nushell/config.nu\n' "$2" ;;
+        nuenv)    printf '%s/.config/nushell/env.nu\n' "$2" ;;
+        nulogin)  printf '%s/.config/nushell/login.nu\n' "$2" ;;
         profile) printf '%s/.profile\n' "$2" ;;
         bash_profile) printf '%s/.bash_profile\n' "$2" ;;
         zprofile) printf '%s/.zprofile\n' "$2" ;;
@@ -4438,6 +4511,9 @@ shellcfg_choose_file() { # shellcfg_choose_file <home>
         bash ".bashrc — Bash interactive config $( [ -f "$h/.bashrc" ] && echo '[exists]' )" \
         zsh ".zshrc — Zsh interactive config $( [ -f "$h/.zshrc" ] && echo '[exists]' )" \
         fish "config.fish — Fish config $( [ -f "$h/.config/fish/config.fish" ] && echo '[exists]' )" \
+        nuconfig "config.nu — Nushell startup config $( [ -f "$h/.config/nushell/config.nu" ] && echo '[exists]' )" \
+        nuenv "env.nu — Nushell environment config $( [ -f "$h/.config/nushell/env.nu" ] && echo '[exists]' )" \
+        nulogin "login.nu — Nushell login-shell config $( [ -f "$h/.config/nushell/login.nu" ] && echo '[exists]' )" \
         profile ".profile — POSIX login environment $( [ -f "$h/.profile" ] && echo '[exists]' )" \
         bash_profile ".bash_profile — Bash login config $( [ -f "$h/.bash_profile" ] && echo '[exists]' )" \
         zprofile ".zprofile — Zsh login config $( [ -f "$h/.zprofile" ] && echo '[exists]' )" \
@@ -4462,6 +4538,7 @@ shellcfg_validate() { # kind file
         bash|profile|bash_profile) bash -n "$f" >"$out" 2>&1 || rc=$? ;;
         zsh|zprofile) if command -v zsh >/dev/null 2>&1; then zsh -n "$f" >"$out" 2>&1 || rc=$?; else printf 'zsh is not installed; syntax check unavailable.\n' >"$out"; rc=2; fi ;;
         fish) if command -v fish >/dev/null 2>&1; then fish -n "$f" >"$out" 2>&1 || rc=$?; else printf 'fish is not installed; syntax check unavailable.\n' >"$out"; rc=2; fi ;;
+        nuconfig|nuenv|nulogin) if command -v nu >/dev/null 2>&1; then nu -n -c "source $(nu_quote "$f")" >"$out" 2>&1 || rc=$?; else printf 'nu is not installed; syntax check unavailable.\n' >"$out"; rc=2; fi ;;
         inputrc) printf 'Readline files do not provide a standalone syntax checker.\n' >"$out" ;;
     esac
     if [ "$rc" -eq 0 ]; then tui_msg "Validation passed" "$f contains no detected syntax errors."
@@ -4485,6 +4562,11 @@ shellcfg_write_managed() { # kind file user selections editor pager hist_size
                 case " $selections " in *" color "*) printf 'set -gx CLICOLOR 1\n' ;; esac
                 case " $selections " in *" vi "*) printf 'fish_vi_key_bindings\n' ;; esac
                 case " $selections " in *" autocd "*) printf '# Fish changes to a directory when its path is entered.\n' ;; esac
+                ;;
+            nuconfig)
+                case " $selections " in *" editor "*) printf '$env.config.buffer_editor = %s\n' "$(nu_quote "$editor")" ;; esac
+                case " $selections " in *" pager "*) printf '$env.PAGER = %s\n' "$(nu_quote "$pager")" ;; esac
+                case " $selections " in *" vi "*) printf '$env.config.edit_mode = "vi"\n' ;; esac
                 ;;
             inputrc)
                 case " $selections " in *" completion "*) printf 'set completion-ignore-case on\nset show-all-if-ambiguous on\n' ;; esac
@@ -4511,24 +4593,43 @@ shellcfg_write_managed() { # kind file user selections editor pager hist_size
 
 shellcfg_populated_entries() { # kind file user
     local k="$1" f="$2" u="$3" selected editor pager hsize
-    selected=$(tui_check "Shell settings" "SPACE selects entries to automatically populate in $(basename "$f"):" \
-        history "Persistent history, duplicate filtering and append mode" on \
-        editor "EDITOR and VISUAL environment variables" on \
-        pager "Default PAGER" off \
-        color "Color-aware command environment" on \
-        completion "Programmable/tab completion initialization" on \
-        autocd "Change directory by entering a directory path" off \
-        glob "Recursive and hidden-file globbing" off \
-        correction "Command spelling correction (Zsh)" off \
-        vi "Vi editing/key-binding mode" off) || return 0
-    selected=${selected//\"/}
-    editor=$(tui_input "Default editor" "Command for EDITOR and VISUAL:" "${EDITOR:-nano}") || return 0
-    pager=$(tui_input "Default pager" "Command for PAGER:" "less") || return 0
-    hsize=$(tui_input "History size" "Number of commands retained:" "10000") || return 0
-    [[ "$hsize" =~ ^[0-9]+$ ]] || hsize=10000
-    shellcfg_backup "$f" "$u"
-    shellcfg_write_managed "$k" "$f" "$u" "$selected" "$editor" "$pager" "$hsize"
-    shellcfg_validate "$k" "$f"
+    case "$k" in
+        nuconfig)
+            selected=$(tui_check "Shell settings" "SPACE selects entries to automatically populate in $(basename "$f"):" \
+                editor "buffer_editor" on \
+                pager "PAGER" off \
+                vi "Vi editing mode" off) || return 0
+            selected=${selected//\"/}
+            editor=$(tui_input "Default editor" "Command for buffer_editor:" "${EDITOR:-nano}") || return 0
+            pager=$(tui_input "Default pager" "Command for PAGER:" "less") || return 0
+            shellcfg_backup "$f" "$u"
+            shellcfg_write_managed "$k" "$f" "$u" "$selected" "$editor" "$pager" 10000
+            shellcfg_validate "$k" "$f"
+            ;;
+        nuenv|nulogin)
+            tui_msg "Nushell config" "Use Edit to work with $(basename "$f") directly.\nPopulate is only provided for config.nu."
+            return 0 ;;
+        *)
+            selected=$(tui_check "Shell settings" "SPACE selects entries to automatically populate in $(basename "$f"):" \
+                history "Persistent history, duplicate filtering and append mode" on \
+                editor "EDITOR and VISUAL environment variables" on \
+                pager "Default PAGER" off \
+                color "Color-aware command environment" on \
+                completion "Programmable/tab completion initialization" on \
+                autocd "Change directory by entering a directory path" off \
+                glob "Recursive and hidden-file globbing" off \
+                correction "Command spelling correction (Zsh)" off \
+                vi "Vi editing/key-binding mode" off) || return 0
+            selected=${selected//\"/}
+            editor=$(tui_input "Default editor" "Command for EDITOR and VISUAL:" "${EDITOR:-nano}") || return 0
+            pager=$(tui_input "Default pager" "Command for PAGER:" "less") || return 0
+            hsize=$(tui_input "History size" "Number of commands retained:" "10000") || return 0
+            [[ "$hsize" =~ ^[0-9]+$ ]] || hsize=10000
+            shellcfg_backup "$f" "$u"
+            shellcfg_write_managed "$k" "$f" "$u" "$selected" "$editor" "$pager" "$hsize"
+            shellcfg_validate "$k" "$f"
+            ;;
+    esac
 }
 
 menu_shell_config() {
@@ -4752,7 +4853,7 @@ menu_shells() {
         local c
         c=$(tui_menu "Shells & Plugins" "Shell environment:" \
             managers "Managers (install, remove and configure each shell)" \
-            config "Shell config files (.bashrc, .zshrc, config.fish and profiles)" \
+            config "Shell config files (.bashrc, .zshrc, config.fish, config.nu and profiles)" \
             aliases "Alias manager (catalog, custom aliases, import and validation)" \
             mappings "Key mapping configuration (Bash, Zsh, Fish, Readline)" \
             plugins "Plugins (Starship, fzf, completions and more)" \
