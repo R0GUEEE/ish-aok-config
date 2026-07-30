@@ -2225,11 +2225,13 @@ menu_cfg_apt() {
     while true; do
         local c
         c=$(tui_menu "APT configuration" "Configure APT and dpkg:" \
+            advanced "Advanced settings (SPACE to select)" \
             tune "Performance/download tuning" config "Edit apt.conf.d configuration" \
             policy "Show package policy" verify "Verify package database" \
             repair "Repair interrupted/broken packages" cache "Clean package caches" \
             history "Show dpkg transaction history" reset "Remove SysTUI tuning file" back "Back") || return 0
         case "$c" in
+            advanced) pm_advanced_menu apt ;;
             tune) menu_cfg_native ;;
             config) pm_edit_file /etc/apt/apt.conf.d/90systui-custom ;;
             policy) pm_show_command "APT policy" apt-cache policy ;;
@@ -2251,11 +2253,13 @@ menu_cfg_cli_manager() { # id command config install-package
     fi
     while true; do
         c=$(tui_menu "$id configuration" "Manage $id:" \
+            advanced "Advanced settings (SPACE to select)" \
             version "Version and executable" install "Install package/application" \
             update "Update installed packages" list "List installed packages" \
             cache "Clean or inspect cache" config "Edit configuration" \
             doctor "Diagnostics/health check" back "Back") || return 0
         case "$c" in
+            advanced) pm_advanced_menu "$id" ;;
             version) pm_generic_health "$cmd" ;;
             install)
                 q=$(tui_input "$id install" "Package/application name:" "") || continue
@@ -2340,8 +2344,9 @@ menu_cfg_flatpak() {
     command -v flatpak >/dev/null 2>&1 || { tui_yesno "Flatpak" "Install Flatpak now?" || return; pm_install flatpak; }
     while true; do
         local c q
-        c=$(tui_menu "Flatpak configuration" "Manage Flatpak:" remotes "Manage/list remotes" flathub "Add Flathub" permissions "Show application overrides" repair "Repair installation" unused "Remove unused runtimes" update "Update all" config "Edit global installation config" back "Back") || return
+        c=$(tui_menu "Flatpak configuration" "Manage Flatpak:" advanced "Advanced settings (SPACE to select)" remotes "Manage/list remotes" flathub "Add Flathub" permissions "Show application overrides" repair "Repair installation" unused "Remove unused runtimes" update "Update all" config "Edit global installation config" back "Back") || return
         case "$c" in
+            advanced) pm_advanced_menu flatpak ;;
             remotes) pm_show_command "Flatpak remotes" flatpak remotes --show-details ;;
             flathub) flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo ;;
             permissions) pm_show_command "Flatpak overrides" flatpak override --show ;;
@@ -2358,8 +2363,9 @@ menu_cfg_snap() {
     command -v snap >/dev/null 2>&1 || { tui_yesno "Snap" "Install snapd now?" || return; pm_install snapd; }
     while true; do
         local c v
-        c=$(tui_menu "Snap configuration" "Manage snapd:" changes "Recent changes" refresh "Refresh all snaps" schedule "Show refresh schedule" hold "Set refresh hold" snapshots "List snapshots" connections "List interfaces/connections" config "Show system configuration" back "Back") || return
+        c=$(tui_menu "Snap configuration" "Manage snapd:" advanced "Advanced settings (SPACE to select)" changes "Recent changes" refresh "Refresh all snaps" schedule "Show refresh schedule" hold "Set refresh hold" snapshots "List snapshots" connections "List interfaces/connections" config "Show system configuration" back "Back") || return
         case "$c" in
+            advanced) pm_advanced_menu snap ;;
             changes) pm_show_command "Snap changes" snap changes ;;
             refresh) snap refresh ;;
             schedule) pm_show_command "Snap refresh schedule" snap refresh --time ;;
@@ -2375,8 +2381,9 @@ menu_cfg_snap() {
 menu_cfg_native_full() {
     while true; do
         local c
-        c=$(tui_menu "Native manager: $PM" "Configure and maintain the active native package manager:" tune "Configuration and performance tuning" repos "Repository management" update "Refresh and upgrade" cache "Cache cleanup" verify "Database/package verification" history "Transaction history" edit "Edit primary configuration" back "Back") || return
+        c=$(tui_menu "Native manager: $PM" "Configure and maintain the active native package manager:" advanced "Advanced settings (SPACE to select)" tune "Configuration and performance tuning" repos "Repository management" update "Refresh and upgrade" cache "Cache cleanup" verify "Database/package verification" history "Transaction history" edit "Edit primary configuration" back "Back") || return
         case "$c" in
+            advanced) pm_advanced_menu "$PM" ;;
             tune) menu_cfg_native ;;
             repos) menu_repos ;;
             update) pm_update ;;
@@ -2392,10 +2399,613 @@ menu_cfg_native_full() {
     done
 }
 
+###############################################################################
+# ADVANCED PACKAGE-MANAGER CONFIGURATION
+###############################################################################
+#
+# Every manager in the Package Managers list gets an "Advanced" entry backed by
+# a space-to-select checklist. Native managers write real configuration files;
+# language managers write their own rc/config files. Current state is read back
+# and pre-checked so the checklist always reflects what is actually configured.
+
+# Reads a key from a simple "key=value" style config, ignoring comments.
+pm_adv_get() { # <file> <key> [separator]
+    local f="$1" k="$2" sep="${3:-=}"
+    [ -r "$f" ] || return 1
+    grep -E "^[[:space:]]*${k}[[:space:]]*${sep}" "$f" 2>/dev/null | head -1 |
+        sed -E "s|^[[:space:]]*${k}[[:space:]]*${sep}[[:space:]]*||; s|[[:space:]]*$||"
+}
+
+pm_adv_state() { # <condition-command...> -> on|off
+    if "$@" >/dev/null 2>&1; then printf 'on'; else printf 'off'; fi
+}
+
+pm_adv_has() { # <selection> <tag>
+    case " ${1//\"/} " in *" $2 "*) return 0 ;; esac
+    return 1
+}
+
+# Writes a managed block into a config file, replacing any previous block.
+pm_adv_write_block() { # <file> <marker> <content-on-stdin>
+    local f="$1" marker="$2" tmp
+    mkdir -p "$(dirname "$f")" || return 1
+    [ -f "$f" ] || : > "$f"
+    tmp=$(mktemp "${f}.systui.XXXXXX") || return 1
+    awk -v m="$marker" '
+        $0 == "# systui-" m " begin" { skip = 1 }
+        skip && $0 == "# systui-" m " end" { skip = 0; next }
+        !skip { print }
+    ' "$f" > "$tmp"
+    {
+        printf '# systui-%s begin\n' "$marker"
+        cat
+        printf '# systui-%s end\n' "$marker"
+    } >> "$tmp"
+    cat "$tmp" > "$f"
+    rm -f "$tmp"
+}
+
+pm_adv_apt() {
+    local f=/etc/apt/apt.conf.d/90systui-advanced o n
+    o=$(tui_check "APT — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+        norecommends  "Do not install recommended packages" "$(pm_adv_state grep -q 'Install-Recommends "false"' "$f")" \
+        nosuggests    "Do not install suggested packages" "$(pm_adv_state grep -q 'Install-Suggests "false"' "$f")" \
+        autoremove    "Automatically remove unused dependencies" "$(pm_adv_state grep -q 'AutomaticRemove "true"' "$f")" \
+        keepdownloads "Keep downloaded .deb files after install" "$(pm_adv_state grep -q 'Keep-Downloaded-Packages "true"' "$f")" \
+        noauthwarn    "Fail rather than warn on unauthenticated packages" "$(pm_adv_state grep -q 'AllowUnauthenticated "false"' "$f")" \
+        parallel      "Enable parallel downloads" "$(pm_adv_state grep -q 'Queue-Mode' "$f")" \
+        pipeline      "Use HTTP pipelining (faster on good links)" "$(pm_adv_state grep -q 'Pipeline-Depth' "$f")" \
+        noproxycache  "Bypass proxy caches for index files" "$(pm_adv_state grep -q 'No-Cache "true"' "$f")" \
+        ipv4          "Force IPv4 for downloads" "$(pm_adv_state grep -q 'ForceIPv4' "$f")" \
+        timeout       "Shorter network timeout (30s)" "$(pm_adv_state grep -q 'Timeout "30"' "$f")" \
+        retries       "Retry failed downloads three times" "$(pm_adv_state grep -q 'Retries "3"' "$f")" \
+        languages     "Skip translation index downloads" "$(pm_adv_state grep -q 'Languages "none"' "$f")" \
+        nopdiffs      "Disable pdiff index updates" "$(pm_adv_state grep -q 'PDiffs "false"' "$f")" \
+        installsafe   "Never remove essential packages automatically" "$(pm_adv_state grep -q 'Protect-Essential' "$f")" \
+        quiet         "Reduce output verbosity" "$(pm_adv_state grep -q 'quiet "1"' "$f")" \
+        color         "Colourise APT output" "$(pm_adv_state grep -q 'Color "true"' "$f")") || return 0
+    mkdir -p "$(dirname "$f")"
+    {
+        echo '// Generated by systui. Edits are replaced on the next run.'
+        pm_adv_has "$o" norecommends  && echo 'APT::Install-Recommends "false";'
+        pm_adv_has "$o" nosuggests    && echo 'APT::Install-Suggests "false";'
+        pm_adv_has "$o" autoremove    && echo 'APT::Get::AutomaticRemove "true";'
+        pm_adv_has "$o" keepdownloads && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";'
+        pm_adv_has "$o" noauthwarn    && echo 'APT::Get::AllowUnauthenticated "false";'
+        pm_adv_has "$o" parallel      && echo 'Acquire::Queue-Mode "host";'
+        pm_adv_has "$o" pipeline      && echo 'Acquire::http::Pipeline-Depth "5";'
+        pm_adv_has "$o" noproxycache  && echo 'Acquire::http::No-Cache "true";'
+        pm_adv_has "$o" ipv4          && echo 'Acquire::ForceIPv4 "true";'
+        pm_adv_has "$o" timeout       && echo 'Acquire::http::Timeout "30";'
+        pm_adv_has "$o" retries       && echo 'Acquire::Retries "3";'
+        pm_adv_has "$o" languages     && echo 'Acquire::Languages "none";'
+        pm_adv_has "$o" nopdiffs      && echo 'Acquire::PDiffs "false";'
+        pm_adv_has "$o" installsafe   && echo 'APT::Get::Protect-Essential "true";'
+        pm_adv_has "$o" quiet         && echo 'quiet "1";'
+        pm_adv_has "$o" color         && echo 'APT::Color "true";'
+    } > "$f"
+    if command -v apt-config >/dev/null 2>&1 && ! apt-config dump >/dev/null 2>&1; then
+        rm -f "$f"
+        tui_msg "Rejected" "APT rejected the generated configuration; it was removed."
+        return 1
+    fi
+    tui_msg "Applied" "$f written and validated with apt-config.\n$(grep -c '^[A-Za-z]' "$f") directives active."
+}
+
+pm_adv_pacman() {
+    local f=/etc/pacman.conf o n
+    o=$(tui_check "pacman — advanced" "Current state pre-checked. SPACE toggles, ENTER applies to $f:" \
+        color         "Colour output" "$(pm_adv_state grep -qE '^Color$' "$f")" \
+        candy         "ILoveCandy progress bar" "$(pm_adv_state grep -qE '^ILoveCandy' "$f")" \
+        verbose       "Verbose package lists" "$(pm_adv_state grep -qE '^VerbosePkgLists' "$f")" \
+        checkspace    "Check available disk space before installing" "$(pm_adv_state grep -qE '^CheckSpace' "$f")" \
+        parallel      "Parallel downloads" "$(pm_adv_state grep -qE '^ParallelDownloads' "$f")" \
+        disabledl     "Disable the download timeout" "$(pm_adv_state grep -qE '^DisableDownloadTimeout' "$f")" \
+        siglevel      "Require signatures for all packages" "$(pm_adv_state grep -qE '^SigLevel *= *Required' "$f")" \
+        multilib      "Enable the multilib repository" "$(pm_adv_state grep -qE '^\[multilib\]' "$f")" \
+        noupgrade     "Protect /etc/passwd and /etc/group from upgrades" "$(pm_adv_state grep -qE '^NoUpgrade' "$f")" \
+        usesyslog     "Log operations to syslog" "$(pm_adv_state grep -qE '^UseSyslog' "$f")" \
+        totaldl       "Show a single total download bar" "$(pm_adv_state grep -qE '^TotalDownload' "$f")" \
+        cleanmethod   "Keep only the installed version in the cache" "$(pm_adv_state grep -qE '^CleanMethod' "$f")") || return 0
+    cp -a "$f" "$f.systui.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+
+    pm_adv_toggle_line() { # <regex> <line> <enabled>
+        if [ "$3" = 1 ]; then
+            grep -qE "^$1" "$f" || sed -i "/^\[options\]/a $2" "$f"
+            sed -i -E "s/^#($1.*)/\\1/" "$f"
+        else
+            sed -i -E "s/^($1.*)/#\\1/" "$f"
+        fi
+    }
+    pm_adv_toggle_line 'Color'                  'Color'                  "$(pm_adv_has "$o" color && echo 1 || echo 0)"
+    pm_adv_toggle_line 'ILoveCandy'             'ILoveCandy'             "$(pm_adv_has "$o" candy && echo 1 || echo 0)"
+    pm_adv_toggle_line 'VerbosePkgLists'        'VerbosePkgLists'        "$(pm_adv_has "$o" verbose && echo 1 || echo 0)"
+    pm_adv_toggle_line 'CheckSpace'             'CheckSpace'             "$(pm_adv_has "$o" checkspace && echo 1 || echo 0)"
+    pm_adv_toggle_line 'DisableDownloadTimeout' 'DisableDownloadTimeout' "$(pm_adv_has "$o" disabledl && echo 1 || echo 0)"
+    pm_adv_toggle_line 'UseSyslog'              'UseSyslog'              "$(pm_adv_has "$o" usesyslog && echo 1 || echo 0)"
+    pm_adv_toggle_line 'TotalDownload'          'TotalDownload'          "$(pm_adv_has "$o" totaldl && echo 1 || echo 0)"
+    unset -f pm_adv_toggle_line
+
+    if pm_adv_has "$o" parallel; then
+        n=$(tui_input "ParallelDownloads" "Simultaneous downloads:" "$(pm_adv_get "$f" ParallelDownloads || echo 5)") || n=5
+        case "$n" in ''|*[!0-9]*) n=5 ;; esac
+        if grep -qE '^#?ParallelDownloads' "$f"; then sed -i -E "s/^#?ParallelDownloads.*/ParallelDownloads = $n/" "$f"
+        else sed -i "/^\[options\]/a ParallelDownloads = $n" "$f"; fi
+    else
+        sed -i -E 's/^ParallelDownloads/#ParallelDownloads/' "$f"
+    fi
+    if pm_adv_has "$o" cleanmethod; then
+        grep -qE '^CleanMethod' "$f" || sed -i "/^\[options\]/a CleanMethod = KeepInstalled" "$f"
+    else
+        sed -i -E 's/^CleanMethod/#CleanMethod/' "$f"
+    fi
+    if pm_adv_has "$o" noupgrade; then
+        grep -qE '^NoUpgrade' "$f" || sed -i "/^\[options\]/a NoUpgrade = etc/passwd etc/group etc/shadow" "$f"
+    else
+        sed -i -E 's/^NoUpgrade/#NoUpgrade/' "$f"
+    fi
+    if pm_adv_has "$o" multilib; then
+        grep -qE '^\[multilib\]' "$f" || printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> "$f"
+    fi
+    tui_msg "Applied" "/etc/pacman.conf updated.\nA timestamped backup was written alongside it."
+}
+
+pm_adv_dnf() { # also serves yum
+    local mgr="${1:-dnf}" f o n
+    [ "$mgr" = yum ] && f=/etc/yum.conf || f=/etc/dnf/dnf.conf
+    o=$(tui_check "$mgr — advanced" "Current state pre-checked. SPACE toggles, ENTER applies to $f:" \
+        fastest    "Use the fastest mirror" "$(pm_adv_state grep -q '^fastestmirror=True' "$f")" \
+        parallel   "Parallel downloads" "$(pm_adv_state grep -q '^max_parallel_downloads' "$f")" \
+        weak       "Skip weak dependencies (leaner installs)" "$(pm_adv_state grep -q '^install_weak_deps=False' "$f")" \
+        keepcache  "Keep downloaded packages" "$(pm_adv_state grep -q '^keepcache=True' "$f")" \
+        deltarpm   "Use delta RPMs to save bandwidth" "$(pm_adv_state grep -q '^deltarpm=True' "$f")" \
+        gpgcheck   "Require GPG signatures" "$(pm_adv_state grep -q '^gpgcheck=1' "$f")" \
+        clean      "Clean requirements on remove" "$(pm_adv_state grep -q '^clean_requirements_on_remove=True' "$f")" \
+        best       "Always install the best available version" "$(pm_adv_state grep -q '^best=True' "$f")" \
+        skipbroken "Skip broken packages instead of failing" "$(pm_adv_state grep -q '^skip_if_unavailable=True' "$f")" \
+        colour     "Colourise output" "$(pm_adv_state grep -q '^color=always' "$f")" \
+        installonly "Keep only three kernels" "$(pm_adv_state grep -q '^installonly_limit=3' "$f")" \
+        ipv4       "Force IPv4 for downloads" "$(pm_adv_state grep -q '^ip_resolve=4' "$f")" \
+        timeout    "Shorter network timeout (30s)" "$(pm_adv_state grep -q '^timeout=30' "$f")" \
+        retries    "Retry failed downloads three times" "$(pm_adv_state grep -q '^retries=3' "$f")") || return 0
+    mkdir -p "$(dirname "$f")"; [ -f "$f" ] || printf '[main]\n' > "$f"
+    cp -a "$f" "$f.systui.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    sed -i '/^fastestmirror=/d;/^max_parallel_downloads=/d;/^install_weak_deps=/d;/^keepcache=/d;/^deltarpm=/d;/^gpgcheck=/d;/^clean_requirements_on_remove=/d;/^best=/d;/^skip_if_unavailable=/d;/^color=/d;/^installonly_limit=/d;/^ip_resolve=/d;/^timeout=/d;/^retries=/d' "$f"
+    grep -q '^\[main\]' "$f" || sed -i '1i [main]' "$f"
+    {
+        pm_adv_has "$o" fastest     && echo 'fastestmirror=True'
+        pm_adv_has "$o" weak        && echo 'install_weak_deps=False'
+        pm_adv_has "$o" keepcache   && echo 'keepcache=True'
+        pm_adv_has "$o" deltarpm    && echo 'deltarpm=True'
+        pm_adv_has "$o" gpgcheck    && echo 'gpgcheck=1'
+        pm_adv_has "$o" clean       && echo 'clean_requirements_on_remove=True'
+        pm_adv_has "$o" best        && echo 'best=True'
+        pm_adv_has "$o" skipbroken  && echo 'skip_if_unavailable=True'
+        pm_adv_has "$o" colour      && echo 'color=always'
+        pm_adv_has "$o" installonly && echo 'installonly_limit=3'
+        pm_adv_has "$o" ipv4        && echo 'ip_resolve=4'
+        pm_adv_has "$o" timeout     && echo 'timeout=30'
+        pm_adv_has "$o" retries     && echo 'retries=3'
+    } >> "$f"
+    if pm_adv_has "$o" parallel; then
+        n=$(tui_input "Parallel downloads" "Simultaneous downloads:" "10") || n=10
+        case "$n" in ''|*[!0-9]*) n=10 ;; esac
+        echo "max_parallel_downloads=$n" >> "$f"
+    fi
+    tui_msg "Applied" "$f updated ($(grep -cE '^[a-z_]+=' "$f") settings).\nA timestamped backup was written alongside it."
+}
+
+pm_adv_zypper() {
+    local f=/etc/zypp/zypp.conf g=/etc/zypp/zypper.conf o
+    o=$(tui_check "zypper — advanced" "Current state pre-checked. SPACE toggles, ENTER applies:" \
+        keeppackages "Keep downloaded packages" "$(pm_adv_state grep -q '^commit.downloadMode' "$f")" \
+        norecommends "Do not install recommended packages" "$(pm_adv_state grep -q '^installRecommends *= *no' "$f")" \
+        gpgcheck     "Require GPG signatures" "$(pm_adv_state grep -q '^gpgCheck *= *on' "$f")" \
+        multiversion "Keep multiple kernel versions" "$(pm_adv_state grep -q '^multiversion' "$f")" \
+        deltarpm     "Use delta RPMs" "$(pm_adv_state grep -q '^download.use_deltarpm *= *true' "$f")" \
+        colour       "Colourise output" "$(pm_adv_state grep -q '^color' "$g")" \
+        verify       "Verify the system after each transaction" "$(pm_adv_state grep -q '^solver.onlyRequires' "$f")" \
+        nodocs       "Skip documentation files" "$(pm_adv_state grep -q '^rpm.install.excludedocs *= *yes' "$f")") || return 0
+    mkdir -p /etc/zypp; [ -f "$f" ] || : > "$f"
+    cp -a "$f" "$f.systui.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    sed -i '/^commit.downloadMode/d;/^installRecommends/d;/^gpgCheck/d;/^multiversion/d;/^download.use_deltarpm/d;/^solver.onlyRequires/d;/^rpm.install.excludedocs/d' "$f"
+    {
+        pm_adv_has "$o" keeppackages && echo 'commit.downloadMode = DownloadInAdvance'
+        pm_adv_has "$o" norecommends && echo 'installRecommends = no'
+        pm_adv_has "$o" gpgcheck     && echo 'gpgCheck = on'
+        pm_adv_has "$o" multiversion && echo 'multiversion = provides:multiversion(kernel)'
+        pm_adv_has "$o" deltarpm     && echo 'download.use_deltarpm = true'
+        pm_adv_has "$o" verify       && echo 'solver.onlyRequires = true'
+        pm_adv_has "$o" nodocs       && echo 'rpm.install.excludedocs = yes'
+    } >> "$f"
+    if pm_adv_has "$o" colour; then
+        mkdir -p "$(dirname "$g")"; [ -f "$g" ] || : > "$g"
+        grep -q '^\[color\]' "$g" || printf '[color]\nuseColors = always\n' >> "$g"
+    fi
+    tui_msg "Applied" "$f updated.\nA timestamped backup was written alongside it."
+}
+
+pm_adv_apk() {
+    local f=/etc/apk/repositories c=/etc/apk/cache o
+    o=$(tui_check "apk — advanced" "Current state pre-checked. SPACE toggles, ENTER applies:" \
+        cache        "Enable the local package cache" "$(pm_adv_state test -L "$c")" \
+        community    "Enable the community repository" "$(pm_adv_state grep -q '^[^#].*community' "$f")" \
+        edgetesting  "Enable the edge/testing repository" "$(pm_adv_state grep -q '^[^#].*testing' "$f")" \
+        progress     "Show download progress" "$(pm_adv_state test -f /etc/apk/progress)" \
+        nointeractive "Never prompt during operations" "$(pm_adv_state test -f /etc/apk/no-interactive)" \
+        purge        "Purge configuration when removing packages" "$(pm_adv_state test -f /etc/apk/purge)") || return 0
+    if pm_adv_has "$o" cache; then
+        mkdir -p /var/cache/apk
+        [ -L "$c" ] || ln -sf /var/cache/apk "$c"
+        command -v apk >/dev/null 2>&1 && apk cache sync >/dev/null 2>&1 || true
+    else
+        [ -L "$c" ] && rm -f "$c"
+    fi
+    cp -a "$f" "$f.systui.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    if pm_adv_has "$o" community; then sed -i 's|^#\(.*community.*\)$|\1|' "$f"; else sed -i 's|^\([^#].*community.*\)$|#\1|' "$f"; fi
+    if pm_adv_has "$o" edgetesting; then sed -i 's|^#\(.*testing.*\)$|\1|' "$f"; else sed -i 's|^\([^#].*testing.*\)$|#\1|' "$f"; fi
+    pm_adv_has "$o" progress      && : > /etc/apk/progress      || rm -f /etc/apk/progress
+    pm_adv_has "$o" nointeractive && : > /etc/apk/no-interactive || rm -f /etc/apk/no-interactive
+    pm_adv_has "$o" purge         && : > /etc/apk/purge          || rm -f /etc/apk/purge
+    tui_msg "Applied" "apk configuration updated.\nRepositories:\n$(grep -c '^[^#]' "$f") enabled, $(grep -c '^#' "$f") commented out."
+}
+
+pm_adv_xbps() {
+    local d=/etc/xbps.d f=/etc/xbps.d/00-systui.conf o
+    o=$(tui_check "XBPS — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+        cachedir    "Use a dedicated cache directory" "$(pm_adv_state grep -q '^cachedir' "$f")" \
+        syslog      "Log operations to syslog" "$(pm_adv_state grep -q '^syslog=true' "$f")" \
+        keepconf    "Preserve modified configuration files" "$(pm_adv_state grep -q '^preserve' "$f")" \
+        ignoresig   "Do not require repository signatures (not recommended)" "$(pm_adv_state grep -q '^repository.*--ignore' "$f")" \
+        bestmatch   "Prefer the best version across repositories" "$(pm_adv_state grep -q '^bestmatching=true' "$f")" \
+        nonfree     "Enable the nonfree repository" "$(pm_adv_state grep -q 'nonfree' "$f")") || return 0
+    mkdir -p "$d"
+    {
+        echo '# Generated by systui. Edits are replaced on the next run.'
+        pm_adv_has "$o" cachedir  && echo 'cachedir=/var/cache/xbps'
+        pm_adv_has "$o" syslog    && echo 'syslog=true' || echo 'syslog=false'
+        pm_adv_has "$o" keepconf  && echo 'preserve=/etc/*'
+        pm_adv_has "$o" bestmatch && echo 'bestmatching=true'
+        pm_adv_has "$o" nonfree   && echo 'repository=https://repo-default.voidlinux.org/current/nonfree'
+    } > "$f"
+    tui_msg "Applied" "$f written ($(grep -c '^[a-z]' "$f") settings)."
+}
+
+pm_adv_emerge() {
+    local f=/etc/portage/make.conf o n
+    o=$(tui_check "Portage — advanced" "Current state pre-checked. SPACE toggles, ENTER applies to $f:" \
+        jobs       "Build several packages in parallel" "$(pm_adv_state grep -q '^MAKEOPTS' "$f")" \
+        loadavg    "Limit parallelism by load average" "$(pm_adv_state grep -q 'load-average' "$f")" \
+        ccache     "Enable ccache" "$(pm_adv_state grep -q 'ccache' "$f")" \
+        buildpkg   "Keep binary packages after building" "$(pm_adv_state grep -q 'buildpkg' "$f")" \
+        parallelfetch "Fetch sources in parallel with building" "$(pm_adv_state grep -q 'parallel-fetch' "$f")" \
+        candy      "Colourful progress output" "$(pm_adv_state grep -q 'candy' "$f")" \
+        quietbuild "Reduce build output" "$(pm_adv_state grep -q 'quiet-build' "$f")" \
+        nodoc      "Skip documentation where possible" "$(pm_adv_state grep -q 'nodoc' "$f")" \
+        march      "Optimise for the local CPU (-march=native)" "$(pm_adv_state grep -q 'march=native' "$f")") || return 0
+    mkdir -p "$(dirname "$f")"; [ -f "$f" ] || : > "$f"
+    cp -a "$f" "$f.systui.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+    n=$(nproc 2>/dev/null || echo 2)
+    {
+        pm_adv_has "$o" jobs       && printf 'MAKEOPTS="-j%s"\n' "$n"
+        pm_adv_has "$o" loadavg    && printf 'EMERGE_DEFAULT_OPTS="--load-average=%s --jobs=%s"\n' "$n" "$n"
+        pm_adv_has "$o" ccache     && printf 'FEATURES="${FEATURES} ccache"\nCCACHE_SIZE="4G"\n'
+        pm_adv_has "$o" buildpkg   && printf 'FEATURES="${FEATURES} buildpkg"\n'
+        pm_adv_has "$o" parallelfetch && printf 'FEATURES="${FEATURES} parallel-fetch"\n'
+        pm_adv_has "$o" candy      && printf 'FEATURES="${FEATURES} candy"\n'
+        pm_adv_has "$o" quietbuild && printf 'FEATURES="${FEATURES} quiet-build"\n'
+        pm_adv_has "$o" nodoc      && printf 'INSTALL_MASK="/usr/share/doc"\n'
+        pm_adv_has "$o" march      && printf 'COMMON_FLAGS="-march=native -O2 -pipe"\nCFLAGS="${COMMON_FLAGS}"\nCXXFLAGS="${COMMON_FLAGS}"\n'
+    } | pm_adv_write_block "$f" portage
+    tui_msg "Applied" "$f updated inside a managed systui block.\nA timestamped backup was written alongside it."
+}
+
+# ---- Universal package managers ---------------------------------------------
+
+pm_adv_flatpak() {
+    local o cfg=/var/lib/flatpak/repo/config
+    o=$(tui_check "Flatpak — advanced" "Current state pre-checked. SPACE toggles, ENTER applies:" \
+        flathub      "Flathub remote enabled" "$(pm_adv_state flatpak remotes --columns=name)" \
+        userinstall  "Prefer per-user installations" "$(pm_adv_state test -d "$HOME/.local/share/flatpak")" \
+        nodeps       "Do not install related components automatically" off \
+        parallel     "Allow parallel downloads" "$(pm_adv_state grep -q 'max-parallel' "$cfg")" \
+        minfree      "Reserve free space before installing" "$(pm_adv_state grep -q 'min-free-space' "$cfg")" \
+        nodocs       "Skip locale and documentation extras" "$(pm_adv_state flatpak config --get languages)" \
+        autoprune    "Remove unused runtimes after each operation" off \
+        gpgverify    "Require GPG verification of remotes" on) || return 0
+    command -v flatpak >/dev/null 2>&1 || { tui_msg "Flatpak" "Flatpak is not installed."; return 1; }
+    pm_adv_has "$o" flathub && run_cmd "Adding Flathub" flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+    pm_adv_has "$o" minfree && flatpak config --set min-free-space-size 500MB >/dev/null 2>&1
+    pm_adv_has "$o" nodocs  && flatpak config --set languages "en" >/dev/null 2>&1
+    if pm_adv_has "$o" gpgverify; then
+        flatpak remotes --columns=name,options 2>/dev/null | awk '$2 ~ /no-gpg-verify/ {print $1}' > "$SYSTUI_TMP/fp-nogpg"
+        [ -s "$SYSTUI_TMP/fp-nogpg" ] && tui_text "Remotes without GPG verification" "$SYSTUI_TMP/fp-nogpg"
+    fi
+    pm_adv_has "$o" autoprune && run_cmd "Removing unused runtimes" flatpak uninstall --unused -y
+    tui_msg "Applied" "Flatpak configuration updated.\nRemotes:\n$(flatpak remotes --columns=name 2>/dev/null | tr '\n' ' ')"
+}
+
+pm_adv_snap() {
+    local o v
+    command -v snap >/dev/null 2>&1 || { tui_msg "Snap" "snapd is not installed."; return 1; }
+    o=$(tui_check "Snap — advanced" "Current state pre-checked. SPACE toggles, ENTER applies:" \
+        holdrefresh "Hold automatic refreshes" "$(pm_adv_state sh -c 'snap get system refresh.hold 2>/dev/null | grep -q .')" \
+        metered     "Do not refresh on metered connections" "$(pm_adv_state sh -c 'snap get system refresh.metered 2>/dev/null | grep -q hold')" \
+        retain      "Keep only two revisions per snap" "$(pm_adv_state sh -c 'snap get system refresh.retain 2>/dev/null | grep -q 2')" \
+        timer       "Restrict refreshes to a nightly window" "$(pm_adv_state sh -c 'snap get system refresh.timer 2>/dev/null | grep -q .')" \
+        classic     "Allow classic confinement snaps" off \
+        experimental "Enable experimental features" off) || return 0
+    if pm_adv_has "$o" holdrefresh; then
+        v=$(tui_input "Refresh hold" "Hold until (24h, 72h, or an RFC3339 timestamp):" "24h") || v=24h
+        snap set system refresh.hold="$v" >/dev/null 2>&1
+    else
+        snap unset system refresh.hold >/dev/null 2>&1
+    fi
+    pm_adv_has "$o" metered && snap set system refresh.metered=hold >/dev/null 2>&1 || snap unset system refresh.metered >/dev/null 2>&1
+    pm_adv_has "$o" retain  && snap set system refresh.retain=2 >/dev/null 2>&1 || snap unset system refresh.retain >/dev/null 2>&1
+    pm_adv_has "$o" timer   && snap set system refresh.timer="02:00-04:00" >/dev/null 2>&1 || snap unset system refresh.timer >/dev/null 2>&1
+    pm_adv_has "$o" experimental && snap set system experimental.parallel-instances=true >/dev/null 2>&1
+    tui_msg "Applied" "snapd configuration updated.\n\n$(snap get system 2>/dev/null | head -12)"
+}
+
+pm_adv_nix() {
+    local f o
+    f="${HOME}/.config/nix/nix.conf"
+    [ "$(id -u)" -eq 0 ] && f=/etc/nix/nix.conf
+    o=$(tui_check "Nix — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+        flakes      "Enable flakes and the new nix command" "$(pm_adv_state grep -q 'experimental-features.*flakes' "$f")" \
+        autooptimise "Automatically optimise the store" "$(pm_adv_state grep -q '^auto-optimise-store = true' "$f")" \
+        keepoutputs "Keep build outputs for development shells" "$(pm_adv_state grep -q '^keep-outputs = true' "$f")" \
+        keepderivations "Keep derivations" "$(pm_adv_state grep -q '^keep-derivations = true' "$f")" \
+        substituters "Use the official binary cache" "$(pm_adv_state grep -q 'cache.nixos.org' "$f")" \
+        maxjobs     "Build several derivations in parallel" "$(pm_adv_state grep -q '^max-jobs' "$f")" \
+        sandbox     "Build in a sandbox" "$(pm_adv_state grep -q '^sandbox = true' "$f")" \
+        warndirty   "Warn about dirty Git trees" "$(pm_adv_state grep -q '^warn-dirty = true' "$f")") || return 0
+    mkdir -p "$(dirname "$f")"
+    {
+        pm_adv_has "$o" flakes          && echo 'experimental-features = nix-command flakes'
+        pm_adv_has "$o" autooptimise    && echo 'auto-optimise-store = true'
+        pm_adv_has "$o" keepoutputs     && echo 'keep-outputs = true'
+        pm_adv_has "$o" keepderivations && echo 'keep-derivations = true'
+        pm_adv_has "$o" substituters    && echo 'substituters = https://cache.nixos.org'
+        pm_adv_has "$o" maxjobs         && printf 'max-jobs = %s\n' "$(nproc 2>/dev/null || echo 2)"
+        pm_adv_has "$o" sandbox         && echo 'sandbox = true' || echo 'sandbox = false'
+        pm_adv_has "$o" warndirty       && echo 'warn-dirty = true' || echo 'warn-dirty = false'
+    } | pm_adv_write_block "$f" nix
+    tui_msg "Applied" "$f updated inside a managed systui block."
+}
+
+pm_adv_brew() {
+    local f="${HOME}/.config/homebrew/brew.env" o
+    o=$(tui_check "Homebrew — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+        noanalytics  "Disable analytics" "$(pm_adv_state grep -q '^HOMEBREW_NO_ANALYTICS=1' "$f")" \
+        noautoupdate "Do not auto-update on every command" "$(pm_adv_state grep -q '^HOMEBREW_NO_AUTO_UPDATE=1' "$f")" \
+        noinsecure   "Refuse insecure redirects" "$(pm_adv_state grep -q '^HOMEBREW_NO_INSECURE_REDIRECT=1' "$f")" \
+        cask         "Require casks to be signed" "$(pm_adv_state grep -q '^HOMEBREW_CASK_OPTS' "$f")" \
+        cleanup      "Clean up automatically after installs" "$(pm_adv_state grep -q '^HOMEBREW_INSTALL_CLEANUP=1' "$f")" \
+        noenvhints   "Hide environment hints" "$(pm_adv_state grep -q '^HOMEBREW_NO_ENV_HINTS=1' "$f")" \
+        bat          "Use bat for brew cat output" "$(pm_adv_state grep -q '^HOMEBREW_BAT=1' "$f")" \
+        parallel     "Download in parallel" "$(pm_adv_state grep -q '^HOMEBREW_DOWNLOAD_CONCURRENCY' "$f")") || return 0
+    mkdir -p "$(dirname "$f")"
+    {
+        pm_adv_has "$o" noanalytics  && echo 'HOMEBREW_NO_ANALYTICS=1'
+        pm_adv_has "$o" noautoupdate && echo 'HOMEBREW_NO_AUTO_UPDATE=1'
+        pm_adv_has "$o" noinsecure   && echo 'HOMEBREW_NO_INSECURE_REDIRECT=1'
+        pm_adv_has "$o" cask         && echo 'HOMEBREW_CASK_OPTS=--require-sha'
+        pm_adv_has "$o" cleanup      && echo 'HOMEBREW_INSTALL_CLEANUP=1'
+        pm_adv_has "$o" noenvhints   && echo 'HOMEBREW_NO_ENV_HINTS=1'
+        pm_adv_has "$o" bat          && echo 'HOMEBREW_BAT=1'
+        pm_adv_has "$o" parallel     && echo 'HOMEBREW_DOWNLOAD_CONCURRENCY=auto'
+    } | pm_adv_write_block "$f" brew
+    tui_msg "Applied" "$f updated inside a managed systui block."
+}
+
+# ---- Language / ecosystem package managers ----------------------------------
+#
+# These share a shape: a registry or index URL, a cache policy, and a small set
+# of global install flags. pm_adv_lang renders that shape for each of them.
+
+pm_adv_lang() { # <id>
+    local id="$1" f o reg cur_reg marker
+    case "$id" in
+        pip)      f="${HOME}/.config/pip/pip.conf";              marker=pip ;;
+        pipx)     f="${HOME}/.config/pipx/config";               marker=pipx ;;
+        npm)      f="${HOME}/.npmrc";                            marker=npm ;;
+        pnpm)     f="${HOME}/.config/pnpm/rc";                   marker=pnpm ;;
+        yarn)     f="${HOME}/.yarnrc";                           marker=yarn ;;
+        cargo)    f="${HOME}/.cargo/config.toml";                marker=cargo ;;
+        gem)      f="${HOME}/.gemrc";                            marker=gem ;;
+        composer) f="${HOME}/.config/composer/config.json";      marker=composer ;;
+        go)       f="${HOME}/.config/go/env";                    marker=go ;;
+        *) return 1 ;;
+    esac
+
+    case "$id" in
+        pip)
+            o=$(tui_check "pip — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                nocache      "Disable the download cache" "$(pm_adv_state grep -q 'no-cache-dir *= *true' "$f")" \
+                usermode     "Install to the user site by default" "$(pm_adv_state grep -q 'user *= *true' "$f")" \
+                breaksystem  "Allow installs outside a virtualenv" "$(pm_adv_state grep -q 'break-system-packages *= *true' "$f")" \
+                noversioncheck "Do not warn about pip updates" "$(pm_adv_state grep -q 'disable-pip-version-check *= *true' "$f")" \
+                timeout      "Longer network timeout (60s)" "$(pm_adv_state grep -q 'timeout *= *60' "$f")" \
+                retries      "Retry failed downloads five times" "$(pm_adv_state grep -q 'retries *= *5' "$f")" \
+                prefer       "Prefer binary wheels over source builds" "$(pm_adv_state grep -q 'prefer-binary *= *true' "$f")" \
+                mirror       "Use a custom index URL" "$(pm_adv_state grep -q 'index-url' "$f")" \
+                trustedhost  "Mark the index host as trusted" "$(pm_adv_state grep -q 'trusted-host' "$f")" \
+                quiet        "Reduce output verbosity" "$(pm_adv_state grep -q '^quiet' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            {
+                echo '[global]'
+                pm_adv_has "$o" nocache        && echo 'no-cache-dir = true'
+                pm_adv_has "$o" usermode       && echo 'user = true'
+                pm_adv_has "$o" breaksystem    && echo 'break-system-packages = true'
+                pm_adv_has "$o" noversioncheck && echo 'disable-pip-version-check = true'
+                pm_adv_has "$o" timeout        && echo 'timeout = 60'
+                pm_adv_has "$o" retries        && echo 'retries = 5'
+                pm_adv_has "$o" prefer         && echo 'prefer-binary = true'
+                pm_adv_has "$o" quiet          && echo 'quiet = 1'
+                if pm_adv_has "$o" mirror; then
+                    reg=$(tui_input "Index URL" "PyPI-compatible index URL:" "https://pypi.org/simple") || reg="https://pypi.org/simple"
+                    echo "index-url = $reg"
+                    pm_adv_has "$o" trustedhost && printf 'trusted-host = %s\n' "$(printf '%s' "$reg" | sed -E 's|^https?://||; s|/.*$||')"
+                fi
+            } | pm_adv_write_block "$f" "$marker" ;;
+        npm|pnpm|yarn)
+            o=$(tui_check "$id — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                registry     "Use a custom registry" "$(pm_adv_state grep -q 'registry' "$f")" \
+                saveexact    "Save exact dependency versions" "$(pm_adv_state grep -q 'save-exact' "$f")" \
+                audit        "Run a security audit on install" "$(pm_adv_state grep -q 'audit *= *true' "$f")" \
+                fund         "Show funding messages" "$(pm_adv_state grep -q 'fund *= *true' "$f")" \
+                progress     "Show a progress bar" "$(pm_adv_state grep -q 'progress *= *true' "$f")" \
+                enginestrict "Enforce declared engine versions" "$(pm_adv_state grep -q 'engine-strict *= *true' "$f")" \
+                prefixuser   "Install global packages under the home directory" "$(pm_adv_state grep -q 'prefix' "$f")" \
+                nooptional   "Skip optional dependencies" "$(pm_adv_state grep -q 'omit *= *optional' "$f")" \
+                loglevel     "Reduce log output" "$(pm_adv_state grep -q 'loglevel *= *warn' "$f")" \
+                cachemax     "Limit cache lifetime to seven days" "$(pm_adv_state grep -q 'cache-max' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            {
+                if pm_adv_has "$o" registry; then
+                    reg=$(tui_input "Registry" "$id registry URL:" "https://registry.npmjs.org/") || reg="https://registry.npmjs.org/"
+                    echo "registry=$reg"
+                fi
+                pm_adv_has "$o" saveexact    && echo 'save-exact=true'
+                pm_adv_has "$o" audit        && echo 'audit=true' || echo 'audit=false'
+                pm_adv_has "$o" fund         && echo 'fund=true'  || echo 'fund=false'
+                pm_adv_has "$o" progress     && echo 'progress=true' || echo 'progress=false'
+                pm_adv_has "$o" enginestrict && echo 'engine-strict=true'
+                pm_adv_has "$o" prefixuser   && printf 'prefix=%s/.local\n' "$HOME"
+                pm_adv_has "$o" nooptional   && echo 'omit=optional'
+                pm_adv_has "$o" loglevel     && echo 'loglevel=warn'
+                pm_adv_has "$o" cachemax     && echo 'cache-max=604800'
+            } | pm_adv_write_block "$f" "$marker" ;;
+        cargo)
+            o=$(tui_check "Cargo — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                sparse       "Use the sparse registry protocol (faster)" "$(pm_adv_state grep -q 'protocol *= *.sparse.' "$f")" \
+                jobs         "Build with all available cores" "$(pm_adv_state grep -q '^jobs' "$f")" \
+                incremental  "Enable incremental compilation" "$(pm_adv_state grep -q 'incremental *= *true' "$f")" \
+                targetdir    "Use a shared target directory" "$(pm_adv_state grep -q 'target-dir' "$f")" \
+                offline      "Prefer offline operation" "$(pm_adv_state grep -q 'offline *= *true' "$f")" \
+                gitcli       "Use the system git binary for fetches" "$(pm_adv_state grep -q 'git-fetch-with-cli *= *true' "$f")" \
+                strip        "Strip debug symbols from release builds" "$(pm_adv_state grep -q 'strip' "$f")" \
+                colour       "Always colourise output" "$(pm_adv_state grep -q 'color *= *.always.' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            {
+                pm_adv_has "$o" sparse && printf '[registries.crates-io]\nprotocol = "sparse"\n'
+                # Both keys belong to [net]; the header has to be emitted when
+                # either is selected, or a lone `offline` would be parsed as a
+                # key of whichever table happened to precede it.
+                if pm_adv_has "$o" gitcli || pm_adv_has "$o" offline; then
+                    printf '[net]\n'
+                    pm_adv_has "$o" gitcli  && printf 'git-fetch-with-cli = true\n'
+                    pm_adv_has "$o" offline && printf 'offline = true\n'
+                fi
+                printf '[build]\n'
+                pm_adv_has "$o" jobs        && printf 'jobs = %s\n' "$(nproc 2>/dev/null || echo 2)"
+                pm_adv_has "$o" incremental && printf 'incremental = true\n'
+                pm_adv_has "$o" targetdir   && printf 'target-dir = "%s/.cache/cargo-target"\n' "$HOME"
+                pm_adv_has "$o" strip       && printf '[profile.release]\nstrip = true\n'
+                pm_adv_has "$o" colour      && printf '[term]\ncolor = "always"\n'
+            } | pm_adv_write_block "$f" "$marker" ;;
+        gem)
+            o=$(tui_check "RubyGems — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                nodocs     "Do not install documentation" "$(pm_adv_state grep -q 'no-document' "$f")" \
+                usermode   "Install gems to the user directory" "$(pm_adv_state grep -q 'user-install' "$f")" \
+                source     "Use a custom gem source" "$(pm_adv_state grep -q ':sources:' "$f")" \
+                concurrent "Download gems concurrently" "$(pm_adv_state grep -q 'concurrent_downloads' "$f")" \
+                verbose    "Verbose output" "$(pm_adv_state grep -q ':verbose:' "$f")" \
+                backtrace  "Show a backtrace on error" "$(pm_adv_state grep -q ':backtrace: true' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            {
+                pm_adv_has "$o" nodocs     && echo 'gem: --no-document'
+                pm_adv_has "$o" usermode   && echo 'gem: --user-install'
+                pm_adv_has "$o" concurrent && echo ':concurrent_downloads: 8'
+                pm_adv_has "$o" verbose    && echo ':verbose: true' || echo ':verbose: false'
+                pm_adv_has "$o" backtrace  && echo ':backtrace: true'
+                if pm_adv_has "$o" source; then
+                    reg=$(tui_input "Gem source" "RubyGems source URL:" "https://rubygems.org") || reg="https://rubygems.org"
+                    printf ':sources:\n- %s\n' "$reg"
+                fi
+            } | pm_adv_write_block "$f" "$marker" ;;
+        go)
+            o=$(tui_check "Go — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                proxy      "Use the public module proxy" "$(pm_adv_state grep -q '^GOPROXY' "$f")" \
+                sumdb      "Verify modules against the checksum database" "$(pm_adv_state grep -q '^GOSUMDB' "$f")" \
+                private    "Mark internal module paths as private" "$(pm_adv_state grep -q '^GOPRIVATE' "$f")" \
+                nocgo      "Disable cgo (fully static builds)" "$(pm_adv_state grep -q '^CGO_ENABLED=0' "$f")" \
+                gobin      "Install binaries under ~/.local/bin" "$(pm_adv_state grep -q '^GOBIN' "$f")" \
+                telemetry  "Disable telemetry" "$(pm_adv_state grep -q '^GOTELEMETRY=off' "$f")" \
+                flags      "Trim file paths from binaries" "$(pm_adv_state grep -q '^GOFLAGS.*trimpath' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            {
+                pm_adv_has "$o" proxy     && echo 'GOPROXY=https://proxy.golang.org,direct' || echo 'GOPROXY=direct'
+                pm_adv_has "$o" sumdb     && echo 'GOSUMDB=sum.golang.org' || echo 'GOSUMDB=off'
+                pm_adv_has "$o" nocgo     && echo 'CGO_ENABLED=0'
+                pm_adv_has "$o" gobin     && printf 'GOBIN=%s/.local/bin\n' "$HOME"
+                pm_adv_has "$o" telemetry && echo 'GOTELEMETRY=off'
+                pm_adv_has "$o" flags     && echo 'GOFLAGS=-trimpath'
+                if pm_adv_has "$o" private; then
+                    reg=$(tui_input "GOPRIVATE" "Comma-separated module prefixes:" "") || reg=""
+                    [ -n "$reg" ] && echo "GOPRIVATE=$reg"
+                fi
+            } | pm_adv_write_block "$f" "$marker" ;;
+        composer|pipx)
+            o=$(tui_check "$id — advanced" "Current state pre-checked. SPACE toggles, ENTER writes $f:" \
+                nointeraction "Never prompt during operations" "$(pm_adv_state grep -q 'no-interaction' "$f")" \
+                prefersource  "Prefer installing from source" "$(pm_adv_state grep -q 'prefer-source' "$f")" \
+                nodev         "Skip development dependencies" "$(pm_adv_state grep -q 'no-dev' "$f")" \
+                cachettl      "Limit cache lifetime" "$(pm_adv_state grep -q 'cache-files-ttl' "$f")" \
+                optimise      "Optimise the autoloader/shims" "$(pm_adv_state grep -q 'optimize' "$f")" \
+                globalbin     "Install binaries under ~/.local/bin" "$(pm_adv_state grep -q 'bin-dir' "$f")") || return 0
+            mkdir -p "$(dirname "$f")"
+            if [ "$id" = composer ]; then
+                {
+                    echo '{'
+                    echo '  "config": {'
+                    pm_adv_has "$o" prefersource && echo '    "preferred-install": "source",'
+                    pm_adv_has "$o" cachettl     && echo '    "cache-files-ttl": 604800,'
+                    pm_adv_has "$o" optimise     && echo '    "optimize-autoloader": true,'
+                    pm_adv_has "$o" globalbin    && printf '    "bin-dir": "%s/.local/bin",\n' "$HOME"
+                    echo '    "sort-packages": true'
+                    echo '  }'
+                    echo '}'
+                } > "$f"
+            else
+                {
+                    pm_adv_has "$o" nointeraction && echo 'PIPX_DEFAULT_PYTHON_ARGS=--no-input'
+                    pm_adv_has "$o" globalbin     && printf 'PIPX_BIN_DIR=%s/.local/bin\n' "$HOME"
+                    pm_adv_has "$o" optimise      && echo 'PIPX_HOME='"$HOME"'/.local/pipx'
+                } | pm_adv_write_block "$f" "$marker"
+            fi ;;
+    esac
+    tui_msg "Applied" "$f updated.\n$([ -s "$f" ] && grep -c . "$f" || echo 0) lines written."
+}
+
+# Dispatcher: every manager in the list resolves to one of the menus above.
+pm_advanced_menu() { # <manager-id>
+    case "$1" in
+        apt|aptitude|aptfast|nala) pm_adv_apt ;;
+        pacman|yay|paru)           pm_adv_pacman ;;
+        dnf)                       pm_adv_dnf dnf ;;
+        yum)                       pm_adv_dnf yum ;;
+        zypper)                    pm_adv_zypper ;;
+        apk)                       pm_adv_apk ;;
+        xbps)                      pm_adv_xbps ;;
+        emerge)                    pm_adv_emerge ;;
+        flatpak)                   pm_adv_flatpak ;;
+        snap)                      pm_adv_snap ;;
+        nix)                       pm_adv_nix ;;
+        brew)                      pm_adv_brew ;;
+        pip|pipx|npm|pnpm|yarn|cargo|gem|composer|go) pm_adv_lang "$1" ;;
+        native)                    pm_advanced_menu "$PM" ;;
+        *) tui_msg "Advanced" "No advanced configuration is defined for $1." ; return 1 ;;
+    esac
+}
+
 menu_package_managers() {
     while true; do
         local c
         c=$(tui_menu "Package Managers" "Configure native, universal and language package managers:" \
+            advanced "Advanced settings for the active manager ($PM) — SPACE to select" \
             native "Native manager ($PM): full configuration and maintenance" \
             apt "APT $(pm_status apt-get)" aptfast "apt-fast $(pm_status apt-fast)" nala "Nala $(pm_status nala)" aptitude "aptitude $(pm_status aptitude)" \
             pacman "pacman $(pm_status pacman)" yay "yay $(pm_status yay)" paru "paru $(pm_status paru)" \
@@ -2404,6 +3014,7 @@ menu_package_managers() {
             pip "pip $(pm_status pip3)" pipx "pipx $(pm_status pipx)" npm "npm $(pm_status npm)" pnpm "pnpm $(pm_status pnpm)" yarn "Yarn $(pm_status yarn)" \
             cargo "Cargo $(pm_status cargo)" gem "RubyGems $(pm_status gem)" composer "Composer $(pm_status composer)" go "Go modules/tools $(pm_status go)" back "Back") || return 0
         case "$c" in
+            advanced) pm_advanced_menu "$PM" ;;
             native) menu_cfg_native_full ;;
             apt) command -v apt-get >/dev/null && menu_cfg_apt || tui_msg "APT" "APT is not installed." ;;
             aptfast) command -v apt-get >/dev/null && menu_cfg_aptfast || tui_msg "apt-fast" "apt-fast requires APT." ;;
