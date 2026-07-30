@@ -6577,48 +6577,392 @@ EOF
     esac
 }
 
-fm_plugins_install() {
-    local fm="$1" u h line tag desc repo dest state selected item
-    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
-    local args=()
-    while IFS='|' read -r tag desc repo dest; do
-        [ -n "$tag" ] || continue
-        [ -d "$h/$dest" ] && state=on || state=off
-        args+=("$tag" "$desc — $repo" "$state")
-    done < <(fm_plugin_catalog "$fm")
-    [ ${#args[@]} -gt 0 ] || { tui_msg "Plugins" "No curated add-ons are defined for $fm."; return 0; }
-    selected=$(tui_check "$fm plugins" "SPACE selects add-ons. Existing repositories are updated." "${args[@]}") || return 0
-    command -v git >/dev/null 2>&1 || pm_install git
-    for item in $selected; do
-        while IFS='|' read -r tag desc repo dest; do
-            [ "$tag" = "$item" ] || continue
-            fm_as_user "$u" "mkdir -p \"\$(dirname ~/$dest)\"; if [ -d ~/$dest/.git ]; then git -C ~/$dest pull --ff-only; else rm -rf ~/$dest; git clone --depth 1 https://github.com/$repo.git ~/$dest; fi"
-        done < <(fm_plugin_catalog "$fm")
-    done
-    tui_msg "Plugins" "Selected $fm add-ons were installed or updated for $u."
+# ---- File-manager plugin registry -------------------------------------------
+#
+# Curated entries in fm_plugin_catalog remain the offline baseline. On top of
+# that, each file manager may declare a community index that is fetched, parsed
+# into TSV and cached, so the plugin menus reflect the live ecosystem rather
+# than a list frozen at release time.
+#
+# TSV columns: tag <TAB> category <TAB> name <TAB> owner/repo <TAB> dest <TAB> description
+FM_PLUGIN_REGISTRY_VERSION=1
+
+fm_plugin_index_url() { # <fm> -> URL, or empty when no community index exists
+    case "$1" in
+        yazi)   printf '%s\n' "https://raw.githubusercontent.com/AnirudhG07/awesome-yazi/main/README.md" ;;
+        ranger) printf '%s\n' "https://raw.githubusercontent.com/wiki/ranger/ranger/Plugins.md" ;;
+        nnn)    printf '%s\n' "https://raw.githubusercontent.com/jarun/nnn/master/plugins/README.md" ;;
+        *)      return 1 ;;
+    esac
 }
 
-fm_plugins_remove() {
-    local fm="$1" u h tag desc repo dest state selected item target
-    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
-    local args=()
+fm_plugin_cache_dir() {
+    local dir
+    if [ -n "${SYSTUI_FM_PLUGIN_CACHE:-}" ]; then dir="$SYSTUI_FM_PLUGIN_CACHE"
+    elif [ "$(id -u)" -eq 0 ]; then dir=/var/cache/systui/fm-plugins
+    else dir="${XDG_CACHE_HOME:-$HOME/.cache}/systui/fm-plugins"
+    fi
+    printf '%s\n' "$dir"
+}
+
+# Only owner/repo pairs are accepted, and only from github.com. A plugin entry
+# is a clone target that later runs inside the user's file manager, so a
+# malformed or hostile "repo" field must never reach git.
+fm_plugin_valid_repo() { # <owner/repo>
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+}
+
+# Destinations are confined to the file manager's own config directory.
+fm_plugin_valid_dest() { # <fm> <dest-relative-to-home>
+    case "$2" in
+        ".config/$1/"*|".local/share/$1/"*)
+            case "$2" in *..*) return 1 ;; esac
+            return 0 ;;
+    esac
+    return 1
+}
+
+fm_plugin_fetch() { # <url> <destination>
+    local url="$1" dst="$2" tmp="$2.tmp.$$"
+    mkdir -p "$(dirname "$dst")" || return 1
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 2 --connect-timeout 15 --max-time 120 \
+            --proto '=https' --tlsv1.2 "$url" -o "$tmp" >>"$LOGFILE" 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --https-only --timeout=120 -O "$tmp" "$url" >>"$LOGFILE" 2>&1
+    else
+        return 1
+    fi || { rm -f "$tmp"; return 1; }
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$dst"
+}
+
+# awesome-yazi lists each plugin as
+#   <a href="https://github.com/OWNER/REPO">name</a> - description.
+# inside a <details><summary> block, grouped by "### Category" headings.
+fm_plugin_parse_yazi() { # <README> <out.tsv>
+    awk '
+        function clean(x) {
+            gsub(/<[^>]*>/, "", x); gsub(/\r/, "", x); gsub(/\t/, " ", x)
+            gsub(/  +/, " ", x); sub(/^[ -]+/, "", x); sub(/ +$/, "", x)
+            return x
+        }
+        /^###[[:space:]]/ { cat = clean(substr($0, 4)); next }
+        /^##[[:space:]]/  { cat = clean(substr($0, 3)); next }
+        /href="https:\/\/github\.com\// {
+            line = $0
+            if (match(line, /github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/) == 0) next
+            repo = substr(line, RSTART + 11, RLENGTH - 11)
+            sub(/\.git$/, "", repo)
+            # Take everything after the FIRST </a>. A greedy match would run
+            # past the closing tag of any link nested inside the description
+            # and leave only the trailing punctuation behind.
+            rest = line
+            p = index(rest, "</a>")
+            if (p > 0) rest = substr(rest, p + 4)
+            desc = clean(rest)
+            sub(/^[[:space:]]*-[[:space:]]*/, "", desc)
+            n = split(repo, parts, "/")
+            name = parts[n]
+            if (name == "" || repo !~ /\//) next
+            if (seen[repo]++) next
+            tag = name; gsub(/[^A-Za-z0-9._-]/, "-", tag)
+            if (desc == "") desc = "No description available"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\n", tag, (cat == "" ? "Plugins" : cat), name, repo, ".config/yazi/plugins/" name, desc
+        }
+    ' "$1" > "$2"
+}
+
+# The ranger wiki lists plugins as
+#   - [name](https://github.com/OWNER/REPO), description
+fm_plugin_parse_ranger() { # <README> <out.tsv>
+    awk '
+        function clean(x) {
+            gsub(/\[|\]/, "", x); gsub(/\([^)]*\)/, "", x); gsub(/`/, "", x)
+            gsub(/\r/, "", x); gsub(/\t/, " ", x); gsub(/  +/, " ", x)
+            sub(/^[ ,]+/, "", x); sub(/ +$/, "", x); return x
+        }
+        /^- \[/ {
+            line = $0
+            if (match(line, /github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/) == 0) next
+            repo = substr(line, RSTART + 11, RLENGTH - 11)
+            sub(/\.git$/, "", repo)
+            # Skip deep links to a file inside a repository.
+            if (line ~ /github\.com\/[^)]*\/blob\//) next
+            name = line; sub(/^- \[/, "", name); sub(/\].*$/, "", name)
+            if (name == "") next
+            if (seen[repo]++) next
+            desc = line; sub(/^[^)]*\)[,]?[[:space:]]*/, "", desc); desc = clean(desc)
+            tag = name; gsub(/[^A-Za-z0-9._-]/, "-", tag)
+            if (desc == "") desc = "No description available"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\n", tag, "Plugins", name, repo, ".config/ranger/plugins/" tag, desc
+        }
+    ' "$1" > "$2"
+}
+
+# nnn ships its plugins in-tree, listed as a markdown table:
+#   | [name](name) | description | lang | dependencies |
+# They all live in jarun/nnn, so the repo column is constant and the tag
+# identifies which script to link.
+fm_plugin_parse_nnn() { # <README> <out.tsv>
+    awk -F'|' '
+        function clean(x) {
+            gsub(/\[[^]]*\]\([^)]*\)/, "", x); gsub(/<[^>]*>/, "", x)
+            gsub(/`/, "", x); gsub(/\r/, "", x); gsub(/\t/, " ", x)
+            gsub(/  +/, " ", x); sub(/^ +/, "", x); sub(/ +$/, "", x); return x
+        }
+        NF >= 4 && $2 ~ /^[[:space:]]*\[/ {
+            name = $2; sub(/^[[:space:]]*\[/, "", name); sub(/\].*$/, "", name)
+            if (name == "" || name ~ /[^A-Za-z0-9._-]/) next
+            if (seen[name]++) next
+            desc = clean($3); if (desc == "") desc = "No description available"
+            deps = clean($5)
+            # Dependency cells often hold markdown links; clean() strips the
+            # label and leaves the bare separators behind.
+            gsub(/^[\/, ]+|[\/, ]+$/, "", deps)
+            gsub(/[\/,][[:space:]]*[\/,]/, ", ", deps)
+            if (deps != "" && deps != "-") desc = desc " (needs: " deps ")"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\n", name, "Official plugins", name, "jarun/nnn", ".config/nnn/plugins/" name, desc
+        }
+    ' "$1" > "$2"
+}
+
+fm_plugin_parse() { # <fm> <README> <out.tsv>
+    case "$1" in
+        yazi)   fm_plugin_parse_yazi   "$2" "$3" ;;
+        ranger) fm_plugin_parse_ranger "$2" "$3" ;;
+        nnn)    fm_plugin_parse_nnn    "$2" "$3" ;;
+        *) return 1 ;;
+    esac
+}
+
+# A catalogue is only accepted if every row is well formed. A partially parsed
+# index is worse than none: it would offer entries whose repo or destination
+# were never validated.
+fm_plugin_catalog_valid() { # <fm> <tsv>
+    local fm="$1" tsv="$2" tag cat name repo dest desc rows=0
+    [ -s "$tsv" ] || return 1
+    while IFS=$'\t' read -r tag cat name repo dest desc; do
+        [ -n "$tag" ] || continue
+        fm_plugin_valid_repo "$repo" || return 1
+        fm_plugin_valid_dest "$fm" "$dest" || return 1
+        rows=$((rows + 1))
+    done < "$tsv"
+    [ "$rows" -gt 0 ]
+}
+
+fm_plugin_sync() { # <fm> -- refresh the cached catalogue from upstream
+    local fm="$1" url dir readme tsv tmp
+    url=$(fm_plugin_index_url "$fm") || {
+        tui_msg "No index" "$fm has no community plugin index.\nThe built-in curated list is used instead."
+        return 1
+    }
+    dir=$(fm_plugin_cache_dir); readme="$dir/$fm.md"; tsv="$dir/$fm.tsv"; tmp="$dir/$fm.tsv.new"
+    mkdir -p "$dir" || { tui_msg "Cache" "Could not create the cache directory:\n$dir"; return 1; }
+    if ! run_cmd "Fetching the $fm plugin index" fm_plugin_fetch "$url" "$readme"; then
+        if [ -s "$tsv" ]; then
+            tui_msg "Offline" "Could not reach the $fm plugin index.\nThe previously cached catalogue is still in use."
+            return 0
+        fi
+        tui_msg "Unavailable" "Could not reach the $fm plugin index and no cache exists.\nThe built-in curated list is used instead."
+        return 1
+    fi
+    fm_plugin_parse "$fm" "$readme" "$tmp" || { rm -f "$tmp"; tui_msg "Parse failed" "The $fm index could not be parsed."; return 1; }
+    if ! fm_plugin_catalog_valid "$fm" "$tmp"; then
+        rm -f "$tmp"
+        tui_msg "Rejected" "The parsed $fm catalogue failed validation and was discarded.\nThe previous catalogue is unchanged."
+        return 1
+    fi
+    mv -f "$tmp" "$tsv"
+    printf '%s\n' "$FM_PLUGIN_REGISTRY_VERSION" > "$dir/$fm.version"
+    tui_msg "Synchronised" "$(wc -l < "$tsv" | tr -d ' ') $fm plugins are now available."
+}
+
+# Merged view: curated entries first (they are known-good and work offline),
+# then any fetched entries that are not already covered.
+fm_plugin_registry() { # <fm>
+    local fm="$1" dir tsv tag desc repo dest seen=""
     while IFS='|' read -r tag desc repo dest; do
-        [ -d "$h/$dest" ] || continue
-        args+=("$tag" "$desc" off)
+        [ -n "$tag" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "Curated" "$tag" "$repo" "$dest" "$desc"
+        seen="$seen $dest"
     done < <(fm_plugin_catalog "$fm")
-    [ ${#args[@]} -gt 0 ] || { tui_msg "Plugins" "No managed $fm add-ons are installed for $u."; return 0; }
-    selected=$(tui_check "Remove $fm plugins" "SPACE selects add-ons to remove:" "${args[@]}") || return 0
+    dir=$(fm_plugin_cache_dir); tsv="$dir/$fm.tsv"
+    [ -s "$tsv" ] || return 0
+    while IFS=$'\t' read -r tag cat name repo dest desc; do
+        [ -n "$tag" ] || continue
+        # Deduplicate on the destination, not the repository. One repository
+        # legitimately provides many plugins (yazi-rs/plugins) and one
+        # repository can be the source of an entire in-tree set (jarun/nnn);
+        # keying on repo collapsed 58 nnn plugins down to 1.
+        case " $seen " in *" $dest "*) continue ;; esac
+        seen="$seen $dest"
+        fm_plugin_valid_repo "$repo" || continue
+        fm_plugin_valid_dest "$fm" "$dest" || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tag" "$cat" "$name" "$repo" "$dest" "$desc"
+    done < "$tsv"
+}
+
+fm_plugin_registry_count() { # <fm>
+    fm_plugin_registry "$1" | grep -c . || true
+}
+
+# Space-to-select installation over the merged registry. Large catalogues are
+# paged by category so a 150-entry checklist never has to be rendered at once.
+fm_plugins_install() { # <fm> [category]
+    local fm="$1" want_cat="${2:-}" u h
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    local reg; reg="$SYSTUI_TMP/fmreg.$fm"
+    fm_plugin_registry "$fm" > "$reg"
+    [ -s "$reg" ] || { tui_msg "Plugins" "No add-ons are known for $fm."; return 0; }
+
+    # Offer a category picker when the catalogue is large enough to warrant it.
+    if [ -z "$want_cat" ]; then
+        local cats cargs=() cat n total
+        total=$(grep -c . "$reg")
+        cats=$(awk -F'\t' '{print $2}' "$reg" | sort -u)
+        if [ "$total" -gt 40 ] && [ "$(printf '%s\n' "$cats" | grep -c .)" -gt 1 ]; then
+            while IFS= read -r cat; do
+                [ -n "$cat" ] || continue
+                n=$(awk -F'\t' -v c="$cat" '$2==c' "$reg" | grep -c .)
+                cargs+=("$cat" "$cat ($n)")
+            done <<< "$cats"
+            cargs+=(__all "All categories ($total)" __back "Back")
+            want_cat=$(tui_menu_no_tags "$fm add-ons" "$total add-ons available. Choose a category:" "${cargs[@]}") || return 0
+            [ "$want_cat" = __back ] && return 0
+            [ "$want_cat" = __all ] && want_cat=""
+        fi
+    fi
+
+    local args=() tag cat name repo dest desc state shown=0
+    while IFS=$'\t' read -r tag cat name repo dest desc; do
+        [ -n "$tag" ] || continue
+        [ -n "$want_cat" ] && [ "$cat" != "$want_cat" ] && continue
+        fm_plugin_valid_repo "$repo" || continue
+        fm_plugin_valid_dest "$fm" "$dest" || continue
+        [ -d "$h/$dest" ] && state=on || state=off
+        args+=("$tag" "$name — $desc" "$state")
+        shown=$((shown + 1))
+    done < "$reg"
+    [ "$shown" -gt 0 ] || { tui_msg "Plugins" "No add-ons matched that category."; return 0; }
+
+    local selected
+    selected=$(tui_check "$fm add-ons${want_cat:+ — $want_cat}" \
+        "SPACE toggles. Checked entries are installed or updated; existing repositories are pulled." \
+        "${args[@]}") || return 0
+    selected=${selected//\"/}
+    [ -n "${selected// }" ] || { tui_msg "Plugins" "Nothing was selected."; return 0; }
+
+    command -v git >/dev/null 2>&1 || pm_install git || return 1
+
+    local item ok=0 failed=""
     for item in $selected; do
-        while IFS='|' read -r tag desc repo dest; do
+        while IFS=$'\t' read -r tag cat name repo dest desc; do
             [ "$tag" = "$item" ] || continue
+            fm_plugin_valid_repo "$repo" || { warn "Refused plugin repository: $repo"; continue; }
+            fm_plugin_valid_dest "$fm" "$dest" || { warn "Refused plugin destination: $dest"; continue; }
+            if fm_as_user "$u" "mkdir -p \"\$(dirname ~/$dest)\"; if [ -d ~/$dest/.git ]; then git -C ~/$dest pull --ff-only; else rm -rf ~/$dest; git clone --depth 1 https://github.com/$repo.git ~/$dest; fi" >>"$LOGFILE" 2>&1; then
+                ok=$((ok + 1))
+            else
+                failed="$failed $tag"
+            fi
+            break
+        done < "$reg"
+    done
+    rm -f "$reg"
+    if [ -n "$failed" ]; then
+        tui_msg "Plugins" "Installed or updated $ok add-on(s) for $u.\n\nFailed:$failed\n\nSee $LOGFILE."
+    else
+        tui_msg "Plugins" "Installed or updated $ok add-on(s) for $u."
+    fi
+}
+
+# Free-text search across the merged registry.
+fm_plugins_search() { # <fm>
+    local fm="$1" q reg hits
+    q=$(tui_input "Search $fm add-ons" "Name or description:" "") || return 0
+    [ -n "$q" ] || return 0
+    reg="$SYSTUI_TMP/fmreg.$fm"; fm_plugin_registry "$fm" > "$reg"
+    hits="$SYSTUI_TMP/fmhits.$fm"
+    awk -F'\t' -v q="$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')" '
+        tolower($3) ~ q || tolower($6) ~ q || tolower($2) ~ q
+    ' "$reg" > "$hits"
+    if [ ! -s "$hits" ]; then
+        tui_msg "No matches" "No $fm add-on matched \"$q\"."
+        rm -f "$reg" "$hits"; return 0
+    fi
+    local u h args=() tag cat name repo dest desc state
+    u=$(fm_target_user) || { rm -f "$reg" "$hits"; return 0; }
+    h=$(fm_home "$u")
+    while IFS=$'\t' read -r tag cat name repo dest desc; do
+        [ -n "$tag" ] || continue
+        [ -d "$h/$dest" ] && state=on || state=off
+        args+=("$tag" "$name — $desc" "$state")
+    done < "$hits"
+    local selected item
+    selected=$(tui_check "Search results — $q" "SPACE toggles entries to install:" "${args[@]}") || { rm -f "$reg" "$hits"; return 0; }
+    selected=${selected//\"/}
+    command -v git >/dev/null 2>&1 || pm_install git
+    for item in $selected; do
+        while IFS=$'\t' read -r tag cat name repo dest desc; do
+            [ "$tag" = "$item" ] || continue
+            fm_plugin_valid_repo "$repo" && fm_plugin_valid_dest "$fm" "$dest" || continue
+            fm_as_user "$u" "mkdir -p \"\$(dirname ~/$dest)\"; if [ -d ~/$dest/.git ]; then git -C ~/$dest pull --ff-only; else rm -rf ~/$dest; git clone --depth 1 https://github.com/$repo.git ~/$dest; fi" >>"$LOGFILE" 2>&1 || warn "Failed to install $tag"
+            break
+        done < "$hits"
+    done
+    rm -f "$reg" "$hits"
+    tui_msg "Plugins" "Selected add-ons were processed for $u."
+}
+
+# Read-only listing of everything the registry knows about.
+fm_plugins_browse() { # <fm>
+    local fm="$1" out="$SYSTUI_TMP/fmbrowse"
+    fm_plugin_registry "$fm" | awk -F'\t' '
+        { if ($2 != last) { printf "\n== %s ==\n", $2; last = $2 }
+          printf "  %-32s %s\n", $3, $6 }
+    ' > "$out"
+    [ -s "$out" ] || printf '(no add-ons known)\n' > "$out"
+    tui_text "$fm add-on catalogue" "$out"
+}
+
+fm_plugins_remove() { # <fm>
+    local fm="$1" u h reg tag cat name repo dest desc selected item target
+    u=$(fm_target_user) || return 0; h=$(fm_home "$u")
+    reg="$SYSTUI_TMP/fmreg.$fm"; fm_plugin_registry "$fm" > "$reg"
+    local args=()
+    while IFS=$'\t' read -r tag cat name repo dest desc; do
+        [ -n "$tag" ] || continue
+        [ -d "$h/$dest" ] || continue
+        args+=("$tag" "$name — $desc" off)
+    done < "$reg"
+    if [ ${#args[@]} -eq 0 ]; then
+        rm -f "$reg"
+        tui_msg "Plugins" "No managed $fm add-ons are installed for $u."
+        return 0
+    fi
+    selected=$(tui_check "Remove $fm add-ons" "SPACE selects add-ons to remove:" "${args[@]}") || { rm -f "$reg"; return 0; }
+    selected=${selected//\"/}
+    local removed=0
+    for item in $selected; do
+        while IFS=$'\t' read -r tag cat name repo dest desc; do
+            [ "$tag" = "$item" ] || continue
+            # Re-validate at the point of deletion rather than trusting the
+            # catalogue row: this is an rm -rf running as root.
+            if ! fm_plugin_valid_dest "$fm" "$dest"; then
+                warn "Refused unsafe plugin removal path: $dest"; break
+            fi
             target="$h/$dest"
             case "$target" in
-                "$h/.config/$fm/"*) rm -rf -- "$target" ;;
+                "$h/.config/$fm/"*|"$h/.local/share/$fm/"*)
+                    rm -rf -- "$target"; removed=$((removed + 1)) ;;
                 *) warn "Refused unsafe plugin removal path: $target" ;;
             esac
-        done < <(fm_plugin_catalog "$fm")
+            break
+        done < "$reg"
     done
-    tui_msg "Plugins" "Selected add-ons removed. Manual configuration references may still need removal."
+    rm -f "$reg"
+    tui_msg "Plugins" "Removed $removed add-on(s). Configuration references may still need manual removal."
 }
 
 fm_plugins_custom() {
@@ -6633,16 +6977,45 @@ fm_plugins_custom() {
 }
 
 menu_fm_plugins() {
-    local fm="$1" c
+    local fm="$1" c u h g count src
     while true; do
-        c=$(tui_menu "$fm — Plugin Manager" "GitHub add-ons, themes, previewers and frameworks:" \
-            install "Install/update curated add-ons" \
+        count=$(fm_plugin_registry "$fm" | grep -c . || true)
+        if fm_plugin_index_url "$fm" >/dev/null 2>&1; then
+            src="community index available"
+        else
+            src="curated list only"
+        fi
+        c=$(tui_menu "$fm — Plugin Manager" \
+            "$count add-ons known ($src).\nGitHub add-ons, themes, previewers and frameworks:" \
+            install "Install/update add-ons (SPACE to select)" \
+            search  "Search the add-on catalogue" \
+            browse  "Browse the full catalogue" \
+            sync    "Refresh the catalogue from upstream" \
             remove  "Remove managed add-ons" \
             custom  "Install custom Git repository" \
             update  "Update all managed Git repositories" \
             status  "Show installed managed add-ons" \
             back    "Back") || return 0
-        case "$c" in install) fm_plugins_install "$fm";; remove) fm_plugins_remove "$fm";; custom) fm_plugins_custom "$fm";; update) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git -print0 2>/dev/null | while IFS= read -r -d "" g; do fm_as_user "$u" "git -C '${g%/.git}' pull --ff-only"; done; tui_msg "Updated" "Managed repositories were updated.";; status) u=$(fm_target_user) || continue; h=$(fm_home "$u"); find "$h/.config/$fm" -type d -name .git 2>/dev/null | sed 's#/.git$##' > ${SYSTUI_TMP}/fmplugins; [ -s ${SYSTUI_TMP}/fmplugins ] || echo "(none)" > ${SYSTUI_TMP}/fmplugins; tui_text "$fm managed add-ons" ${SYSTUI_TMP}/fmplugins;; back) return 0;; esac
+        case "$c" in
+            install) fm_plugins_install "$fm" ;;
+            search)  fm_plugins_search "$fm" ;;
+            browse)  fm_plugins_browse "$fm" ;;
+            sync)    fm_plugin_sync "$fm" ;;
+            remove)  fm_plugins_remove "$fm" ;;
+            custom)  fm_plugins_custom "$fm" ;;
+            update)
+                u=$(fm_target_user) || continue; h=$(fm_home "$u")
+                find "$h/.config/$fm" "$h/.local/share/$fm" -type d -name .git -print0 2>/dev/null |
+                    while IFS= read -r -d "" g; do fm_as_user "$u" "git -C '${g%/.git}' pull --ff-only"; done
+                tui_msg "Updated" "Managed repositories were updated." ;;
+            status)
+                u=$(fm_target_user) || continue; h=$(fm_home "$u")
+                find "$h/.config/$fm" "$h/.local/share/$fm" -type d -name .git 2>/dev/null |
+                    sed 's#/.git$##' > "$SYSTUI_TMP/fmplugins"
+                [ -s "$SYSTUI_TMP/fmplugins" ] || echo "(none)" > "$SYSTUI_TMP/fmplugins"
+                tui_text "$fm managed add-ons" "$SYSTUI_TMP/fmplugins" ;;
+            back|"") return 0 ;;
+        esac
     done
 }
 
