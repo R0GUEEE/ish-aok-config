@@ -260,15 +260,16 @@ check "menu_pipx_install exists"        function_exists menu_pipx_install
 check "menu_pip_install exists"         function_exists menu_pip_install
 check "menu_flatpak_install exists"     function_exists menu_flatpak_install
 check "menu_snap_install exists"        function_exists menu_snap_install
-check "brew_target_user exists"         function_exists brew_target_user
-
-# Key install method strings are present in the source file
-check "brew install script URL present" contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" "Homebrew/install/HEAD/install.sh"
-check "brew install enforces non-root" contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" "Homebrew must be installed as a non-root user."
-check "brew install runs via su target user" contains \
-    "$PROJECT_DIR/src/features/sysconfig.sh" 'Install Homebrew for $u" su - "$u" -c'
+# Root-compatible Homebrew installer tests
+check "menu_brew_install exists"               function_exists menu_brew_install
+check "brew root installer embedded"           contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Root-managed Homebrew installer"
+check "brew root install checks root UID"      contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "Root privileges are required"
+check "brew LD_PRELOAD shim present"           contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "libhomebrew_fakeuid.so"
+check "brew linuxbrew prefix present"          contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "/home/linuxbrew/.linuxbrew"
 check "brew pm install option removed" not_contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" 'Package manager (${PM} install brew)'
 check "nix determinate installer URL present" contains \
