@@ -163,9 +163,15 @@ script_provision_configure() {
                 esac
                 ;;
             sudo)
+                local password_state nopass_state
+                if [ "$SCRIPT_PROV_NOPASS" = 0 ]; then
+                    password_state=on; nopass_state=off
+                else
+                    password_state=off; nopass_state=on
+                fi
                 selected=$(tui_radio "Sudo Policy" "Choose how sudo authenticates:" \
-                    password "Require the user's password" $([ "$SCRIPT_PROV_NOPASS" = 0 ] && echo on || echo off) \
-                    nopass "Allow passwordless sudo" $([ "$SCRIPT_PROV_NOPASS" = 1 ] && echo on || echo off)) || continue
+                    password "Require the user's password" "$password_state" \
+                    nopass "Allow passwordless sudo" "$nopass_state") || continue
                 [ "$selected" = nopass ] && SCRIPT_PROV_NOPASS=1 || SCRIPT_PROV_NOPASS=0
                 ;;
             review) script_provision_review ;;
