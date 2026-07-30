@@ -115,7 +115,6 @@ declare -gA PKG_MAP=(
     [neofetch]="neofetch neofetch neofetch neofetch"
     [sysstat]="sysstat sysstat sysstat sysstat"
     [procps]="procps procps procps-ng procps-ng"
-    [systemd-container]="SKIP systemd systemd systemd"
     [cgroup-tools]="cgroup-lite cgroup-tools libcgroup libcgroup"
     [stress]="stress stress stress stress"
     [stress-ng]="SKIP stress-ng stress-ng stress-ng"
@@ -149,7 +148,6 @@ declare -gA PKG_MAP=(
     [wireguard]="wireguard-tools wireguard-tools wireguard-tools wireguard-tools"
     [openvpn]="openvpn openvpn openvpn openvpn"
     [openconnect]="openconnect openconnect openconnect openconnect"
-    [openssl]="openssl openssl openssl openssl"
     
     # compression / archiving
     [zip]="zip zip zip zip"
@@ -175,7 +173,6 @@ declare -gA PKG_MAP=(
     [awk]="gawk gawk gawk gawk"
     [gawk]="gawk gawk gawk gawk"
     [mawk]="mawk mawk mawk mawk"
-    [perl]="perl perl perl perl"
     [grep]="grep grep grep grep"
     [egrep]="grep grep grep grep"
     [fgrep]="grep grep grep grep"
@@ -211,10 +208,7 @@ declare -gA PKG_MAP=(
     [redis-tools]="redis redis redis redis"
     
     # security / cryptography
-    [openssl]="openssl openssl openssl openssl"
-    [gnupg]="gnupg gnupg gnupg2 gnupg"
     [ssh-import-id]="SKIP SKIP SKIP SKIP"
-    [openssh-server]="openssh openssh openssh-server openssh"
     [fail2ban]="fail2ban fail2ban fail2ban fail2ban"
     [aide]="aide aide aide aide"
     [rkhunter]="rkhunter rkhunter rkhunter rkhunter"
@@ -253,7 +247,6 @@ declare -gA PKG_MAP=(
     [virtualbox]="virtualbox SKIP virtualbox virtualbox"
     
     # backup / sync / storage
-    [rsync]="rsync rsync rsync rsync"
     [rclone]="rclone rclone rclone rclone"
     [duplicacy]="SKIP SKIP SKIP SKIP"
     [restic]="SKIP restic restic restic"
@@ -298,8 +291,6 @@ declare -gA PKG_MAP=(
     [cron]="SKIP cronie cronie cronie"
     [cronie]="cronie cronie cronie cronie"
     [at]="at at at at"
-    [openssh-server]="openssh openssh openssh-server openssh"
-    [openssh-client]="openssh-client openssh-client openssh openssh"
     [locales]="SKIP glibc-locales glibc-langpack-en glibc-locales"
     [adduser]="SKIP SKIP SKIP SKIP"
     [deluser]="SKIP SKIP SKIP SKIP"
@@ -308,7 +299,7 @@ declare -gA PKG_MAP=(
     [openrc]="openrc openrc SKIP SKIP"
     [runit]="runit runit runit runit"
     [systemd]="systemd systemd systemd systemd"
-    [systemd-container]="systemd systemd systemd systemd"
+    [systemd-container]="SKIP systemd systemd systemd"
     [systemd-journal-remote]="systemd systemd systemd systemd"
     [udev]="udev udev udev udev"
     [eudev]="eudev eudev eudev SKIP"
@@ -338,7 +329,6 @@ declare -gA PKG_MAP=(
     [unicode-data]="unicode-data unicode-data unicode-data unicode-data"
     
     # miscellaneous utilities
-    [htop]="htop htop htop htop"
     [cowsay]="cowsay cowsay cowsay cowsay"
     [figlet]="figlet figlet figlet figlet"
     [fortune]="fortune-mod fortune-mod fortune-mod fortune-mod"
@@ -385,45 +375,18 @@ map_packages() {
 ###############################################################################
 # PACKAGE MANAGER OPERATIONS
 ###############################################################################
-
-pm_install() {
-    # pm_install <pkg1> [pkg2] [...]
-    # Install packages using detected PM
-    [ -n "$PM" ] || return 1
-    case "$PM" in
-        apt)    apt-get install -y --no-install-recommends "$@" ;;
-        apk)    apk add --no-progress "$@" ;;
-        pacman) pacman -Sy --noconfirm --needed "$@" ;;
-        dnf)    dnf install -y "$@" ;;
-        *)      return 1 ;;
-    esac
-}
-
-pm_remove() {
-    # pm_remove <pkg1> [pkg2] [...]
-    # Remove packages using detected PM
-    [ -n "$PM" ] || return 1
-    case "$PM" in
-        apt)    apt-get remove -y "$@" && apt-get autoremove -y ;;
-        apk)    apk del "$@" ;;
-        pacman) pacman -R --noconfirm "$@" 2>/dev/null || pacman -Rdd --noconfirm "$@" ;;
-        dnf)    dnf remove -y "$@" && dnf autoremove -y ;;
-        *)      return 1 ;;
-    esac
-}
-
-pm_update() {
-    # pm_update
-    # Update package lists using detected PM
-    [ -n "$PM" ] || return 1
-    case "$PM" in
-        apt)    apt-get update ;;
-        apk)    apk update ;;
-        pacman) pacman -Sy ;;
-        dnf)    dnf check-update ;;
-        *)      return 1 ;;
-    esac
-}
+#
+# pm_install / pm_remove / pm_update are defined in src/features/sysconfig.sh.
+#
+# They used to be defined here as well. Because features are sourced after
+# core, the sysconfig.sh definitions won in the main shell -- but this file
+# also ran `export -f pm_install pm_remove pm_update`, so every child shell
+# (fm_as_user's `bash -lc`, `su - "$u" -c`, ...) inherited *these* weaker
+# copies instead: no validate_packages, no `--` argument terminator, only
+# apt/apk/pacman/dnf handled, and `pacman -Sy` for installs, which is the
+# partial-upgrade pattern that breaks Arch systems.
+#
+# Keeping one definition removes the divergence.
 
 ###############################################################################
 # UTILITY FUNCTIONS
@@ -443,12 +406,21 @@ ask_yesno() {
         n|no)  prompt+=" [y/N] " ;;
         *)     prompt+=" [y/n] " ;;
     esac
-    read -rp "$prompt" answer
-    case "$answer" in
-        [yY]*) return 0 ;;
-        [nN]*) return 1 ;;
-        *)     ask_yesno "$1" "$default" ;;
-    esac
+    local attempt=0
+    while [ "$attempt" -lt 10 ]; do
+        attempt=$((attempt + 1))
+        # A failed read means EOF/non-interactive stdin. Recursing here spun
+        # forever; fall back to the caller's stated default instead.
+        if ! read -rp "$prompt" answer; then
+            case "$default" in y|yes) return 0 ;; *) return 1 ;; esac
+        fi
+        case "$answer" in
+            [yY]*) return 0 ;;
+            [nN]*) return 1 ;;
+            "")    case "$default" in y|yes) return 0 ;; n|no) return 1 ;; esac ;;
+        esac
+    done
+    case "$default" in y|yes) return 0 ;; *) return 1 ;; esac
 }
 
 # Check if running in a terminal
@@ -456,4 +428,8 @@ is_terminal() {
     [ -t 0 ]
 }
 
-export -f map_packages pm_install pm_remove pm_update cmd_exists ask_yesno is_terminal
+# map_packages is deliberately NOT exported: it reads PKG_MAP, and bash cannot
+# export associative arrays. A child shell would see an empty map and pass
+# every package name through unmapped, silently producing wrong package names
+# on Alpine/Arch/Fedora/Void. Call it from the main shell only.
+export -f cmd_exists ask_yesno is_terminal
