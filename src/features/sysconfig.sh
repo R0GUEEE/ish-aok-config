@@ -1958,7 +1958,24 @@ Status  : $stat" \
             details "Package metadata" files "Installed files" hold "Hold / unhold version" \
             verify "Verify package integrity" back "Back") || return 0
         case "$c" in
-            install) [ "$stat" = installed ] && tui_msg "Installed" "$name is already installed." || pm_install "$native" ;;
+            install)
+                if [ "$stat" = installed ]; then
+                    tui_msg "Installed" "$name is already installed."
+                else
+                    case "$key" in
+                        docker.io|docker|docker-ce) menu_docker_install ;;
+                        nodejs|node)               menu_node_install ;;
+                        ripgrep)                   menu_ripgrep_install ;;
+                        neovim)                    menu_neovim_install ;;
+                        micro)                     menu_micro_install ;;
+                        fzf)                       menu_fzf_install ;;
+                        starship)                  menu_starship_install ;;
+                        fish)                      menu_fish_install ;;
+                        zsh)                       menu_zsh_install ;;
+                        nushell|nu)                menu_nushell_install ;;
+                        *)                         pm_install "$native" ;;
+                    esac
+                fi ;;
             remove) [ "$stat" = available ] && tui_msg "Not installed" "$name is not installed." || { tui_yesno "Remove" "Remove $name ($native)?" && pm_remove "$native"; } ;;
             reinstall) [ "$stat" = installed ] && pkg_reinstall "$native" || tui_msg "Not installed" "$name must be installed first." ;;
             details) pkg_show_info "$native" > ${SYSTUI_TMP}/pkg 2>&1; [ -s ${SYSTUI_TMP}/pkg ] || echo "No repository metadata found." > ${SYSTUI_TMP}/pkg; tui_text "$name — metadata" ${SYSTUI_TMP}/pkg ;;
@@ -3965,8 +3982,8 @@ menu_shell_hierarchy() {
         sh_=$(tui_radio "Shell Managers — $u" "SPACE selects a shell:" bash "Bash $(st bash)" "$([ "$cur_shell" = bash ] && echo on || echo off)" zsh "Zsh $(st zsh)" "$([ "$cur_shell" = zsh ] && echo on || echo off)" fish "Fish $(st fish)" "$([ "$cur_shell" = fish ] && echo on || echo off)" nu "Nushell $(st nu)" "$([ "$cur_shell" = nu ] && echo on || echo off)" tmux "tmux plugins" off) || return 0
         case "$sh_" in
             bash) m=$(tui_menu "Bash Manager" "Install, remove or configure:" install "Install/reinstall Bash" uninstall "Uninstall Bash" omb "oh-my-bash" bashit "Bash-it" blesh "ble.sh" back "Back") || continue; case "$m" in install) pm_install bash;; uninstall) safe_remove_shell bash;; omb) menu_omb "$u" "$home_dir";; bashit) menu_bashit "$u" "$home_dir";; blesh) menu_blesh "$u" "$home_dir";; esac;;
-            zsh) m=$(tui_menu "Zsh Manager" "Install, remove or configure:" install "Install/reinstall Zsh" uninstall "Uninstall Zsh" omz "oh-my-zsh" zinit "zinit" back "Back") || continue; case "$m" in install) pm_install zsh;; uninstall) safe_remove_shell zsh;; omz) menu_omz "$u" "$home_dir";; zinit) menu_zinit "$u" "$home_dir";; esac;;
-            fish) m=$(tui_menu "Fish Manager" "Install, remove or configure:" install "Install/reinstall Fish" uninstall "Uninstall Fish" fisher "Fisher" back "Back") || continue; case "$m" in install) pm_install fish;; uninstall) safe_remove_shell fish;; fisher) menu_fisher "$u" "$home_dir";; esac;;
+            zsh) m=$(tui_menu "Zsh Manager" "Install, remove or configure:" install "Install/reinstall Zsh" uninstall "Uninstall Zsh" omz "oh-my-zsh" zinit "zinit" back "Back") || continue; case "$m" in install) menu_zsh_install;; uninstall) safe_remove_shell zsh;; omz) menu_omz "$u" "$home_dir";; zinit) menu_zinit "$u" "$home_dir";; esac;;
+            fish) m=$(tui_menu "Fish Manager" "Install, remove or configure:" install "Install/reinstall Fish" uninstall "Uninstall Fish" fisher "Fisher" back "Back") || continue; case "$m" in install) menu_fish_install;; uninstall) safe_remove_shell fish;; fisher) menu_fisher "$u" "$home_dir";; esac;;
             nu) menu_nushell "$u" "$home_dir" ;;
             tmux) menu_tpm "$u" "$home_dir";;
         esac
@@ -4344,6 +4361,362 @@ plugin_show_status() {
     tui_text "$name status" ${SYSTUI_TMP}/plugin-status
 }
 
+# ---- Per-package multi-method install helpers --------------------------------
+
+# -- Starship --
+menu_starship_install() {
+    local method choices=()
+    choices=(script "Official install script (starship.rs/install.sh)")
+    command -v cargo >/dev/null 2>&1 && choices+=(cargo "Cargo (cargo install starship --locked)")
+    command -v brew  >/dev/null 2>&1 && choices+=(brew  "Homebrew (brew install starship)")
+    choices+=(pm "Package manager (${PM:-pm} install starship)" back "Back")
+    method=$(tui_menu "Install Starship" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        script)
+            run_cmd "Install Starship via install.sh" bash -c \
+                'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-starship.XXXXXX") || exit 1
+                 trap '"'"'rm -f "$tmp_script"'"'"' EXIT
+                 curl -fL --proto "=https" --tlsv1.2 https://starship.rs/install.sh -o "$tmp_script" && chmod 700 "$tmp_script" && sh "$tmp_script" -y' ;;
+        cargo) run_cmd "Install Starship via Cargo" cargo install starship --locked ;;
+        brew)  run_cmd "Install Starship via Homebrew" brew install starship ;;
+        pm)    pm_install starship ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- Zsh --
+menu_zsh_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install zsh)")
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew (brew install zsh)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install Zsh" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)   pm_install zsh ;;
+        brew) run_cmd "Install Zsh via Homebrew" brew install zsh ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- Fish --
+menu_fish_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install fish)")
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew (brew install fish)")
+    case "$PM" in
+        apt) choices+=(ppa "fish-shell PPA (ppa:fish-shell/release-4, Ubuntu/Debian)") ;;
+    esac
+    choices+=(back "Back")
+    method=$(tui_menu "Install Fish" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)   pm_install fish ;;
+        brew) run_cmd "Install Fish via Homebrew" brew install fish ;;
+        ppa)
+            command -v add-apt-repository >/dev/null 2>&1 || pm_install software-properties-common
+            run_cmd "Add fish-shell PPA" add-apt-repository -y ppa:fish-shell/release-4
+            run_cmd "apt-get update" apt-get update -qq
+            run_cmd "Install Fish from PPA" apt-get install -y fish ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- Neovim --
+neovim_github_install() {
+    local arch arch_str api url ver tmp bin
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) arch_str="x86_64" ;;
+        aarch64|arm64) arch_str="aarch64" ;;
+        *) tui_msg "Unsupported architecture" "No pre-built Neovim binary for: $arch"; return 1 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v tar  >/dev/null 2>&1 || pm_install tar
+    api=$(curl -fsSL https://api.github.com/repos/neovim/neovim/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest Neovim release."; return 1;
+    }
+    ver=$(printf '%s\n' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/nvim-linux-${arch_str}\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No asset" "No ${arch_str} tarball found for Neovim ${ver}."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    run_cmd "Download Neovim $ver" curl -fsSL "$url" -o "$tmp/nvim.tar.gz"
+    run_cmd "Extract Neovim $ver" tar -xzf "$tmp/nvim.tar.gz" -C "$tmp"
+    bin=$(find "$tmp" -name "nvim" -type f | head -n1)
+    [ -n "$bin" ] || { tui_msg "Extraction failed" "nvim binary not found in archive."; rm -rf "$tmp"; return 1; }
+    run_cmd "Install Neovim $ver to /usr/local/bin" install -m 0755 "$bin" /usr/local/bin/nvim
+    rm -rf "$tmp"
+    tui_msg "Neovim installed" "nvim $ver → /usr/local/bin/nvim"
+}
+
+menu_neovim_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install neovim)")
+    choices+=(github "GitHub release binary (latest stable, auto-detect arch)")
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew (brew install neovim)")
+    command -v snap >/dev/null 2>&1 && choices+=(snap "Snap (snap install nvim --classic)")
+    case "$PM" in
+        apt) choices+=(ppa "neovim-ppa/stable PPA (Ubuntu — more recent builds)") ;;
+    esac
+    choices+=(back "Back")
+    method=$(tui_menu "Install Neovim" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)     pm_install neovim ;;
+        github) neovim_github_install ;;
+        brew)   run_cmd "Install Neovim via Homebrew" brew install neovim ;;
+        snap)   run_cmd "Install Neovim via Snap" snap install nvim --classic ;;
+        ppa)
+            command -v add-apt-repository >/dev/null 2>&1 || pm_install software-properties-common
+            run_cmd "Add neovim-ppa/stable" add-apt-repository -y ppa:neovim-ppa/stable
+            run_cmd "apt-get update" apt-get update -qq
+            run_cmd "Install Neovim from PPA" apt-get install -y neovim ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- micro --
+micro_github_install() {
+    local arch arch_str api url ver tmp bin
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) arch_str="linux64" ;;
+        aarch64|arm64) arch_str="linux-arm64" ;;
+        armv7*)        arch_str="linux-arm" ;;
+        *) tui_msg "Unsupported architecture" "No official micro binary for: $arch"; return 1 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v tar  >/dev/null 2>&1 || pm_install tar
+    api=$(curl -fsSL https://api.github.com/repos/zyedidia/micro/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest micro release."; return 1;
+    }
+    ver=$(printf '%s\n' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/micro-[^/]*-${arch_str}\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No asset" "No ${arch_str} tar.gz found for micro ${ver}."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    run_cmd "Download micro $ver" curl -fsSL "$url" -o "$tmp/micro.tar.gz"
+    run_cmd "Extract micro $ver" tar -xzf "$tmp/micro.tar.gz" -C "$tmp"
+    bin=$(find "$tmp" -name "micro" -type f | head -n1)
+    [ -n "$bin" ] || { tui_msg "Extraction failed" "micro binary not found in archive."; rm -rf "$tmp"; return 1; }
+    run_cmd "Install micro $ver to /usr/local/bin" install -m 0755 "$bin" /usr/local/bin/micro
+    rm -rf "$tmp"
+    tui_msg "micro installed" "micro $ver → /usr/local/bin/micro"
+}
+
+menu_micro_install() {
+    local method choices=()
+    choices=(pm     "Package manager (${PM:-pm} install micro)")
+    choices+=(script "Official install script (getmic.ro)")
+    choices+=(github "GitHub release binary (auto-detect arch)")
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew (brew install micro)")
+    command -v snap >/dev/null 2>&1 && choices+=(snap "Snap (snap install micro --classic)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install micro" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)     pm_install micro ;;
+        script)
+            command -v curl >/dev/null 2>&1 || pm_install curl
+            run_cmd "Install micro via getmic.ro" bash -c \
+                'tmp_dir=$(mktemp -d) && cd "$tmp_dir" && curl https://getmic.ro | bash && install -m 0755 micro /usr/local/bin/micro; rm -rf "$tmp_dir"' ;;
+        github) micro_github_install ;;
+        brew)   run_cmd "Install micro via Homebrew" brew install micro ;;
+        snap)   run_cmd "Install micro via Snap" snap install micro --classic ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- fzf --
+fzf_github_install() {
+    local arch arch_str api url ver tmp bin
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)  arch_str="linux_amd64" ;;
+        aarch64|arm64) arch_str="linux_arm64" ;;
+        armv7*)        arch_str="linux_armv7" ;;
+        *) tui_msg "Unsupported architecture" "No official fzf binary for: $arch"; return 1 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v tar  >/dev/null 2>&1 || pm_install tar
+    api=$(curl -fsSL https://api.github.com/repos/junegunn/fzf/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest fzf release."; return 1;
+    }
+    ver=$(printf '%s\n' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/fzf-[^/]*-${arch_str}\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No asset" "No ${arch_str} tar.gz found for fzf ${ver}."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    run_cmd "Download fzf $ver" curl -fsSL "$url" -o "$tmp/fzf.tar.gz"
+    run_cmd "Extract fzf $ver" tar -xzf "$tmp/fzf.tar.gz" -C "$tmp"
+    [ -f "$tmp/fzf" ] || { tui_msg "Extraction failed" "fzf binary not found in archive."; rm -rf "$tmp"; return 1; }
+    run_cmd "Install fzf $ver to /usr/local/bin" install -m 0755 "$tmp/fzf" /usr/local/bin/fzf
+    rm -rf "$tmp"
+    tui_msg "fzf installed" "fzf $ver → /usr/local/bin/fzf"
+}
+
+menu_fzf_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install fzf)")
+    command -v git >/dev/null 2>&1 && choices+=(git "git clone ~/.fzf (official — installs shell key bindings)")
+    choices+=(github "GitHub release binary (auto-detect arch)")
+    command -v brew  >/dev/null 2>&1 && choices+=(brew  "Homebrew (brew install fzf)")
+    command -v cargo >/dev/null 2>&1 && choices+=(cargo "Cargo (cargo install fzf)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install fzf" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm) pm_install fzf ;;
+        git)
+            local u; u=$(tui_input "User" "Install fzf git clone for which user?" "${SUDO_USER:-root}") || return 0
+            run_cmd "Clone fzf for $u" su - "$u" -c \
+                'git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf 2>/dev/null || (cd ~/.fzf && git pull)'
+            run_cmd "Run fzf install for $u" su - "$u" -c '~/.fzf/install --all' ;;
+        github) fzf_github_install ;;
+        brew)   run_cmd "Install fzf via Homebrew" brew install fzf ;;
+        cargo)  run_cmd "Install fzf via Cargo" cargo install fzf ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- Docker --
+menu_docker_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install docker.io)")
+    choices+=(script "Docker convenience script (get.docker.com)")
+    case "$PM" in
+        apt)     choices+=(repo-apt "Docker CE APT repo (download.docker.com)") ;;
+        dnf|yum) choices+=(repo-rpm "Docker CE YUM/DNF repo (download.docker.com)") ;;
+    esac
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew Cask (brew install --cask docker)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install Docker" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm) pm_install docker.io ;;
+        script)
+            command -v curl >/dev/null 2>&1 || pm_install curl
+            run_cmd "Install Docker via get.docker.com" bash -c \
+                'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-docker.XXXXXX") || exit 1
+                 trap '"'"'rm -f "$tmp_script"'"'"' EXIT
+                 curl -fsSL https://get.docker.com -o "$tmp_script" && chmod 700 "$tmp_script" && sh "$tmp_script"' ;;
+        repo-apt)
+            command -v curl >/dev/null 2>&1 || pm_install curl
+            command -v gpg  >/dev/null 2>&1 || pm_install gnupg
+            run_cmd "Add Docker GPG key" bash -c \
+                'mkdir -p /etc/apt/keyrings
+                 curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release; echo "$ID")/gpg" \
+                   | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                 chmod a+r /etc/apt/keyrings/docker.gpg'
+            run_cmd "Add Docker APT repo" bash -c \
+                '. /etc/os-release
+                 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                   https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+                   > /etc/apt/sources.list.d/docker.list'
+            run_cmd "Update APT + install Docker CE" bash -c \
+                'apt-get update -qq && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin' ;;
+        repo-rpm)
+            run_cmd "Add Docker CE YUM/DNF repo" dnf config-manager --add-repo \
+                https://download.docker.com/linux/fedora/docker-ce.repo
+            run_cmd "Install Docker CE via DNF" dnf install -y \
+                docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ;;
+        brew) run_cmd "Install Docker Desktop via Homebrew Cask" brew install --cask docker ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- Node.js --
+menu_node_install() {
+    local method u choices=()
+    choices=(pm "Package manager (${PM:-pm} install nodejs)")
+    choices+=(nvm "nvm — Node Version Manager (installs latest LTS per-user)")
+    choices+=(fnm "fnm — Fast Node Manager (Rust-based, per-user)")
+    case "$PM" in
+        apt) choices+=(nodesource "NodeSource APT repo — current LTS (deb.nodesource.com)") ;;
+    esac
+    command -v brew >/dev/null 2>&1 && choices+=(brew "Homebrew (brew install node)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install Node.js" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm) pm_install nodejs ;;
+        nvm)
+            u=$(tui_input "User" "Install nvm + LTS Node for which user?" "${SUDO_USER:-root}") || return 0
+            run_cmd "Install nvm for $u" su - "$u" -c \
+                'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-nvm.XXXXXX") || exit 1
+                 trap '"'"'rm -f "$tmp_script"'"'"' EXIT
+                 curl -fsSL --proto "=https" --tlsv1.2 \
+                   https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh \
+                   -o "$tmp_script" && bash "$tmp_script"'
+            run_cmd "Install Node LTS via nvm for $u" su - "$u" -c \
+                'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+                 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+                 nvm install --lts' ;;
+        fnm)
+            u=$(tui_input "User" "Install fnm + LTS Node for which user?" "${SUDO_USER:-root}") || return 0
+            run_cmd "Install fnm for $u" su - "$u" -c \
+                'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-fnm.XXXXXX") || exit 1
+                 trap '"'"'rm -f "$tmp_script"'"'"' EXIT
+                 curl -fsSL https://fnm.vercel.app/install -o "$tmp_script" && bash "$tmp_script"'
+            run_cmd "Install Node LTS via fnm for $u" su - "$u" -c \
+                'export PATH="$HOME/.local/share/fnm:$PATH"
+                 eval "$(fnm env --use-on-cd 2>/dev/null)"
+                 fnm install --lts' ;;
+        nodesource)
+            command -v curl >/dev/null 2>&1 || pm_install curl
+            run_cmd "Add NodeSource LTS APT repo" bash -c \
+                'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-nodesource.XXXXXX") || exit 1
+                 trap '"'"'rm -f "$tmp_script"'"'"' EXIT
+                 curl -fsSL https://deb.nodesource.com/setup_lts.x -o "$tmp_script" && bash "$tmp_script"'
+            run_cmd "Install Node.js LTS from NodeSource" apt-get install -y nodejs ;;
+        brew) run_cmd "Install Node.js via Homebrew" brew install node ;;
+        back) return 0 ;;
+    esac
+}
+
+# -- ripgrep --
+rg_github_install() {
+    local arch arch_str libc api url ver tmp bin
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)  arch_str="x86_64-unknown-linux" ;;
+        aarch64|arm64) arch_str="aarch64-unknown-linux" ;;
+        *) tui_msg "Unsupported architecture" "No official ripgrep binary for: $arch"; return 1 ;;
+    esac
+    libc="musl"
+    command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl || libc="gnu"
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v tar  >/dev/null 2>&1 || pm_install tar
+    api=$(curl -fsSL https://api.github.com/repos/BurntSushi/ripgrep/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest ripgrep release."; return 1;
+    }
+    ver=$(printf '%s\n' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/${arch_str}-${libc}\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/${arch_str}-(gnu|musl)\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No asset" "No ${arch_str} tar.gz for ripgrep ${ver}."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    run_cmd "Download ripgrep $ver" curl -fsSL "$url" -o "$tmp/rg.tar.gz"
+    run_cmd "Extract ripgrep $ver" tar -xzf "$tmp/rg.tar.gz" -C "$tmp"
+    bin=$(find "$tmp" -name "rg" -type f | head -n1)
+    [ -n "$bin" ] || { tui_msg "Extraction failed" "rg binary not found in archive."; rm -rf "$tmp"; return 1; }
+    run_cmd "Install ripgrep $ver to /usr/local/bin" install -m 0755 "$bin" /usr/local/bin/rg
+    rm -rf "$tmp"
+    tui_msg "ripgrep installed" "rg $ver → /usr/local/bin/rg"
+}
+
+menu_ripgrep_install() {
+    local method choices=()
+    choices=(pm "Package manager (${PM:-pm} install ripgrep)")
+    choices+=(github "GitHub release binary (auto-detect arch + libc)")
+    command -v cargo >/dev/null 2>&1 && choices+=(cargo "Cargo (cargo install ripgrep)")
+    command -v brew  >/dev/null 2>&1 && choices+=(brew  "Homebrew (brew install ripgrep)")
+    choices+=(back "Back")
+    method=$(tui_menu "Install ripgrep" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)     pm_install ripgrep ;;
+        github) rg_github_install ;;
+        cargo)  run_cmd "Install ripgrep via Cargo" cargo install ripgrep ;;
+        brew)   run_cmd "Install ripgrep via Homebrew" brew install ripgrep ;;
+        back) return 0 ;;
+    esac
+}
+
 menu_plugin_starship() {
     local u="$1" home_dir="$2" c shells sh rc preset
     while true; do
@@ -4357,7 +4730,7 @@ menu_plugin_starship() {
             status "Show installation and shell integration status" \
             back "Back") || return 0
         case "$c" in
-            install) command -v starship >/dev/null || run_cmd "Installing Starship" bash -c 'tmp_script=$(mktemp "${TMPDIR:-/tmp}/systui-starship.XXXXXX") || exit 1; trap '"'"'rm -f "$tmp_script"'"'"' EXIT; curl -fL --proto "=https" --tlsv1.2 https://starship.rs/install.sh -o "$tmp_script" && chmod 700 "$tmp_script" && sh "$tmp_script" -y' ;;
+            install) menu_starship_install ;;
             integrate)
                 shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
                 for sh in $shells; do
@@ -4415,7 +4788,7 @@ menu_plugin_fzf() {
             disable "Remove fzf configuration" remove "Remove fzf package" \
             status "Show status" back "Back") || return 0
         case "$c" in
-            install) pm_install fzf ;;
+            install) menu_fzf_install ;;
             integrate)
                 shells=$(plugin_choose_shells) || continue; shells=${shells//\"/}
                 for sh in $shells; do rc=$(plugin_rc_file "$sh" "$home_dir"); case "$sh" in
@@ -4981,9 +5354,15 @@ menu_editors() {
                     emacs "Emacs $(st emacs)" off) || continue
                 s=${s//\"/}
                 [ -z "${s// }" ] && continue
-                local mapped; mapped=$(local_pkg_map $s)
-                show_warnings
-                if [ -n "${mapped// }" ]; then local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"; fi ;;
+                # Dispatch to dedicated install menus for neovim and micro
+                local bulk_s="$s"
+                case " $bulk_s " in *" neovim "*) menu_neovim_install; bulk_s="${bulk_s/neovim/}"; bulk_s="${bulk_s//  / }"; bulk_s="${bulk_s# }"; bulk_s="${bulk_s% }" ;; esac
+                case " $bulk_s " in *" micro "*)  menu_micro_install;  bulk_s="${bulk_s/micro/}";  bulk_s="${bulk_s//  / }"; bulk_s="${bulk_s# }"; bulk_s="${bulk_s% }" ;; esac
+                if [ -n "${bulk_s// }" ]; then
+                    local mapped; mapped=$(local_pkg_map $bulk_s)
+                    show_warnings
+                    if [ -n "${mapped// }" ]; then local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"; fi
+                fi ;;
             nanocfg)
                 touch /etc/nanorc
                 local opts

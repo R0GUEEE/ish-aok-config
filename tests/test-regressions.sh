@@ -68,6 +68,70 @@ check "nushell cargo install method present" contains \
 check "nushell gemfury apt method present" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "apt.fury.io/nushell"
 
+# ---- Per-package multi-method install helpers --------------------------------
+check "starship install menu exists" function_exists menu_starship_install
+check "starship install.sh method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "starship.rs/install.sh"
+check "starship cargo method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "cargo install starship --locked"
+
+check "zsh install menu exists" function_exists menu_zsh_install
+
+check "fish install menu exists" function_exists menu_fish_install
+check "fish PPA method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "ppa:fish-shell/release-4"
+
+check "neovim install menu exists" function_exists menu_neovim_install
+check "neovim github install helper exists" function_exists neovim_github_install
+check "neovim github targets neovim releases api" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "api.github.com/repos/neovim/neovim/releases/latest"
+check "neovim PPA method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "ppa:neovim-ppa/stable"
+
+check "micro install menu exists" function_exists menu_micro_install
+check "micro github install helper exists" function_exists micro_github_install
+check "micro github targets zyedidia/micro releases api" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "api.github.com/repos/zyedidia/micro/releases/latest"
+check "micro getmicro script method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "getmic.ro"
+
+check "fzf install menu exists" function_exists menu_fzf_install
+check "fzf github install helper exists" function_exists fzf_github_install
+check "fzf github targets junegunn/fzf releases api" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "api.github.com/repos/junegunn/fzf/releases/latest"
+check "fzf git-clone method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "github.com/junegunn/fzf.git"
+
+check "docker install menu exists" function_exists menu_docker_install
+check "docker convenience script method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "get.docker.com"
+check "docker CE APT repo method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "download.docker.com/linux"
+
+check "node install menu exists" function_exists menu_node_install
+check "node nvm method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "nvm-sh/nvm"
+check "node fnm method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "fnm.vercel.app/install"
+check "node nodesource method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "deb.nodesource.com/setup_lts.x"
+
+check "ripgrep install menu exists" function_exists menu_ripgrep_install
+check "ripgrep github install helper exists" function_exists rg_github_install
+check "ripgrep github targets BurntSushi/ripgrep releases api" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "api.github.com/repos/BurntSushi/ripgrep/releases/latest"
+
+check "app_page dispatches to per-package install menus" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "menu_docker_install"
+check "starship menu wired into plugin_starship" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "install) menu_starship_install"
+check "fzf menu wired into plugin_fzf" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "install) menu_fzf_install"
+check "fish menu wired into shell hierarchy" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "install) menu_fish_install"
+check "zsh menu wired into shell hierarchy" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "install) menu_zsh_install"
+
 # Exercise the rootfs package helper without entering a real chroot.
 root_target="$tmpdir/rootfs"
 mkdir -p "$root_target/tmp" "$root_target/usr/sbin"
