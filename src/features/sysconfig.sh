@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # PART 2 — SYSTEM CONFIGURATION (current system)
 ###############################################################################
 
@@ -742,8 +743,9 @@ repo_sources_listd() {
                     local f
                     shopt -s nullglob
                     for f in /etc/apt/sources.list.d/*; do
-                        local name=$(basename "$f")
-                        local size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
+                        local name size
+                        name=$(basename "$f")
+                        size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
                         case "$f" in
                             *.disabled)  echo "❌ DISABLED: $name ($size bytes)" ;;
                             *)          echo "✓ ENABLED:  $name ($size bytes)" ;;
@@ -2011,7 +2013,8 @@ catalogue_bulk_manage() {
     c=$(tui_menu "Bulk package actions" "Manage package sets:" export "Export installed package list" import "Install packages from a list" remove "Bulk remove packages" back "Back") || return 0
     case "$c" in
         export)
-            local out="${HOME}/systui-installed-${PM}-$(date +%Y%m%d-%H%M%S).txt"
+            local out
+            out="${HOME}/systui-installed-${PM}-$(date +%Y%m%d-%H%M%S).txt"
             case "$PM" in apt) dpkg-query -W -f='${binary:Package}\n' ;; apk) apk info ;; pacman) pacman -Qq ;; dnf) rpm -qa --qf '%{NAME}\n' ;; esac | sort -u > "$out"
             tui_msg "Export complete" "Saved package list to:\n$out" ;;
         import)
@@ -6586,7 +6589,7 @@ fm_plugins_install() {
 }
 
 fm_plugins_remove() {
-    local fm="$1" u h tag desc repo dest state selected item
+    local fm="$1" u h tag desc repo dest state selected item target
     u=$(fm_target_user) || return 0; h=$(fm_home "$u")
     local args=()
     while IFS='|' read -r tag desc repo dest; do
@@ -6596,7 +6599,14 @@ fm_plugins_remove() {
     [ ${#args[@]} -gt 0 ] || { tui_msg "Plugins" "No managed $fm add-ons are installed for $u."; return 0; }
     selected=$(tui_check "Remove $fm plugins" "SPACE selects add-ons to remove:" "${args[@]}") || return 0
     for item in $selected; do
-        while IFS='|' read -r tag desc repo dest; do [ "$tag" = "$item" ] && rm -rf "$h/$dest"; done < <(fm_plugin_catalog "$fm")
+        while IFS='|' read -r tag desc repo dest; do
+            [ "$tag" = "$item" ] || continue
+            target="$h/$dest"
+            case "$target" in
+                "$h/.config/$fm/"*) rm -rf -- "$target" ;;
+                *) warn "Refused unsafe plugin removal path: $target" ;;
+            esac
+        done < <(fm_plugin_catalog "$fm")
     done
     tui_msg "Plugins" "Selected add-ons removed. Manual configuration references may still need removal."
 }
@@ -6686,7 +6696,6 @@ menu_file_managers() {
 # Source: https://github.com/luong-komorebi/Awesome-Linux-Software
 # The upstream list is intentionally synchronized at runtime so every listed
 # application remains available without embedding a stale, hand-maintained copy.
-AWESOME_LINUX_REPO_URL="https://github.com/luong-komorebi/Awesome-Linux-Software"
 AWESOME_LINUX_RAW_URL="https://raw.githubusercontent.com/luong-komorebi/Awesome-Linux-Software/master/README.md"
 AWESOME_LINUX_CATALOG_VERSION=3
 
@@ -6699,7 +6708,9 @@ awesome_linux_cache_dir() {
 }
 
 awesome_linux_download() { # <destination>
-    local dst="$1" tmp="${dst}.tmp.$$"
+    local dst tmp
+    dst="$1"
+    tmp="${dst}.tmp.$$"
     mkdir -p "$(dirname "$dst")" || return 1
     if command -v curl >/dev/null 2>&1; then
         curl -fL --retry 3 --connect-timeout 15 --max-time 120 \
@@ -6715,7 +6726,10 @@ awesome_linux_download() { # <destination>
 }
 
 awesome_linux_parse() { # <README> <catalog TSV>
-    local src="$1" out="$2" tmp="${out}.tmp.$$"
+    local src out tmp
+    src="$1"
+    out="$2"
+    tmp="${out}.tmp.$$"
     # Output: id<TAB>category<TAB>name<TAB>homepage<TAB>source<TAB>description
     awk '
     function clean(x) {
@@ -7155,14 +7169,14 @@ install_dependencies() {
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $deps
     elif command -v apk >/dev/null 2>&1; then
-        apk_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++/build-base/g; s/gcc/build-base/g')
-        apk add --no-cache $apk_deps
+        apk_deps=\$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++/build-base/g; s/gcc/build-base/g')
+        apk add --no-cache \$apk_deps
     elif command -v pacman >/dev/null 2>&1; then
-        pacman_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++//g')
-        pacman -S --needed --noconfirm $pacman_deps
+        pacman_deps=\$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja/g; s/golang-go/go/g; s/g++//g')
+        pacman -S --needed --noconfirm \$pacman_deps
     elif command -v dnf >/dev/null 2>&1; then
-        dnf_deps=$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja-build/g; s/golang-go/golang/g')
-        dnf install -y --setopt=install_weak_deps=False $dnf_deps
+        dnf_deps=\$(printf '%s\n' "$deps" | sed 's/ninja-build/ninja-build/g; s/golang-go/golang/g')
+        dnf install -y --setopt=install_weak_deps=False \$dnf_deps
     elif command -v zypper >/dev/null 2>&1; then
         zypper --non-interactive install --no-recommends $deps
     else
