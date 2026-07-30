@@ -57,6 +57,16 @@ check "nushell is exposed in shell config choices" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "config.nu — Nushell startup config"
 check "nushell plugin manager is exposed" contains \
     "$PROJECT_DIR/src/features/sysconfig.sh" "Nushell plugins —"
+check "nushell multi-method install menu exists" function_exists menu_nushell_install
+check "nushell github binary install helper exists" function_exists nu_github_install
+check "nushell github install targets nushell releases api" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "api.github.com/repos/nushell/nushell/releases/latest"
+check "nushell homebrew install method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "brew install nushell"
+check "nushell cargo install method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "cargo install nu --locked"
+check "nushell gemfury apt method present" contains \
+    "$PROJECT_DIR/src/features/sysconfig.sh" "apt.fury.io/nushell"
 
 # Exercise the rootfs package helper without entering a real chroot.
 root_target="$tmpdir/rootfs"

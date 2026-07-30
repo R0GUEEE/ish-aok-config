@@ -3758,18 +3758,99 @@ menu_nushell_plugins() { # <user> <home>
     done
 }
 
+nu_github_install() {
+    local arch arch_str libc api url ver tmp bin
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64)        arch_str="x86_64" ;;
+        aarch64|arm64) arch_str="aarch64" ;;
+        armv7*)        arch_str="armv7" ;;
+        riscv64)       arch_str="riscv64" ;;
+        *) tui_msg "Unsupported architecture" "No official Nushell binary for: $arch"; return 1 ;;
+    esac
+    libc="gnu"
+    command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl && libc="musl"
+    command -v curl >/dev/null 2>&1 || pm_install curl
+    command -v tar  >/dev/null 2>&1 || pm_install tar
+    api=$(curl -fsSL https://api.github.com/repos/nushell/nushell/releases/latest) || {
+        tui_msg "Download failed" "Could not query the latest Nushell GitHub release."; return 1;
+    }
+    ver=$(printf '%s\n' "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+    url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/${arch_str}-unknown-linux-${libc}\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || url=$(printf '%s\n' "$api" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -E "/${arch_str}-unknown-linux-(gnu|musl)\.tar\.gz$" | head -n1)
+    [ -n "$url" ] || { tui_msg "No compatible asset" "No ${arch_str} Linux tar.gz found for Nushell ${ver}."; return 1; }
+    tmp=$(mktemp -d) || return 1
+    run_cmd "Download Nushell $ver" curl -fsSL "$url" -o "$tmp/nu.tar.gz" && \
+    run_cmd "Extract Nushell $ver"  tar -xzf "$tmp/nu.tar.gz" -C "$tmp"
+    bin=$(find "$tmp" -name "nu" -type f | head -n1)
+    [ -n "$bin" ] || { tui_msg "Extraction failed" "nu binary not found in downloaded archive."; rm -rf "$tmp"; return 1; }
+    run_cmd "Install Nushell $ver to /usr/local/bin" install -m 0755 "$bin" /usr/local/bin/nu
+    rm -rf "$tmp"
+    tui_msg "Nushell installed" "nu $ver → /usr/local/bin/nu"
+}
+
+menu_nushell_install() {
+    local method
+    local choices=(pm "Package manager (${PM:-pm} install nushell)")
+    command -v brew  >/dev/null 2>&1 && choices+=(brew  "Homebrew (brew install nushell)")
+    command -v cargo >/dev/null 2>&1 && choices+=(cargo "Cargo (cargo install nu --locked)")
+    choices+=(github "GitHub release binary (auto-detect arch + libc)")
+    case "$PM" in
+        apt) choices+=(gemfury-apt "Gemfury APT repo (Debian/Ubuntu dedicated channel)") ;;
+        dnf|yum) choices+=(gemfury-rpm "Gemfury YUM/DNF repo (Fedora/Rocky dedicated channel)") ;;
+        apk) choices+=(gemfury-apk "Gemfury Alpine repo") ;;
+    esac
+    choices+=(back "Back")
+    method=$(tui_menu "Install Nushell" "Choose an installation method:" "${choices[@]}") || return 0
+    case "$method" in
+        pm)
+            case "$PM" in emerge) pm_install app-shells/nushell ;; *) pm_install nushell ;; esac ;;
+        brew)
+            run_cmd "Install Nushell via Homebrew" brew install nushell ;;
+        cargo)
+            run_cmd "Install Nushell via Cargo" cargo install nu --locked ;;
+        github)
+            nu_github_install ;;
+        gemfury-apt)
+            command -v gpg >/dev/null 2>&1 || pm_install gnupg
+            run_cmd "Add Nushell Gemfury GPG key" bash -c \
+                'wget -qO- https://apt.fury.io/nushell/gpg.key | gpg --dearmor -o /etc/apt/keyrings/fury-nushell.gpg'
+            run_cmd "Add Nushell Gemfury APT source" bash -c \
+                'echo "deb [signed-by=/etc/apt/keyrings/fury-nushell.gpg] https://apt.fury.io/nushell/ /" > /etc/apt/sources.list.d/fury-nushell.list'
+            run_cmd "Update APT + install Nushell" bash -c 'apt-get update -qq && apt-get install -y nushell' ;;
+        gemfury-rpm)
+            run_cmd "Add Nushell Gemfury YUM/DNF repo" bash -c \
+'cat > /etc/yum.repos.d/fury-nushell.repo <<EOF
+[gemfury-nushell]
+name=Gemfury Nushell Repo
+baseurl=https://yum.fury.io/nushell/
+enabled=1
+gpgcheck=0
+gpgkey=https://yum.fury.io/nushell/gpg.key
+EOF'
+            run_cmd "Install Nushell via DNF" dnf install -y nushell ;;
+        gemfury-apk)
+            run_cmd "Add Nushell Gemfury Alpine repo" bash -c \
+                'echo "https://alpine.fury.io/nushell/" >> /etc/apk/repositories && apk update'
+            run_cmd "Install Nushell via APK" apk add --allow-untrusted nushell ;;
+        back) return 0 ;;
+    esac
+}
+
 menu_nushell() { # <user> <home>
     local u="$1" home_dir="$2"
     while true; do
         local c
         c=$(tui_menu "Nushell — $u" "Install, configure and manage Nushell:" \
-            install "Install/reinstall Nushell" \
+            install "Install/reinstall Nushell (choose method)" \
             config "Edit config.nu / env.nu / login.nu" \
             plugins "Manage Nushell plugins" \
             remove "Uninstall Nushell" \
             back "Back") || return 0
         case "$c" in
-            install) case "$PM" in emerge) pm_install app-shells/nushell ;; *) pm_install nushell ;; esac ;;
+            install) menu_nushell_install ;;
             config) menu_shell_config ;;
             plugins) menu_nushell_plugins "$u" "$home_dir" ;;
             remove) case "$PM" in emerge) pm_remove app-shells/nushell ;; *) pm_remove nushell ;; esac ;;
