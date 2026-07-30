@@ -1120,14 +1120,128 @@ rootfs_package_catalog() { # distro existing-packages -> final package string
     printf '%s\n' "$selected" | xargs -n1 2>/dev/null | awk 'NF && !seen[$0]++ {printf "%s ", $0}'
 }
 
+
+menu_rootfs_bootstrap_tools() {
+    # Status helper: prints [installed] or [not installed] beside each tool.
+    bs_st() { command -v "$1" >/dev/null 2>&1 && printf '[installed]' || printf '[not installed]'; }
+
+    # Tool catalogue: tag|label|apt_pkg|pacman_pkg|dnf_pkg|apk_pkg|description
+    local TOOLS="debootstrap|debootstrap|debootstrap|debootstrap|debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
+mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap||Modern APT-based bootstrap via fakechroot
+cdebootstrap|cdebootstrap|cdebootstrap||||Compiled minimal Debian bootstrap
+multistrap|multistrap|multistrap||||Configuration-driven multi-mirror APT bootstrap
+qemu-debootstrap|qemu-debootstrap (foreign arch)|qemu-user-static||||qemu-user-static wrapper for foreign-arch bootstraps
+schroot|schroot|schroot|schroot||schroot|Managed chroot sessions with profiles
+systemd-nspawn|systemd-nspawn|systemd-container|systemd|systemd-container||Lightweight container tool (part of systemd)
+pacstrap|pacstrap|arch-install-scripts|arch-install-scripts||arch-install-scripts|pacstrap and genfstab for Arch rootfs builds
+dnf|dnf (--installroot)|dnf|dnf|dnf||Fedora/RPM rootfs bootstrap via dnf --installroot
+zypper|zypper (--root)|zypper|zypper|zypper||openSUSE/SUSE rootfs bootstrap via zypper --root
+xbps-install|xbps-install (--rootdir)|xbps-tools||xbps|xbps-tools|Void Linux rootfs bootstrap via xbps-install --rootdir
+rinse|rinse|rinse||||RPM-based distro rootfs installer
+proot|proot (unprivileged chroot)|proot|proot|proot|proot|User-space chroot using ptrace (no root required)
+fakechroot|fakechroot|fakechroot|fakechroot||fakechroot|Library shim for chroot-like behaviour without root
+fakeroot|fakeroot|fakeroot|fakeroot|fakeroot|fakeroot|Fake root environment for package building
+qemu-user-static|qemu-user-static|qemu-user-static|qemu-user-static|qemu-user-static||QEMU user-mode emulation for foreign-arch chroots
+binfmt-support|binfmt-support|binfmt-support|||binfmt-support|Kernel binfmt_misc support (needed for qemu-user-static)
+zstd|zstd (archive util)|zstd|zstd|zstd|zstd|Zstandard compression (needed for Arch bootstrap tarballs)
+xz-utils|xz-utils (archive util)|xz-utils|xz-utils|xz|xz|XZ/LZMA compression (needed for Void/Gentoo tarballs)"
+
+    while true; do
+        local c
+        c=$(tui_menu "Rootfs Bootstrap Tools" \
+            "Install and manage rootfs bootstrap utilities:" \
+            all      "Install all bootstrap tools" \
+            deb      "Install Debian/Ubuntu tools  (debootstrap, mmdebstrap, cdebootstrap, multistrap)" \
+            rpm      "Install RPM tools  (dnf --installroot, zypper --root, rinse)" \
+            arch     "Install Arch tools  (pacstrap / arch-install-scripts)" \
+            cross    "Install cross-arch tools  (qemu-user-static, binfmt-support)" \
+            chroot   "Install chroot helpers  (proot, fakechroot, fakeroot, schroot, nspawn)" \
+            archive  "Install archive tools  (zstd, xz-utils)" \
+            status   "Show status of all bootstrap tools" \
+            back     "Back") || return 0
+        case "$c" in
+            all)
+                local _batch=()
+                case "$PM" in
+                    apt)    _batch=(debootstrap mmdebstrap cdebootstrap multistrap
+                                qemu-user-static binfmt-support schroot systemd-container
+                                arch-install-scripts rinse proot fakechroot fakeroot
+                                zstd xz-utils) ;;
+                    pacman) _batch=(debootstrap mmdebstrap arch-install-scripts
+                                qemu-user-static schroot systemd proot fakechroot fakeroot
+                                zstd xz-utils) ;;
+                    dnf)    _batch=(debootstrap mmdebstrap dnf systemd-container
+                                qemu-user-static proot fakeroot zstd xz) ;;
+                    apk)    _batch=(debootstrap schroot proot fakechroot fakeroot zstd xz) ;;
+                    *)      _batch=(debootstrap) ;;
+                esac
+                run_cmd "Install all bootstrap tools" pm_install "${_batch[@]}" ;;
+            deb)
+                local _deb_batch=()
+                case "$PM" in
+                    apt)    _deb_batch=(debootstrap mmdebstrap cdebootstrap multistrap) ;;
+                    pacman) _deb_batch=(debootstrap mmdebstrap) ;;
+                    dnf)    _deb_batch=(debootstrap mmdebstrap) ;;
+                    *)      _deb_batch=(debootstrap) ;;
+                esac
+                run_cmd "Install Debian bootstrap tools" pm_install "${_deb_batch[@]}" ;;
+            rpm)
+                case "$PM" in
+                    apt)    run_cmd "Install RPM bootstrap tools" pm_install dnf zypper rinse ;;
+                    pacman) run_cmd "Install RPM bootstrap tools" pm_install dnf zypper ;;
+                    dnf)    run_cmd "Install RPM bootstrap tools" pm_install dnf zypper ;;
+                    *)      tui_msg "RPM tools" "No RPM bootstrap package mapping for $PM." ;;
+                esac ;;
+            arch)
+                case "$PM" in
+                    apt|pacman) run_cmd "Install Arch bootstrap tools" pm_install arch-install-scripts ;;
+                    *)          tui_msg "Arch tools" "No Arch bootstrap package mapping for $PM." ;;
+                esac ;;
+            cross)
+                case "$PM" in
+                    apt)        run_cmd "Install cross-arch tools" pm_install qemu-user-static binfmt-support ;;
+                    pacman)     run_cmd "Install cross-arch tools" pm_install qemu-user-static ;;
+                    dnf)        run_cmd "Install cross-arch tools" pm_install qemu-user-static ;;
+                    *)          tui_msg "Cross-arch tools" "No cross-arch package mapping for $PM." ;;
+                esac ;;
+            chroot)
+                local _chroot_batch=()
+                case "$PM" in
+                    apt)    _chroot_batch=(proot fakechroot fakeroot schroot systemd-container) ;;
+                    pacman) _chroot_batch=(proot fakechroot fakeroot schroot systemd) ;;
+                    dnf)    _chroot_batch=(proot fakeroot systemd-container) ;;
+                    apk)    _chroot_batch=(proot fakechroot fakeroot schroot) ;;
+                    *)      _chroot_batch=(proot fakeroot) ;;
+                esac
+                run_cmd "Install chroot helpers" pm_install "${_chroot_batch[@]}" ;;
+            archive)
+                case "$PM" in
+                    apt|pacman) run_cmd "Install archive tools" pm_install zstd xz-utils ;;
+                    dnf|apk)    run_cmd "Install archive tools" pm_install zstd xz ;;
+                    *)          run_cmd "Install archive tools" pm_install zstd xz-utils ;;
+                esac ;;
+            status)
+                local _out="" _tag _lbl _apt _pac _dnf _apk _desc _st
+                while IFS='|' read -r _tag _lbl _apt _pac _dnf _apk _desc; do
+                    [ -z "$_tag" ] && continue
+                    _st=$(bs_st "$_tag")
+                    _out="${_out}$(printf '%-28s %s\n  %s\n' "$_lbl" "$_st" "$_desc")"$'\n'
+                done <<< "$TOOLS"
+                printf '%s' "$_out" > "$SYSTUI_TMP/bs-status.txt"
+                tui_text "Bootstrap tools status" "$SYSTUI_TMP/bs-status.txt" ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
 menu_rootfs() {
     while true; do
         local c
         # Safely capture menu result and handle cancellation (ESC/Cancel)
         if ! c=$(tui_menu "Rootfs" "Mini root filesystems:" \
-            build  "Build a new rootfs (guided, 13 stages)" \
-            manage "Manage existing rootfs (chroot, inspect, delete...)" \
-            back   "Back"); then
+            build      "Build a new rootfs (guided, 13 stages)" \
+            manage     "Manage existing rootfs (chroot, inspect, delete...)" \
+            bootstrap  "Bootstrap tools  (debootstrap, mmdebstrap, pacstrap...)" \
+            back       "Back"); then
             # User pressed ESC/Cancel - gracefully return to parent menu
             return 0
         fi
@@ -1136,8 +1250,9 @@ menu_rootfs() {
         [ -z "$c" ] && return 0
         
         case "$c" in
-            build)  rootfs_builder || true ;;
-            manage) rootfs_manage || true ;;
+            build)      rootfs_builder || true ;;
+            manage)     rootfs_manage || true ;;
+            bootstrap)  menu_rootfs_bootstrap_tools || true ;;
             back)   return 0 ;;
             *)      tui_msg "Error" "Unknown option: $c"; continue ;;
         esac

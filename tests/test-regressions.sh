@@ -212,6 +212,23 @@ check "Kali has only its dedicated systemd init branch" not_contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "debian|ubuntu|kali)"
 unset -f curl
 
+# Rootfs bootstrap tools menu checks
+check "menu_rootfs_bootstrap_tools function exists" function_exists menu_rootfs_bootstrap_tools
+check "bootstrap tools menu wired into menu_rootfs" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "bootstrap)  menu_rootfs_bootstrap_tools"
+check "bootstrap tools menu includes debootstrap" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "debootstrap"
+check "bootstrap tools menu includes mmdebstrap" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "mmdebstrap"
+check "bootstrap tools menu includes pacstrap" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "arch-install-scripts"
+check "bootstrap tools menu includes proot" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "proot"
+check "bootstrap tools menu includes qemu-user-static" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "qemu-user-static"
+check "bootstrap tools status option shows install status" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "bs_st"
+
 # Generated catalogue installers must be complete and syntactically valid.
 SYSTUI_AWESOME_CACHE="$tmpdir/awesome"
 export SYSTUI_AWESOME_CACHE
