@@ -1,16 +1,10 @@
 #!/bin/sh
 # provision-ultimate.sh
 # ---------------------------------------------------------------------------
-# Turn a fresh minimal rootfs (Debian, Ubuntu, Kali, Devuan, etc.) running
-# under iSH-AOK or natively into a full-featured, terminal-only Linux system.
-# Multi-distro Debian/Ubuntu family version.
+# Turn a fresh minimal Linux rootfs into a full-featured, terminal-only system.
 #
-# Supports:
-#   * Debian (all versions, all arches)
-#   * Ubuntu (LTS and latest)
-#   * Kali Linux
-#   * Devuan (all versions)
-#   * Any systemd or sysvinit-based Debian derivative
+# Supports distributions using apt, apk, pacman, dnf/yum, zypper, XBPS, or
+# Portage. Package names and service conventions are selected at runtime.
 #
 # Features:
 #   * generous "ultimate terminal" CLI tool set
@@ -61,22 +55,42 @@ detect_distro() {
 }
 
 detect_init_system() {
-    if [ -x "$(command -v systemctl)" ] && systemctl --version >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         INIT_SYSTEM="systemd"
     elif [ -x /sbin/init ] && /sbin/init --version 2>&1 | grep -q sysvinit; then
         INIT_SYSTEM="sysvinit"
     elif [ -L /sbin/init ] && readlink /sbin/init | grep -q sysvinit; then
         INIT_SYSTEM="sysvinit"
-    elif [ -x "$(command -v openrc)" ]; then
+    elif command -v rc-service >/dev/null 2>&1; then
         INIT_SYSTEM="openrc"
+    elif command -v sv >/dev/null 2>&1; then
+        INIT_SYSTEM="runit"
     else
         INIT_SYSTEM="unknown"
     fi
 }
 
+detect_package_manager() {
+    if command -v apt-get >/dev/null 2>&1; then PACKAGE_MANAGER=apt
+    elif command -v apk >/dev/null 2>&1; then PACKAGE_MANAGER=apk
+    elif command -v pacman >/dev/null 2>&1; then PACKAGE_MANAGER=pacman
+    elif command -v dnf >/dev/null 2>&1; then PACKAGE_MANAGER=dnf
+    elif command -v yum >/dev/null 2>&1; then PACKAGE_MANAGER=yum
+    elif command -v zypper >/dev/null 2>&1; then PACKAGE_MANAGER=zypper
+    elif command -v xbps-install >/dev/null 2>&1; then PACKAGE_MANAGER=xbps
+    elif command -v emerge >/dev/null 2>&1; then PACKAGE_MANAGER=portage
+    else PACKAGE_MANAGER=unknown
+    fi
+}
+
 detect_distro
 detect_init_system
-note "Detected: $DISTRO_NAME ($DISTRO_ID) - Init: $INIT_SYSTEM"
+detect_package_manager
+note "Detected: $DISTRO_NAME ($DISTRO_ID) - packages: $PACKAGE_MANAGER - init: $INIT_SYSTEM"
+[ "$PACKAGE_MANAGER" != unknown ] || {
+    warn "No supported package manager was found (apt, apk, pacman, dnf/yum, zypper, XBPS, or Portage)."
+    exit 2
+}
 
 # ---- config (env overrides; prompts interactively when run on a TTY) ------
 NEW_HOSTNAME="${NEW_HOSTNAME:-}"
@@ -110,69 +124,94 @@ ask TZ_NAME     "Timezone (e.g. America/New_York, UTC)" "$DEF_TZ"
 ask TARGET_USER "Primary login username to set up"      "$DEF_USER"
 ask NEW_HOSTNAME "Hostname"                              "$DEF_HOSTNAME"
 
-# Create the chosen login if it does not exist yet (fresh rootfs).
-if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] && ! id "$TARGET_USER" >/dev/null 2>&1; then
-    adduser --disabled-password --gecos "" --shell /bin/bash "$TARGET_USER" >/dev/null 2>&1 \
-        || adduser --disabled-password --gecos "" "$TARGET_USER" >/dev/null 2>&1 \
-        || useradd -m -s /bin/bash "$TARGET_USER" 2>/dev/null
-    note "created login '$TARGET_USER' (no password set; give it one with: passwd $TARGET_USER)"
-fi
-TARGET_HOME=""
-if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
-    TARGET_HOME="$(awk -F: -v u="$TARGET_USER" '$1==u{print $6}' /etc/passwd)"
-fi
 note "timezone=$TZ_NAME  login=${TARGET_USER:-<none>}  hostname=${NEW_HOSTNAME:-<keep>}  init=$INIT_SYSTEM"
 
 # ===========================================================================
 log "Installing packages (this is the slow part under emulation)"
 # ===========================================================================
-PKGS="
-  bash bash-completion cmake
-  coreutils findutils grep sed gawk diffutils util-linux bsdextrautils
-  procps passwd adduser file less
-  locales
-  openssh-client openssh-server sudo
-  rsyslog iputils-ping
-  chrony cron logrotate dialog
-  tzdata ca-certificates openssl
-  man-db manpages
-  curl wget rsync bind9-dnsutils iproute2
-  git strace build-essential gdb
-  python3 python3-pip python3-venv
-  vim neovim nano tmux sysstat
-  htop btop ncdu lsof pv tree
-  mc fzf ripgrep fd-find bat eza jq most
-  w3m lynx nmap socat netcat-openbsd mtr-tiny
-  tar unzip zip p7zip-full bzip2 gzip zstd xz-utils
-  fastfetch figlet ncurses-bin ncurses-term
-"
-
-# Add init-system-specific packages
-if [ "$INIT_SYSTEM" = "sysvinit" ]; then
-    PKGS="$PKGS sysvinit-core"
-    note "Including sysvinit-core (sysvinit init system)"
-elif [ "$INIT_SYSTEM" = "systemd" ]; then
-    note "systemd is already installed (default on Ubuntu/Debian)"
-fi
+case "$PACKAGE_MANAGER" in
+    apt)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux bsdextrautils procps passwd adduser file less locales openssh-client openssh-server sudo rsyslog iputils-ping chrony cron logrotate dialog tzdata ca-certificates openssl man-db manpages curl wget rsync bind9-dnsutils iproute2 git strace build-essential gdb python3 python3-pip python3-venv vim neovim nano tmux sysstat htop btop ncdu lsof pv tree mc fzf ripgrep fd-find bat eza jq most w3m lynx nmap socat netcat-openbsd mtr-tiny tar unzip zip p7zip-full bzip2 gzip zstd xz-utils fastfetch figlet ncurses-bin ncurses-term"
+        [ "$INIT_SYSTEM" = sysvinit ] && PKGS="$PKGS sysvinit-core"
+        ;;
+    apk)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps shadow file less musl-locales openssh sudo syslog-ng chrony dcron logrotate dialog tzdata ca-certificates openssl mandoc man-pages curl wget rsync bind-tools iproute2 git strace build-base gdb python3 py3-pip py3-virtualenv vim neovim nano tmux htop btop ncdu lsof pv tree mc fzf ripgrep fd bat eza jq most w3m lynx nmap socat netcat-openbsd mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses"
+        ;;
+    pacman)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps-ng shadow file less glibc openssh sudo syslog-ng chrony cronie logrotate dialog tzdata ca-certificates openssl man-db man-pages curl wget rsync bind iproute2 git strace base-devel gdb python python-pip python-virtualenv vim neovim nano tmux sysstat htop btop ncdu lsof pv tree mc fzf ripgrep fd bat eza jq most w3m lynx nmap socat openbsd-netcat mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses"
+        ;;
+    dnf|yum)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps-ng shadow-utils file less glibc-langpack-en openssh-clients openssh-server sudo rsyslog chrony cronie logrotate dialog tzdata ca-certificates openssl man-db man-pages curl wget rsync bind-utils iproute git strace gcc gcc-c++ make gdb python3 python3-pip vim-enhanced neovim nano tmux sysstat htop btop ncdu lsof pv tree mc fzf ripgrep fd-find bat eza jq most w3m lynx nmap-ncat nmap mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses"
+        ;;
+    zypper)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps shadow file less glibc-locale openssh sudo rsyslog chrony cron logrotate dialog timezone ca-certificates openssl man man-pages curl wget rsync bind-utils iproute2 git strace gcc gcc-c++ make gdb python3 python3-pip python3-virtualenv vim neovim nano tmux sysstat htop btop ncdu lsof pv tree mc fzf ripgrep fd bat eza jq most w3m lynx nmap socat netcat-openbsd mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses-utils"
+        ;;
+    xbps)
+        PKGS="bash bash-completion cmake coreutils findutils grep sed gawk diffutils util-linux procps-ng shadow file less glibc-locales openssh sudo socklog-void chrony cronie logrotate dialog tzdata ca-certificates openssl man-db man-pages curl wget rsync bind-utils iproute2 git strace base-devel gdb python3 python3-pip python3-virtualenv vim neovim nano tmux htop btop ncdu lsof pv tree mc fzf ripgrep fd bat eza jq most w3m lynx nmap socat openbsd-netcat mtr tar unzip zip p7zip bzip2 gzip zstd xz fastfetch figlet ncurses"
+        ;;
+    portage)
+        PKGS="app-shells/bash-completion dev-build/cmake sys-apps/coreutils sys-apps/findutils sys-apps/grep sys-apps/sed sys-apps/gawk sys-apps/diffutils sys-apps/util-linux sys-process/procps sys-apps/shadow sys-apps/file sys-apps/less net-misc/openssh app-admin/sudo app-admin/syslog-ng net-misc/chrony sys-process/cronie app-admin/logrotate dev-util/dialog sys-libs/timezone-data app-misc/ca-certificates dev-libs/openssl sys-apps/man-db net-misc/curl net-misc/wget net-misc/rsync net-dns/bind-tools sys-apps/iproute2 dev-vcs/git dev-debug/strace sys-devel/gcc sys-devel/make dev-debug/gdb dev-lang/python dev-python/pip app-editors/vim app-editors/neovim app-editors/nano app-misc/tmux sys-process/htop sys-process/btop sys-fs/ncdu sys-process/lsof sys-apps/pv app-text/tree app-misc/mc app-shells/fzf sys-apps/ripgrep sys-apps/fd app-text/bat app-misc/jq www-client/w3m net-analyzer/nmap net-misc/socat net-analyzer/mtr app-arch/unzip app-arch/zip app-arch/p7zip app-arch/zstd app-misc/fastfetch app-misc/figlet sys-libs/ncurses"
+        ;;
+esac
 
 # Pre-seed the timezone so the tzdata postinst never tries to prompt.
 ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime 2>/dev/null || true
 printf '%s\n' "$TZ_NAME" > /etc/timezone
 
-apt-get update >/dev/null 2>&1 || note "apt-get update failed (continuing with cached index)"
-# apt aborts the whole transaction on a single unavailable package, so try the
-# batch first and fall back to installing package-by-package (skipping any that
-# are unavailable in this suite/arch).
-if apt-get install -y --no-install-recommends $PKGS; then
-    note "packages installed"
-else
-    note "batch install failed; retrying package-by-package (skipping unavailable)"
-    for p in $PKGS; do
-        apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 \
-            || note "  skipped: $p (unavailable or failed)"
-    done
+refresh_packages() {
+    case "$PACKAGE_MANAGER" in
+        apt) apt-get update ;;
+        apk) apk update ;;
+        pacman) pacman -Sy --noconfirm ;;
+        dnf) dnf -y makecache ;;
+        yum) yum -y makecache ;;
+        zypper) zypper --non-interactive refresh ;;
+        xbps) xbps-install -S ;;
+        portage) emerge --sync ;;
+    esac
+}
+
+install_one() {
+    case "$PACKAGE_MANAGER" in
+        apt) apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends "$1" ;;
+        apk) apk add --no-progress "$1" ;;
+        pacman) pacman -S --needed --noconfirm "$1" ;;
+        dnf) dnf install -y --setopt=install_weak_deps=False "$1" ;;
+        yum) yum install -y "$1" ;;
+        zypper) zypper --non-interactive install --no-recommends "$1" ;;
+        xbps) xbps-install -y "$1" ;;
+        portage) emerge --noreplace "$1" ;;
+    esac
+}
+
+refresh_packages >/dev/null 2>&1 || warn "Package index refresh failed; continuing with the current index"
+INSTALLED_COUNT=0 SKIPPED_COUNT=0
+for p in $PKGS; do
+    if install_one "$p" >/dev/null 2>&1; then
+        INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+    else
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        note "skipped: $p (unavailable or installation failed)"
+    fi
+done
+note "package pass complete: $INSTALLED_COUNT installed/already present, $SKIPPED_COUNT skipped"
+if [ "$PACKAGE_MANAGER" = apt ]; then
+    dpkg --force-confold --configure -a >/dev/null 2>&1 || warn "Some Debian packages remain unconfigured; run: dpkg --configure -a"
+    apt-get clean >/dev/null 2>&1 || true
 fi
-apt-get clean >/dev/null 2>&1 || true
+
+# Account tools and Bash now exist even on a minimal image.
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] && ! id "$TARGET_USER" >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" --shell /bin/bash "$TARGET_USER" >/dev/null 2>&1 \
+        || adduser -D -s /bin/bash "$TARGET_USER" >/dev/null 2>&1 \
+        || useradd -m -s /bin/bash "$TARGET_USER" 2>/dev/null \
+        || warn "Could not create login '$TARGET_USER'"
+    id "$TARGET_USER" >/dev/null 2>&1 && note "created login '$TARGET_USER' (set its password with: passwd $TARGET_USER)"
+fi
+TARGET_HOME=""
+if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
+    TARGET_HOME="$(awk -F: -v u="$TARGET_USER" '$1==u{print $6}' /etc/passwd)"
+fi
 
 # Debian/Ubuntu ship these tools under disambiguated names; add the conventional
 # command names in /usr/local/bin so muscle memory (and the fzf/profile glue
@@ -194,7 +233,7 @@ if [ -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
     if [ "$INIT_SYSTEM" = "systemd" ]; then
         timedatectl set-timezone "$TZ_NAME" 2>/dev/null || true
     fi
-    dpkg-reconfigure -f noninteractive tzdata >/dev/null 2>&1 || true
+    command -v dpkg-reconfigure >/dev/null 2>&1 && dpkg-reconfigure -f noninteractive tzdata >/dev/null 2>&1 || true
     note "$(date)"
 else
     note "zoneinfo for '$TZ_NAME' not found; leaving clock as-is"
@@ -203,6 +242,7 @@ fi
 # ===========================================================================
 log "Locale -> C.UTF-8"
 # ===========================================================================
+mkdir -p /etc/default /etc/profile.d
 printf 'LANG=C.UTF-8\n' > /etc/default/locale
 if ! grep -q '^LANG=' /etc/environment 2>/dev/null; then
     printf 'LANG=C.UTF-8\nLC_ALL=C.UTF-8\n' >> /etc/environment
@@ -243,15 +283,18 @@ fi
 note "$(cat /etc/hostname)"
 
 # ===========================================================================
-log "sudo for the sudo group"
+ADMIN_GROUP=sudo
+case "$PACKAGE_MANAGER" in apt) ;; *) ADMIN_GROUP=wheel ;; esac
+log "sudo for the $ADMIN_GROUP group"
 # ===========================================================================
-getent group sudo >/dev/null 2>&1 || groupadd sudo 2>/dev/null || true
+getent group "$ADMIN_GROUP" >/dev/null 2>&1 || groupadd "$ADMIN_GROUP" 2>/dev/null || true
+mkdir -p /etc/sudoers.d
 if [ "$SUDO_NOPASSWD" = 1 ]; then
-    echo '%sudo ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/aok-sudo
-    note "passwordless sudo for the sudo group"
+    printf '%%%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$ADMIN_GROUP" > /etc/sudoers.d/aok-sudo
+    note "passwordless sudo for the $ADMIN_GROUP group"
 else
-    echo '%sudo ALL=(ALL:ALL) ALL' > /etc/sudoers.d/aok-sudo
-    note "sudo-group sudo (password required; set SUDO_NOPASSWD=1 for passwordless)"
+    printf '%%%s ALL=(ALL:ALL) ALL\n' "$ADMIN_GROUP" > /etc/sudoers.d/aok-sudo
+    note "$ADMIN_GROUP-group sudo (password required; set SUDO_NOPASSWD=1 for passwordless)"
 fi
 chmod 0440 /etc/sudoers.d/aok-sudo
 # Refuse to leave an invalid sudoers fragment in place.
@@ -260,7 +303,10 @@ if command -v visudo >/dev/null 2>&1 && ! visudo -cf /etc/sudoers.d/aok-sudo >/d
     note "WARNING: generated sudoers fragment failed validation; removed it"
 fi
 if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
-    id -nG "$TARGET_USER" | tr ' ' '\n' | grep -qx sudo || adduser "$TARGET_USER" sudo >/dev/null 2>&1
+    id -nG "$TARGET_USER" | tr ' ' '\n' | grep -qx "$ADMIN_GROUP" \
+        || usermod -aG "$ADMIN_GROUP" "$TARGET_USER" >/dev/null 2>&1 \
+        || adduser "$TARGET_USER" "$ADMIN_GROUP" >/dev/null 2>&1 \
+        || warn "Could not add $TARGET_USER to $ADMIN_GROUP"
     note "$TARGET_USER is in: $(id -nG "$TARGET_USER")"
 fi
 
@@ -279,10 +325,11 @@ log "MOTD"
 # ===========================================================================
 cat > /etc/motd <<'MOTD'
 
-   Linux Ultimate (Debian/Ubuntu family)  .  Terminal-only userspace
+   Linux Ultimate  .  Portable terminal-only userspace
    -------------------------------------------------------------------
    services (systemd):  systemctl {start|stop|status|restart} <name>
-   services (sysvinit): service <name> {start|stop|status}
+   services (OpenRC):   rc-service <name> {start|stop|status}
+   services (SysV):     service <name> {start|stop|status}
    on boot (systemd):   systemctl {enable|disable} <name>
    on boot (sysvinit):  update-rc.d <name> {enable|disable}
    time (chrony):       chronyc tracking
@@ -371,8 +418,12 @@ note "wrote /etc/profile.d/30-aok-niceties.sh and 40-aok-tools.sh"
 # ===========================================================================
 log "chrony (iSH-aware: monitor only, host owns the clock)"
 # ===========================================================================
-if [ -d /etc/chrony ]; then
-    cat > /etc/chrony/chrony.conf <<'CHRONYCONF'
+if command -v chronyd >/dev/null 2>&1 || command -v chronyc >/dev/null 2>&1; then
+    if [ -d /etc/chrony ]; then CHRONY_CONFIG=/etc/chrony/chrony.conf
+    elif [ -d /etc/chrony.d ]; then CHRONY_CONFIG=/etc/chrony.conf
+    else CHRONY_CONFIG=/etc/chrony.conf
+    fi
+    cat > "$CHRONY_CONFIG" <<'CHRONYCONF'
 # chrony.conf -- tuned for iSH-AOK (monitoring mode; chronyd runs with -x)
 pool pool.ntp.org iburst
 server time.cloudflare.com iburst
@@ -382,7 +433,8 @@ logdir /var/log/chrony
 # NB: no 'rtcsync' / 'initstepslew' (no clock control under iSH). chronyd is
 # started with -x via /etc/default/chrony so it only *monitors* the clock.
 CHRONYCONF
-    [ -d /var/log/chrony ] && chown _chrony:_chrony /var/log/chrony 2>/dev/null || true
+    mkdir -p /var/log/chrony
+    chown _chrony:_chrony /var/log/chrony 2>/dev/null || chown chrony:chrony /var/log/chrony 2>/dev/null || true
 
     if [ -f /etc/default/chrony ]; then
         if grep -q '^DAEMON_OPTS=' /etc/default/chrony 2>/dev/null; then
@@ -390,7 +442,7 @@ CHRONYCONF
         else
             echo 'DAEMON_OPTS="-x"' >> /etc/default/chrony
         fi
-    else
+    elif [ "$PACKAGE_MANAGER" = apt ]; then
         echo 'DAEMON_OPTS="-x"' > /etc/default/chrony
     fi
     note "chronyd: DAEMON_OPTS=-x (monitor only), localhost command port"
@@ -399,9 +451,8 @@ fi
 # ===========================================================================
 log "Periodic maintenance (cron)"
 # ===========================================================================
-mkdir -p /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly \
-         /var/spool/cron/crontabs
-chmod 1730 /var/spool/cron/crontabs 2>/dev/null || true
+mkdir -p /etc/cron.hourly /etc/cron.daily /etc/cron.weekly /etc/cron.monthly
+[ "$PACKAGE_MANAGER" = apt ] && { mkdir -p /var/spool/cron/crontabs; chmod 1730 /var/spool/cron/crontabs 2>/dev/null || true; }
 note "cron run-parts dirs present"
 
 # ===========================================================================
@@ -599,59 +650,66 @@ write_tmux /root root
 # ===========================================================================
 log "Enable + start services"
 # ===========================================================================
-apply_svc() {  # <service-name>
-    _svc="$1"
+apply_svc() {  # <logical-name> <candidate>...
+    _label="$1"; shift; _svc=""
+    for _candidate in "$@"; do
+        case "$INIT_SYSTEM" in
+            systemd) systemctl list-unit-files "$_candidate.service" 2>/dev/null | grep -q "^$_candidate\.service" && _svc="$_candidate" ;;
+            openrc|sysvinit) [ -x "/etc/init.d/$_candidate" ] && _svc="$_candidate" ;;
+            runit) [ -d "/etc/sv/$_candidate" ] && _svc="$_candidate" ;;
+        esac
+        [ -z "$_svc" ] || break
+    done
+    [ -n "$_svc" ] || { note "  no service for $_label (skipped)"; return 0; }
 
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        # systemd: use systemctl
-        if ! systemctl list-unit-files "$_svc.service" >/dev/null 2>&1; then
-            note "  no systemd service for $_svc (skipped)"
-            return 0
-        fi
-        systemctl enable "$_svc" >/dev/null 2>&1 || true
-        if [ "$_svc" = ssh ]; then
-            systemctl start "$_svc" >/dev/null 2>&1 || true
-        elif systemctl is-active "$_svc" >/dev/null 2>&1; then
-            systemctl restart "$_svc" >/dev/null 2>&1 || true
-        else
-            systemctl start "$_svc" >/dev/null 2>&1 || true
-        fi
-
-    else
-        # sysvinit or unknown: use service command
-        [ -x "/etc/init.d/$_svc" ] || { note "  no init script for $_svc (skipped)"; return 0; }
-        update-rc.d "$_svc" defaults >/dev/null 2>&1 || true
-        update-rc.d "$_svc" enable   >/dev/null 2>&1 || true
-        if [ "$_svc" = ssh ]; then
-            service "$_svc" start >/dev/null 2>&1 || "/etc/init.d/$_svc" start >/dev/null 2>&1 || true
-        elif service "$_svc" status >/dev/null 2>&1; then
-            service "$_svc" restart >/dev/null 2>&1 || true
-        else
-            service "$_svc" start >/dev/null 2>&1 || "/etc/init.d/$_svc" start >/dev/null 2>&1 || true
-        fi
-    fi
+    case "$INIT_SYSTEM" in
+        systemd)
+            systemctl enable "$_svc" >/dev/null 2>&1 || true
+            systemctl restart "$_svc" >/dev/null 2>&1 || systemctl start "$_svc" >/dev/null 2>&1 || true
+            ;;
+        openrc)
+            rc-update add "$_svc" default >/dev/null 2>&1 || true
+            rc-service "$_svc" restart >/dev/null 2>&1 || rc-service "$_svc" start >/dev/null 2>&1 || true
+            ;;
+        runit)
+            mkdir -p /var/service
+            ln -sfn "/etc/sv/$_svc" "/var/service/$_svc"
+            sv restart "$_svc" >/dev/null 2>&1 || sv up "$_svc" >/dev/null 2>&1 || true
+            ;;
+        sysvinit)
+            command -v update-rc.d >/dev/null 2>&1 && update-rc.d "$_svc" defaults >/dev/null 2>&1 || true
+            command -v chkconfig >/dev/null 2>&1 && chkconfig "$_svc" on >/dev/null 2>&1 || true
+            service "$_svc" restart >/dev/null 2>&1 || service "$_svc" start >/dev/null 2>&1 || true
+            ;;
+    esac
+    note "  $_label -> $_svc"
 }
 
 # rsyslog first (so other daemons' early logs land), then user-facing daemons.
-for s in rsyslog ssh cron chrony; do apply_svc "$s"; done
+apply_svc logging rsyslog syslog-ng socklog-unix
+apply_svc ssh ssh sshd
+apply_svc cron cron crond cronie
+apply_svc chrony chrony chronyd
 
 note "services enabled:"
-if [ "$INIT_SYSTEM" = "systemd" ]; then
-    systemctl list-unit-files --state=enabled --type=service 2>/dev/null | grep -E '^(rsyslog|ssh|cron|chrony)' | awk '{print "      " $1}'
-else
-    ls /etc/rc2.d/ 2>/dev/null | sed -n 's/^S[0-9]*//p' | sort -u | sed 's/^/      /'
-fi
+case "$INIT_SYSTEM" in
+    systemd) systemctl list-unit-files --state=enabled --type=service 2>/dev/null | grep -E '^(rsyslog|syslog-ng|ssh|sshd|cron|crond|chrony|chronyd)' | awk '{print "      " $1}' || true ;;
+    openrc) rc-status default 2>/dev/null | sed 's/^/      /' || true ;;
+    runit) ls /var/service 2>/dev/null | sed 's/^/      /' || true ;;
+    *) ls /etc/rc2.d/ 2>/dev/null | sed -n 's/^S[0-9]*//p' | sort -u | sed 's/^/      /' || true ;;
+esac
 
 # ===========================================================================
 log "Done"
 # ===========================================================================
 printf '    %s\n' "$(date)"
 note "Running services:"
-if [ "$INIT_SYSTEM" = "systemd" ]; then
-    systemctl list-units --type=service --state=running 2>/dev/null | grep -oP '\S+(?=\.service)' | tr '\n' ' ' | sed 's/^/      /'; echo
-else
-    service --status-all 2>&1 | grep -E '\[ \+ \]' | awk '{print $4}' | sort | tr '\n' ' ' | sed 's/^/      /'; echo
-fi
+case "$INIT_SYSTEM" in
+    systemd) systemctl list-units --type=service --state=running 2>/dev/null | awk '/\.service/{sub(/\.service/,"",$1); printf "%s ",$1} END{print ""}' | sed 's/^/      /' ;;
+    openrc) rc-status 2>/dev/null | sed -n '/started/s/^/      /p' || true ;;
+    runit) sv status /var/service/* 2>/dev/null | sed 's/^/      /' || true ;;
+    *) command -v service >/dev/null 2>&1 && service --status-all 2>&1 | grep -E '\[ \+ \]' | awk '{print $4}' | sort | tr '\n' ' ' | sed 's/^/      /' || true; echo ;;
+esac
 
 cat <<EOF
 

@@ -23,11 +23,23 @@ script_provision_tool_status() {
 }
 
 script_provision_system_status() {
-    if command -v apt-get >/dev/null 2>&1; then
-        printf '%s\n' "compatible APT system"
-    else
-        printf '%s\n' "unsupported (APT required)"
-    fi
+    local manager=${PM:-}
+    [ -n "$manager" ] || {
+        if command -v apt-get >/dev/null 2>&1; then manager=apt
+        elif command -v apk >/dev/null 2>&1; then manager=apk
+        elif command -v pacman >/dev/null 2>&1; then manager=pacman
+        elif command -v dnf >/dev/null 2>&1; then manager=dnf
+        elif command -v yum >/dev/null 2>&1; then manager=yum
+        elif command -v zypper >/dev/null 2>&1; then manager=zypper
+        elif command -v xbps-install >/dev/null 2>&1; then manager=xbps
+        elif command -v emerge >/dev/null 2>&1; then manager=portage
+        else manager=unknown
+        fi
+    }
+    case "$manager" in
+        apt|apk|pacman|dnf|yum|zypper|xbps|portage) printf 'compatible (%s)\n' "$manager" ;;
+        *) printf '%s\n' "unsupported (no recognized package manager)" ;;
+    esac
 }
 
 script_provision_install_tool() {
@@ -117,7 +129,7 @@ script_provision_review() {
         echo
         echo "The script installs and configures its complete terminal toolset,"
         echo "services, shell environment, Neovim starter, and tmux configuration."
-        echo "It supports Debian, Ubuntu, Kali, Devuan, and related APT systems."
+        echo "It supports APT, APK, pacman, DNF/YUM, zypper, XBPS, and Portage systems."
     } > "$review_file"
     tui_text "Ultimate Provision Review" "$review_file" || true
 }
@@ -227,10 +239,13 @@ script_provision_run() {
         tui_msg "Ultimate Provision Not Installed" "Install Ultimate Provision before running it."
         return 0
     }
-    if [ "$(script_provision_system_status)" != "compatible APT system" ]; then
-        tui_msg "Unsupported System" "This provision script requires an APT-based Debian, Ubuntu, Kali, Devuan, or related system."
-        return 0
-    fi
+    case "$(script_provision_system_status)" in
+        compatible*) ;;
+        *)
+            tui_msg "Unsupported System" "No supported package manager was found. Supported: APT, APK, pacman, DNF/YUM, zypper, XBPS, and Portage."
+            return 0
+            ;;
+    esac
     script_provision_review
     tui_yesno "Confirm Provisioning" "Run the bundled provision script now?\n\nThis installs packages and changes system-wide configuration." || return 0
     script_provision_save

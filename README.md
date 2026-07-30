@@ -51,7 +51,7 @@ systui-project/
 │   │   └── common.sh         # Common utilities & package mapping
 │   │
 │   ├── provision/            # Provisioning functions (one per distro)
-│   │   ├── provision-ultimate.sh # Bundled Debian-family quick setup
+│   │   ├── provision-ultimate.sh # Portable multi-distribution quick setup
 │   │   ├── alpine.sh         # Alpine 3.23+ (OpenRC)
 │   │   ├── arch.sh           # Arch Linux (systemd)
 │   │   ├── debian.sh         # Debian 12+ (systemd)
@@ -226,17 +226,17 @@ Main Menu
 ### Quick System Setup
 
 ```bash
-# On Debian, Ubuntu, Kali, Devuan, or another compatible APT system
+# On a supported Linux distribution
 sudo systui
 → Ultimate Provision → Configure quick-setup settings
 → Quick setup (install/update, review, and run)
 ```
 
 Ultimate Provision configures the timezone, primary user, hostname, sudo policy,
-terminal package set, services, Bash environment, Neovim, and tmux. The main-menu
-option is available on every system, but execution is intentionally restricted
-to compatible APT-based distributions because the supplied script uses Debian
-packages and system configuration conventions.
+terminal package set, services, Bash environment, Neovim, and tmux. It selects
+distribution-specific packages and service names for APT, Alpine APK, Arch
+pacman, Fedora/RHEL DNF or YUM, openSUSE zypper, Void XBPS, and Gentoo Portage.
+Unavailable packages are reported and skipped without stopping the run.
 
 ## Configuration
 

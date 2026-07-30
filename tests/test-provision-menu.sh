@@ -10,6 +10,26 @@ trap 'rm -f -- "$SYSTUI_PROVISION_CONFIG" "$SYSTUI_PROVISION_TOOL"' EXIT
 
 . "$PROJECT_DIR/src/features/ultimate-provision.sh"
 
+# Every package-manager family advertised by the launcher is accepted.
+for PM in apt apk pacman dnf yum zypper xbps portage; do
+    case "$(script_provision_system_status)" in
+        "compatible ($PM)") ;;
+        *) echo "not compatible: $PM" >&2; exit 1 ;;
+    esac
+done
+PM=unknown
+[ "$(script_provision_system_status)" = "unsupported (no recognized package manager)" ]
+unset PM
+
+# The standalone tool contains a package map and skip-and-continue installer
+# for every package-manager family exposed by the menu.
+for manager in apt apk pacman dnf yum zypper xbps portage; do
+    grep -Eq "(^|[|[:space:]])${manager}([|)])" \
+        "$PROJECT_DIR/src/provision/provision-ultimate.sh"
+done
+grep -q 'skipped: \$p (unavailable or installation failed)' \
+    "$PROJECT_DIR/src/provision/provision-ultimate.sh"
+
 # Ultimate Provision is a first-class main-menu option.
 grep -q 'provision "Ultimate Provision (quick system setup)"' "$PROJECT_DIR/install.sh"
 grep -q 'provision)' "$PROJECT_DIR/install.sh"
