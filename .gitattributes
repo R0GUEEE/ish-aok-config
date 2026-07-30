@@ -1,0 +1,24 @@
+# Every tracked file in this project is a shell script, a config template or a
+# test that runs on Linux (Alpine / iSH-AOK / Debian / Arch / ...).
+#
+# Git stores them with LF, but Windows installs commonly set
+# core.autocrlf=true system-wide, which rewrites the working tree to CRLF on
+# checkout. A shell script with CRLF line endings fails immediately on Linux:
+#
+#     ./install.sh: line 28: syntax error near unexpected token `$'{\r''
+#
+# Pinning eol=lf here keeps the working tree usable on every platform,
+# regardless of the machine's autocrlf setting.
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.conf  text eol=lf
+*.md    text eol=lf
+
+# Leave anything binary alone.
+*.png   binary
+*.jpg   binary
+*.gz    binary
+*.zst   binary
+*.xz    binary
