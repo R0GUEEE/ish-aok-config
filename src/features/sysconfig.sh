@@ -2806,7 +2806,7 @@ pm_adv_brew() {
 # of global install flags. pm_adv_lang renders that shape for each of them.
 
 pm_adv_lang() { # <id>
-    local id="$1" f o reg cur_reg marker
+    local id="$1" f o reg marker
     case "$id" in
         pip)      f="${HOME}/.config/pip/pip.conf";              marker=pip ;;
         pipx)     f="${HOME}/.config/pipx/config";               marker=pipx ;;
@@ -7825,7 +7825,14 @@ fm_plugin_parse_ranger() { # <README> <out.tsv>
 fm_plugin_parse_nnn() { # <README> <out.tsv>
     awk -F'|' '
         function clean(x) {
-            gsub(/\[[^]]*\]\([^)]*\)/, "", x); gsub(/<[^>]*>/, "", x)
+            # Keep the label of a markdown link rather than deleting the whole
+            # construct: a dependency cell is often nothing but links, and
+            # dropping them left the cell empty.
+            while (match(x, /\[[^]]*\]\([^)]*\)/)) {
+                lbl = substr(x, RSTART + 1, index(substr(x, RSTART), "]") - 2)
+                x = substr(x, 1, RSTART - 1) lbl substr(x, RSTART + RLENGTH)
+            }
+            gsub(/<[^>]*>/, "", x)
             gsub(/`/, "", x); gsub(/\r/, "", x); gsub(/\t/, " ", x)
             gsub(/  +/, " ", x); sub(/^ +/, "", x); sub(/ +$/, "", x); return x
         }
