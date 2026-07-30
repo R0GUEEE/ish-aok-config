@@ -1881,8 +1881,13 @@ declare -A APT_CANDIDATES=(
 
 is_pkg_installed() {
     case "$PM" in
-        apt) dpkg -s "$1" >/dev/null 2>&1 ;; apk) apk info -e "$1" >/dev/null 2>&1 ;;
-        pacman) pacman -Qi "$1" >/dev/null 2>&1 ;; dnf) rpm -q "$1" >/dev/null 2>&1 ;; *) return 1 ;;
+        apt) dpkg -s "$1" >/dev/null 2>&1 ;;
+        apk) apk info -e "$1" >/dev/null 2>&1 ;;
+        pacman) pacman -Qi "$1" >/dev/null 2>&1 ;;
+        dnf|yum|zypper) rpm -q "$1" >/dev/null 2>&1 ;;
+        xbps) xbps-query "$1" >/dev/null 2>&1 ;;
+        emerge) [ -n "$(portageq match / "$1" 2>/dev/null)" ] ;;
+        *) return 1 ;;
     esac
 }
 
@@ -1971,23 +1976,76 @@ browse_category() {
         for k in $2; do line=$(catalogue_find_line "$k"); [ -n "$line" ] && data+="$line"$'\n'; done
     else data="${CAT_APPS[$cat]}"; fi
     while true; do
-        local tags=() key name desc mark sel
+        # Checklist first: every entry in the category is selectable, checked
+        # when already installed. Confirming applies the difference -- newly
+        # checked entries are installed, entries unchecked from an installed
+        # state are offered for removal.
+        local args=() key name desc st installed="" picks
         while IFS='|' read -r key name desc; do
             [ -z "$key" ] && continue
-            [ "$(app_status "$key")" = installed ] && mark="[installed] " || mark=""
-            tags+=("$key" "$name — $mark$desc")
+            if [ "$(app_status "$key")" = installed ]; then
+                st=on; installed="$installed $key"
+            else
+                st=off
+            fi
+            args+=("$key" "$name — $desc" "$st")
         done <<< "$data"
-        sel=$(tui_menu "$(cat_title "$cat")" "Select software or use bulk installation:" "${tags[@]}" bulk ">> Bulk install" __back "<< Back") || return 0
-        case "$sel" in
-            __back) return 0 ;;
-            bulk)
-                local cargs=() st picks natives=""
-                while IFS='|' read -r key name desc; do [ -z "$key" ] && continue; [ "$(app_status "$key")" = installed ] && st=on || st=off; cargs+=("$key" "$name" "$st"); done <<< "$data"
-                picks=$(tui_check "Bulk install" "SPACE toggles; ENTER installs:" "${cargs[@]}") || continue
-                picks=${picks//\"/}; for k in $picks; do is_pkg_installed "$(app_native_name "$k")" || natives+=" $(app_native_name "$k")"; done
-                if [ -n "${natives// }" ]; then local -a _pkgs=(); parse_package_input "$natives" _pkgs && pm_install "${_pkgs[@]}"; fi; show_warnings ;;
-            *) line=$(grep -m1 "^$sel|" <<< "$data"); [ -n "$line" ] && app_page "$sel" "$(cut -d'|' -f2 <<<"$line")" "$(cut -d'|' -f3- <<<"$line")" ;;
+        [ ${#args[@]} -gt 0 ] || { tui_msg "Empty" "No software is listed in this category."; return 0; }
+        args+=(__details "» Show the details page for one item (does not apply changes)" off)
+
+        picks=$(tui_check "$(cat_title "$cat")" \
+"SPACE toggles. Checked entries are installed, entries you uncheck are offered for removal.
+Checked items are already installed." "${args[@]}") || return 0
+        picks=${picks//\"/}
+
+        # The details escape hatch is handled on its own so a stray selection
+        # cannot silently install something the user only wanted to read about.
+        case " $picks " in
+            *" __details "*)
+                local dargs=() sel
+                while IFS='|' read -r key name desc; do
+                    [ -z "$key" ] && continue
+                    dargs+=("$key" "$name")
+                done <<< "$data"
+                sel=$(tui_menu "Details" "Select an item to inspect:" "${dargs[@]}" __back "Back") || continue
+                [ "$sel" = __back ] && continue
+                line=$(grep -m1 "^$sel|" <<< "$data")
+                [ -n "$line" ] && app_page "$sel" "$(cut -d'|' -f2 <<<"$line")" "$(cut -d'|' -f3- <<<"$line")"
+                continue ;;
         esac
+
+        # Install everything newly checked.
+        local to_install="" to_remove="" n
+        for k in $picks; do
+            [ "$k" = __details ] && continue
+            case " $installed " in *" $k "*) ;; *)
+                n=$(app_native_name "$k"); [ "$n" != SKIP ] && to_install="$to_install $n" ;;
+            esac
+        done
+        # Offer removal for anything unchecked that is currently installed.
+        for k in $installed; do
+            case " $picks " in *" $k "*) ;; *)
+                n=$(app_native_name "$k"); [ "$n" != SKIP ] && to_remove="$to_remove $n" ;;
+            esac
+        done
+
+        if [ -z "${to_install// }" ] && [ -z "${to_remove// }" ]; then
+            tui_msg "No changes" "The selection matches what is already installed."
+            continue
+        fi
+        if [ -n "${to_install// }" ]; then
+            local -a _pkgs=()
+            if tui_yesno "Install" "Install $(wc -w <<< "$to_install") package(s)?\n\n$to_install"; then
+                parse_package_input "$to_install" _pkgs && pm_install "${_pkgs[@]}"
+            fi
+        fi
+        if [ -n "${to_remove// }" ]; then
+            local -a _rpkgs=()
+            if tui_yesno "Remove" "You unchecked $(wc -w <<< "$to_remove") installed package(s).\n\n$to_remove\n\nRemove them?"; then
+                parse_package_input "$to_remove" _rpkgs && pm_remove "${_rpkgs[@]}"
+            fi
+        fi
+        show_warnings
     done
 }
 
@@ -2000,10 +2058,23 @@ catalogue_collections() {
             python "Python development" rust "Rust development" cpp "C/C++ development" \
             web "Web development" backup "Backup toolkit" back "Back") || return 0
         [ "$c" = back ] && return
-        local keys="${CAT_COLLECTIONS[$c]:-}" mapped="" k n
+        local keys="${CAT_COLLECTIONS[$c]:-}" k n st
         [ -z "$keys" ] && continue
-        for k in $keys; do n=$(app_native_name "$k"); [ "$n" != SKIP ] && mapped+=" $n"; done
-        tui_yesno "Install collection" "Install $(wc -w <<< "$mapped") packages from $(cat_title "$c")?\n\n$mapped" && local -a _pkgs=(); parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"
+        # Space-to-select rather than an all-or-nothing prompt: collections mix
+        # things the user already has with things they may not want.
+        local cargs=() picks mapped=""
+        for k in $keys; do
+            n=$(app_native_name "$k"); [ "$n" = SKIP ] && continue
+            is_pkg_installed "$n" && st=off || st=on
+            cargs+=("$k" "$n$(is_pkg_installed "$n" && echo " [installed]")" "$st")
+        done
+        [ ${#cargs[@]} -gt 0 ] || { tui_msg "Empty" "No installable packages map to this collection on $PM."; continue; }
+        picks=$(tui_check "$(cat_title "$c")" "SPACE toggles. Already-installed packages start unchecked:" "${cargs[@]}") || continue
+        picks=${picks//\"/}
+        for k in $picks; do n=$(app_native_name "$k"); [ "$n" != SKIP ] && mapped+=" $n"; done
+        if [ -z "${mapped// }" ]; then tui_msg "No selection" "Nothing was selected."; continue; fi
+        local -a _pkgs=()
+        parse_package_input "$mapped" _pkgs && pm_install "${_pkgs[@]}"
         show_warnings
     done
 }
