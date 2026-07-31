@@ -186,7 +186,7 @@ refresh_packages() {
 install_one() {
     case "$PACKAGE_MANAGER" in
         apt)    _rto 300 apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends "$1" ;;
-        apk)    _rto 300 apk add --no-progress "$1" ;;
+        apk)    _rto 300 apk add "$1" ;;
         pacman) _rto 300 pacman -S --needed --noconfirm "$1" ;;
         dnf)    _rto 300 dnf install -y --setopt=install_weak_deps=False "$1" ;;
         yum)    _rto 300 yum install -y "$1" ;;
@@ -196,7 +196,8 @@ install_one() {
     esac
 }
 
-refresh_packages >/dev/null 2>&1 || warn "Package index refresh failed; continuing with the current index"
+log "Refreshing package index"
+refresh_packages || warn "Package index refresh failed; continuing with the current index"
 
 # Fast path: install all packages in one shot — far fewer PM round-trips and
 # much less likely to stall on a single download under slow emulation.
@@ -205,14 +206,14 @@ refresh_packages >/dev/null 2>&1 || warn "Package index refresh failed; continui
 INSTALLED_COUNT=0 SKIPPED_COUNT=0
 _bulk_ok=0
 case "$PACKAGE_MANAGER" in
-    apt)    _rto 1800 apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    apk)    _rto 1800 apk add --no-progress $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    pacman) _rto 1800 pacman -S --needed --noconfirm $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    dnf)    _rto 1800 dnf install -y --setopt=install_weak_deps=False $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    yum)    _rto 1800 yum install -y $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    zypper) _rto 1800 zypper --non-interactive install --no-recommends $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    xbps)   _rto 1800 xbps-install -y $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
-    portage) _rto 3600 emerge --noreplace $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    apt)    _rto 1800 apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends $PKGS && _bulk_ok=1 ;;
+    apk)    _rto 1800 apk add $PKGS && _bulk_ok=1 ;;
+    pacman) _rto 1800 pacman -S --needed --noconfirm $PKGS && _bulk_ok=1 ;;
+    dnf)    _rto 1800 dnf install -y --setopt=install_weak_deps=False $PKGS && _bulk_ok=1 ;;
+    yum)    _rto 1800 yum install -y $PKGS && _bulk_ok=1 ;;
+    zypper) _rto 1800 zypper --non-interactive install --no-recommends $PKGS && _bulk_ok=1 ;;
+    xbps)   _rto 1800 xbps-install -y $PKGS && _bulk_ok=1 ;;
+    portage) _rto 3600 emerge --noreplace $PKGS && _bulk_ok=1 ;;
 esac
 if [ "$_bulk_ok" = 1 ]; then
     note "bulk install succeeded"
@@ -221,7 +222,7 @@ if [ "$_bulk_ok" = 1 ]; then
 else
     note "bulk install failed or timed out; falling back to per-package (slower)..."
     for p in $PKGS; do
-        if install_one "$p" >/dev/null 2>&1; then
+        if install_one "$p"; then
             INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
         else
             SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
@@ -231,8 +232,8 @@ else
 fi
 note "package pass complete: $INSTALLED_COUNT installed/already present, $SKIPPED_COUNT skipped"
 if [ "$PACKAGE_MANAGER" = apt ]; then
-    dpkg --force-confold --configure -a >/dev/null 2>&1 || warn "Some Debian packages remain unconfigured; run: dpkg --configure -a"
-    apt-get clean >/dev/null 2>&1 || true
+    dpkg --force-confold --configure -a || warn "Some Debian packages remain unconfigured; run: dpkg --configure -a"
+    apt-get clean || true
 fi
 
 # Account tools and Bash now exist even on a minimal image.
