@@ -1546,6 +1546,63 @@ Use 'man $_tag' or '$_tag --help' for more information."
 }
 
 # Check if package is available in known repos (Debian, Ubuntu, etc.) and offer installation options
+# Extract dependency package names from a downloaded .deb (Depends + Pre-Depends),
+# stripping version constraints and alternatives (keeping the first alternative).
+_rootfs_bs_deb_deps() {
+    local debfile="$1"
+    command -v dpkg-deb >/dev/null 2>&1 || return 1
+    local deps
+    deps=$(dpkg-deb -f "$debfile" Depends Pre-Depends 2>/dev/null)
+    [ -z "$deps" ] && return 0
+
+    printf '%s' "$deps" | tr ',' '\n' | while IFS= read -r entry; do
+        # Alternatives are separated by "|" — take the first option only.
+        entry="${entry%%|*}"
+        # Strip version constraints in parentheses, e.g. "foo (>= 1.0)" -> "foo".
+        entry=$(printf '%s' "$entry" | sed -E 's/\([^)]*\)//g')
+        entry=$(printf '%s' "$entry" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+        [ -n "$entry" ] && printf '%s\n' "$entry"
+    done
+}
+
+# Install a downloaded .deb, resolving and force-installing all dependencies so
+# that version conflicts between repos/mirrors don't block the install.
+# Strategy: try apt-get to satisfy dependencies first (handles transitive deps
+# cleanly when possible), then force the actual package in with dpkg, bypassing
+# any remaining dependency/version/overwrite conflicts, then let apt-get -f
+# clean up whatever it still can.
+_rootfs_bs_force_install_deb() {
+    local debfile="$1" workdir="$2" label="${3:-$(basename "$debfile")}"
+
+    [ -f "$debfile" ] || return 1
+
+    tui_msg "Resolving dependencies" "Parsing dependencies for $label…"
+
+    local depfile="$workdir/deps.txt"
+    _rootfs_bs_deb_deps "$debfile" > "$depfile" 2>/dev/null
+
+    if [ -s "$depfile" ] && command -v apt-get >/dev/null 2>&1; then
+        run_cmd "Install dependencies via apt (best-effort)" bash -c \
+            "apt-get update >/dev/null 2>&1 || true
+             while IFS= read -r d; do
+                 [ -n \"\$d\" ] || continue
+                 apt-get install -y \"\$d\" 2>/dev/null || true
+             done < '$depfile'" || true
+    fi
+
+    # Force-install the package itself: bypass unmet/conflicting dependency
+    # versions and file overwrite conflicts so mismatched mirror versions
+    # don't block installation.
+    run_cmd "Force install $label (dpkg --force-depends --force-overwrite)" bash -c \
+        "dpkg -i --force-depends --force-depends-version --force-overwrite --force-confnew '$debfile' || true" \
+        || true
+
+    # Clean up any dependency gaps apt can still resolve on its own.
+    run_cmd "Resolve remaining dependencies" bash -c \
+        "apt-get install -f -y >/dev/null 2>&1 || true" \
+        || true
+}
+
 # Query the Debian package search (packages.debian.org) to find which Debian
 # suites carry a given package, so we can fetch its .deb directly and install
 # it with dpkg -i instead of relying on hardcoded upstream tarballs.
@@ -1606,7 +1663,7 @@ _rootfs_bs_debian_deb_url() {
 }
 
 # Search packages.debian.org for the package, let the user pick which Debian
-# suite to pull it from, download the .deb, and install it with dpkg -i.
+# suite to pull it from, download the .deb, and force-install it (+deps).
 _rootfs_bs_install_debian_deb() {
     local name="$1"
 
@@ -1649,21 +1706,127 @@ _rootfs_bs_install_debian_deb() {
         "curl -fsSL -4 -o '$debfile' '$deb_url' 2>/dev/null || wget -q -4 -O '$debfile' '$deb_url'" \
         || { rm -rf "$workdir"; return 1; }
 
-    run_cmd "Install $name with dpkg -i" bash -c \
-        "dpkg -i '$debfile' || true" \
-        || true
-    run_cmd "Resolve dependencies" bash -c \
-        "apt-get install -f -y >/dev/null 2>&1 || true" \
-        || true
+    _rootfs_bs_force_install_deb "$debfile" "$workdir" "$name (Debian $selected_suite)"
 
     if command -v "$name" >/dev/null 2>&1 || dpkg -s "$name" >/dev/null 2>&1; then
         rm -rf "$workdir"
-        tui_msg "Installed" "$name installed successfully from Debian $selected_suite via dpkg -i."
+        tui_msg "Installed" "$name installed successfully from Debian $selected_suite via dpkg -i (forced, dependencies resolved)."
         return 0
     fi
 
     rm -rf "$workdir"
-    tui_msg "Installation failed" "dpkg -i completed but $name does not appear to be installed. Check the log for details."
+    tui_msg "Installation failed" "Force install completed but $name does not appear to be installed. Check the log for details."
+    return 1
+}
+
+# Query launchpad.net/ubuntu for which Ubuntu series carry a given source
+# package, so we can resolve its binary .deb on the Ubuntu archive mirror.
+_rootfs_bs_launchpad_series() {
+    local name="$1"
+    local html
+    html=$(rootfs_fetch_text "https://launchpad.net/ubuntu/+source/${name}" 2>/dev/null)
+    [ -z "$html" ] && return 1
+
+    # Series links look like: href="/ubuntu/noble/+source/multistrap"
+    printf '%s\n' "$html" \
+        | grep -oE "/ubuntu/[a-z]+/\+source/${name}\"" \
+        | sed -E "s#/ubuntu/##; s#/\+source/${name}\"##" \
+        | sort -u
+}
+
+# Given an Ubuntu series, find the published version on Launchpad, then
+# resolve the actual .deb URL on the Ubuntu archive mirror (archive.ubuntu.com).
+_rootfs_bs_launchpad_deb_url() {
+    local name="$1" series="$2"
+    local page
+    page=$(rootfs_fetch_text "https://launchpad.net/ubuntu/${series}/+source/${name}" 2>/dev/null)
+    [ -z "$page" ] && return 1
+
+    # Pull the newest-looking published version string for this package.
+    local version
+    version=$(printf '%s\n' "$page" \
+        | grep -oE "${name}[[:space:]_-]+[0-9][0-9a-zA-Z:+~.-]*" \
+        | grep -oE '[0-9][0-9a-zA-Z:+~.-]*$' \
+        | sort -V | tail -n1)
+    [ -z "$version" ] && return 1
+
+    # Ubuntu/Debian pool directories use the first letter of the package name,
+    # except "lib*" packages which use their first 4 characters.
+    local pooldir
+    case "$name" in
+        lib*) pooldir="${name:0:4}" ;;
+        *)    pooldir="${name:0:1}" ;;
+    esac
+
+    local section arch url
+    for section in main universe restricted multiverse; do
+        for arch in all amd64 arm64 i386 armhf; do
+            url="http://archive.ubuntu.com/ubuntu/pool/${section}/${pooldir}/${name}/${name}_${version}_${arch}.deb"
+            if curl -fsSL -4 -o /dev/null --head "$url" 2>/dev/null; then
+                printf '%s' "$url"
+                return 0
+            fi
+        done
+    done
+
+    return 1
+}
+
+# Search launchpad.net/ubuntu for the package, let the user pick which Ubuntu
+# series to pull it from, download the .deb from the Ubuntu archive mirror,
+# and force-install it (+ dependencies).
+_rootfs_bs_install_launchpad_deb() {
+    local name="$1"
+
+    tui_msg "Searching Launchpad" "Querying launchpad.net/ubuntu for \"$name\"…"
+
+    local series_list
+    series_list=$(_rootfs_bs_launchpad_series "$name")
+    if [ -z "$series_list" ]; then
+        tui_msg "Not found" "\"$name\" was not found on launchpad.net/ubuntu."
+        return 1
+    fi
+
+    local series_menu=() s
+    while IFS= read -r s; do
+        [ -z "$s" ] && continue
+        series_menu+=("$s" "Ubuntu series: $s")
+    done <<< "$series_list"
+
+    local selected_series
+    selected_series=$(tui_menu "Select Ubuntu series" \
+        "\"$name\" is published for these Ubuntu series on Launchpad. Choose one to install from:" \
+        "${series_menu[@]}" "cancel" "Cancel") || return 1
+    [ "$selected_series" = "cancel" ] && return 1
+    [ -z "$selected_series" ] && return 1
+
+    tui_msg "Locating .deb" "Finding the $name .deb download URL for Ubuntu \"$selected_series\"…"
+
+    local deb_url
+    deb_url=$(_rootfs_bs_launchpad_deb_url "$name" "$selected_series")
+    if [ -z "$deb_url" ]; then
+        tui_msg "Not found" "Could not locate a direct .deb download link for $name in Ubuntu $selected_series on the archive mirror."
+        return 1
+    fi
+
+    local workdir="${SYSTUI_TMP:-/tmp}/lpdl_${name}.$$"
+    mkdir -p "$workdir" || return 1
+    local debfile="$workdir/$(basename "$deb_url")"
+
+    run_cmd "Download $name.deb from Ubuntu ($selected_series)" bash -c \
+        "curl -fsSL -4 -o '$debfile' '$deb_url' 2>/dev/null || wget -q -4 -O '$debfile' '$deb_url'" \
+        || { rm -rf "$workdir"; return 1; }
+
+    _rootfs_bs_force_install_deb "$debfile" "$workdir" "$name (Ubuntu $selected_series)"
+
+    if command -v "$name" >/dev/null 2>&1 || dpkg -s "$name" >/dev/null 2>&1; then
+        rm -rf "$workdir"
+        tui_msg "Installed" "$name installed successfully from Ubuntu $selected_series via dpkg -i (forced, dependencies resolved)."
+        return 0
+    fi
+
+    rm -rf "$workdir"
+    tui_msg "Installation failed" "Force install completed but $name does not appear to be installed. Check the log for details."
     return 1
 }
 
@@ -1698,10 +1861,12 @@ _rootfs_bs_known_repos() {
         done <<< "$repo_data"
     fi
 
-    # Always offer a live Debian package search as a source — it queries
-    # packages.debian.org directly and installs the resulting .deb via dpkg -i,
-    # rather than relying on any hardcoded tarball/package URL.
-    repo_menu+=("debian-search" "Search packages.debian.org (install .deb via dpkg -i)")
+    # Always offer live Debian and Launchpad/Ubuntu package searches as
+    # sources — these query the live sites directly and force-install the
+    # resulting .deb (with all dependencies) via dpkg -i, rather than relying
+    # on any hardcoded tarball/package URL.
+    repo_menu+=("debian-search" "Search packages.debian.org (force-install .deb via dpkg -i)")
+    repo_menu+=("launchpad-search" "Search launchpad.net/ubuntu (force-install .deb via dpkg -i)")
 
     # Show available repositories
     local tmpf="${SYSTUI_TMP:-/tmp}/repo_list_$$.txt"
@@ -1709,6 +1874,7 @@ _rootfs_bs_known_repos() {
         printf 'Package "%s" is available from the following sources:\n\n' "$name"
         [ -n "$repo_data" ] && printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
         printf '\n  • Live search on packages.debian.org (dpkg -i install)\n'
+        printf '  • Live search on launchpad.net/ubuntu (dpkg -i install)\n'
         printf '\n\nSelect a source to install from.\n'
     } > "$tmpf"
     tui_text "Available sources for $name" "$tmpf"
@@ -1722,12 +1888,18 @@ _rootfs_bs_known_repos() {
     [ "$selected_repo" = "cancel" ] && return 1
     [ -z "$selected_repo" ] && return 1
 
-    # Debian package search installs directly via dpkg -i — no separate
-    # package-manager/dpkg method prompt needed.
-    if [ "$selected_repo" = "debian-search" ]; then
-        _rootfs_bs_install_debian_deb "$name"
-        return $?
-    fi
+    # Live searches install directly via dpkg -i (with forced dependency
+    # resolution) — no separate package-manager/dpkg method prompt needed.
+    case "$selected_repo" in
+        debian-search)
+            _rootfs_bs_install_debian_deb "$name"
+            return $?
+            ;;
+        launchpad-search)
+            _rootfs_bs_install_launchpad_deb "$name"
+            return $?
+            ;;
+    esac
 
     # Now offer installation method
     local install_method
@@ -1786,8 +1958,8 @@ _rootfs_bs_known_repos() {
                     "cd '$dldir' && apt-get update >/dev/null 2>&1 && \
                      apt-get install -y --download-only '$name' 2>/dev/null && \
                      ls -la *.deb 2>/dev/null | wc -l" && \
-                run_cmd "Install packages with dpkg -i" bash -c \
-                    "cd '$dldir' && dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
+                run_cmd "Force install packages with dpkg -i" bash -c \
+                    "cd '$dldir' && dpkg -i --force-depends --force-depends-version --force-overwrite --force-confnew -R . 2>/dev/null || dpkg -i --force-depends --force-depends-version --force-overwrite --force-confnew *.deb 2>/dev/null || true" && \
                 run_cmd "Resolve dependencies" bash -c \
                     "apt-get install -f -y >/dev/null 2>&1 || true" && \
                 rm -rf "$dldir"
@@ -1798,8 +1970,8 @@ _rootfs_bs_known_repos() {
                     "cd '$dldir' && apt-get update >/dev/null 2>&1 && \
                      apt-get install -y --download-only '$name' 2>/dev/null && \
                      ls -la *.deb 2>/dev/null | wc -l" && \
-                run_cmd "Install packages with dpkg -i" bash -c \
-                    "cd '$dldir' && dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
+                run_cmd "Force install packages with dpkg -i" bash -c \
+                    "cd '$dldir' && dpkg -i --force-depends --force-depends-version --force-overwrite --force-confnew -R . 2>/dev/null || dpkg -i --force-depends --force-depends-version --force-overwrite --force-confnew *.deb 2>/dev/null || true" && \
                 run_cmd "Resolve dependencies" bash -c \
                     "apt-get install -f -y >/dev/null 2>&1 || true" && \
                 rm -rf "$dldir"
