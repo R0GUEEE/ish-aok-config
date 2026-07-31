@@ -1341,11 +1341,14 @@ _CATALOGUE_
 }
 
 # Offer a web-search fallback when a bootstrap tool cannot be installed via the
-# native package manager.  Uses rootfs_fetch_text (curl/wget, IPv4, silent).
+# native package manager. Searches repology.org + GitHub releases for alternatives.
 _rootfs_bs_web_fallback() {
     local name="$1"
-    tui_msg "Bootstrap tool not found" "'$name' is not available via $PM.\n\nSearching repology.org for alternatives…"
+    tui_msg "Bootstrap tool not found" "'$name' is not available via $PM.\n\nSearching for alternatives via repology.org and GitHub…"
 
+    local tmpf="${SYSTUI_TMP}/bsweb_$$.txt" tmpgit="${SYSTUI_TMP}/bsgit_$$.txt"
+    
+    # Query repology.org for cross-distro packages
     local results
     results=$(rootfs_fetch_text "https://repology.org/api/v1/project/${name}" 2>/dev/null \
         | tr '},{' '\n' \
@@ -1357,17 +1360,39 @@ _rootfs_bs_web_fallback() {
             if (repo && pkg) printf "  %-28s %s\n", repo":", pkg
         }' 2>/dev/null | sort -u | head -30)
 
-    [ -z "$results" ] && results="(No results — check network or try a different name)"
+    [ -z "$results" ] && results="(No repology results)"
 
-    local tmpf="${SYSTUI_TMP}/bsweb_$$.txt"
-    printf 'Repology results for: %s\n\n%s\n' "$name" "$results" > "$tmpf"
-    tui_text "Web search: $name" "$tmpf"
-    rm -f "$tmpf"
+    # Search GitHub releases for the tool
+    local gh_info=""
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        gh_info=$(rootfs_fetch_text "https://api.github.com/search/repositories?q=${name}+type:repo+sort:stars&per_page=5&order=desc" 2>/dev/null \
+            | grep -o '"full_name":"[^"]*"' | head -5 | sed 's/"full_name":"//; s/"$//' | \
+            awk '{printf "  github.com/%s\n", $0}' 2>/dev/null)
+        [ -n "$gh_info" ] && gh_info="GitHub projects:\n$gh_info"
+    fi
+
+    {
+        printf 'REPOLOGY PACKAGE ALTERNATIVES for: %s\n' "$name"
+        printf '=%.0s' {1..50}
+        printf '\n%s\n\n' "$results"
+        if [ -n "$gh_info" ]; then
+            printf '\nGITHUB REPOSITORIES\n'
+            printf '=%.0s' {1..50}
+            printf '\n%b\n\n' "$gh_info"
+            printf 'GitHub releases often provide pre-built binaries that can be\n'
+            printf 'downloaded directly via curl/wget, which is useful when the\n'
+            printf 'package is not available in your distro'\''s repository.\n'
+        fi
+    } > "$tmpf"
+    tui_text "Installation alternatives: $name" "$tmpf"
+    rm -f "$tmpf" "$tmpgit"
 
     local action
     action=$(tui_menu "Install $name" "Choose an alternative install method:" \
         rename  "Try a different package name via $PM" \
+        github  "Search GitHub releases for pre-built binary" \
         cmd     "Run a custom install command" \
+        compile "Compile from source" \
         skip    "Skip this tool") || return 0
 
     case "$action" in
@@ -1376,6 +1401,26 @@ _rootfs_bs_web_fallback() {
             alt=$(tui_input "Package name" "Enter alternative package name for $PM:" "$name") || return 0
             [ -z "$alt" ] && return 0
             pm_install "$alt"
+            ;;
+        github)
+            local gh_project
+            gh_project=$(tui_input "GitHub project" "Enter owner/repo (e.g. gremlin/gremlin):" "") || return 0
+            [ -z "$gh_project" ] && return 0
+            local dl_url
+            dl_url=$(tui_input "Download URL" "Binary URL from GitHub releases:" "") || return 0
+            [ -z "$dl_url" ] && return 0
+            local install_path
+            install_path=$(tui_input "Install path" "Where to install (e.g. /usr/local/bin/$name):" "/usr/local/bin/$name") || return 0
+            run_cmd "Download $name from GitHub" bash -c "curl -fsSL '$dl_url' | tar -xz -C /tmp && mv /tmp/$name '$install_path' && chmod +x '$install_path'" || \
+            run_cmd "Download $name from GitHub" bash -c "wget -q -O - '$dl_url' | tar -xz -C /tmp && mv /tmp/$name '$install_path' && chmod +x '$install_path'"
+            ;;
+        compile)
+            local src_url
+            src_url=$(tui_input "Source URL" "Git repository or tarball URL:" "") || return 0
+            [ -z "$src_url" ] && return 0
+            run_cmd "Clone $name source" bash -c "cd /tmp && git clone '$src_url' $name && cd $name && ls -la" || \
+            run_cmd "Extract $name source" bash -c "cd /tmp && curl -fsSL '$src_url' | tar -xz && ls -la"
+            tui_msg "Source fetched" "Run './configure && make && make install' in /tmp/$name"
             ;;
         cmd)
             local icmd
