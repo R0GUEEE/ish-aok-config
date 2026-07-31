@@ -3322,7 +3322,7 @@ menu_brew_install() {
 
     c=$(tui_menu "Install Homebrew" "$status_line\n\nChoose installation method:" \
         user      "Standard install — run as non-root user (recommended)" \
-        rootcomp  "Root-compatibility layer — iSH-AOK / Debian arm64 (requires root)" \
+        rootcomp  "Root-compatibility layer — install with root permissions (any system)" \
         rootbypass "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
         prefix    "Set custom HOMEBREW_PREFIX" \
         cellar    "Set custom HOMEBREW_CELLAR" \

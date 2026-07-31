@@ -45,6 +45,50 @@ rootfs_tar_supports() { # <option>
     tar "$1" --help >/dev/null 2>&1 || tar --help 2>&1 | grep -q -- "$1"
 }
 
+# rootfs_tar_create <format:gz|xz|zst> <src-dir> <archive-path>
+# Creates a rootfs archive that works on both GNU tar and BusyBox tar:
+#   - probes --numeric-owner (unsupported on BusyBox → omitted)
+#   - probes --sparse / -S (prevents "padding with zeros" on sparse files like
+#     /var/log/lastlog and /var/log/btmp whose stat size exceeds actual data)
+#   - falls back to pipe through xz/zstd when -J / --zstd aren't available
+rootfs_tar_create() {
+    local fmt="$1" src="$2" out="$3"
+    local -a flags=()
+
+    # --numeric-owner: BusyBox tar does not support this; skip when absent.
+    rootfs_tar_supports --numeric-owner && flags+=(--numeric-owner)
+
+    # Sparse file support: prevents "file shrank / padding with zeros" on
+    # files like /var/log/lastlog that have a large apparent size but holes.
+    if rootfs_tar_supports --sparse; then
+        flags+=(--sparse)
+    elif tar -S /dev/null >/dev/null 2>&1; then
+        flags+=(-S)
+    fi
+
+    case "$fmt" in
+        gz)
+            tar -C "$src" "${flags[@]}" -czf "$out" .
+            ;;
+        xz)
+            if rootfs_tar_supports -J; then
+                tar -C "$src" "${flags[@]}" -cJf "$out" .
+            else
+                # BusyBox tar without built-in xz: pipe through xz binary.
+                tar -C "$src" "${flags[@]}" -cf - . | xz -zc > "$out"
+            fi
+            ;;
+        zst)
+            if rootfs_tar_supports --zstd; then
+                tar --zstd -C "$src" "${flags[@]}" -cf "$out" .
+            else
+                # Pipe through zstd when --zstd long option is unavailable.
+                tar -C "$src" "${flags[@]}" -cf - . | zstd -c > "$out"
+            fi
+            ;;
+    esac
+}
+
 rootfs_fetch_text() { # <url>
     if command -v curl >/dev/null 2>&1; then
         curl -4 -LfsS --connect-timeout 10 --max-time 120 "$1"
@@ -1855,9 +1899,9 @@ Proceed?" || return 0
             show_warnings
         else
             case "$comp" in
-                gz)  run_cmd "Compressing rootfs -> $archive" tar -C "$target" --numeric-owner -czf "$archive" . ;;
-                xz)  run_cmd "Compressing rootfs -> $archive" tar -C "$target" --numeric-owner -cJf "$archive" . ;;
-                zst) run_cmd "Compressing rootfs -> $archive" tar --zstd -C "$target" --numeric-owner -cf "$archive" . ;;
+                gz)  run_cmd "Compressing rootfs -> $archive" rootfs_tar_create gz  "$target" "$archive" ;;
+                xz)  run_cmd "Compressing rootfs -> $archive" rootfs_tar_create xz  "$target" "$archive" ;;
+                zst) run_cmd "Compressing rootfs -> $archive" rootfs_tar_create zst "$target" "$archive" ;;
             esac && tui_msg "Done" "Archive written:\n$archive"
         fi
     fi
@@ -2957,9 +3001,9 @@ rootfs_manage() {
                 [ -z "$comp" ] && continue
                 local ext
                 case "$comp" in
-                    zst) ext="tar.zst"; command -v zstd >/dev/null || { tui_msg "Missing tool" "zstd is required for tar.zst archives."; continue; }; run_cmd "Compressing -> $sel.$ext" tar --zstd -C "$sel" --numeric-owner -cf "$sel.$ext" . ;;
-                    gz)  ext="tar.gz"; run_cmd "Compressing -> $sel.$ext" tar -C "$sel" --numeric-owner -czf "$sel.$ext" . ;;
-                    xz)  ext="tar.xz"; run_cmd "Compressing -> $sel.$ext" tar -C "$sel" --numeric-owner -cJf "$sel.$ext" . ;;
+                    zst) ext="tar.zst"; command -v zstd >/dev/null || { tui_msg "Missing tool" "zstd is required for tar.zst archives."; continue; }; run_cmd "Compressing -> $sel.$ext" rootfs_tar_create zst "$sel" "$sel.$ext" ;;
+                    gz)  ext="tar.gz"; run_cmd "Compressing -> $sel.$ext" rootfs_tar_create gz  "$sel" "$sel.$ext" ;;
+                    xz)  ext="tar.xz"; run_cmd "Compressing -> $sel.$ext" rootfs_tar_create xz  "$sel" "$sel.$ext" ;;
                 esac ;;
             delete)
                 local typed
