@@ -2568,7 +2568,11 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     nix) nix store gc ;;
                 esac ;;
             config)
-                [ -n "$cfg" ] && pm_edit_file "$cfg" || tui_msg "$id" "No single configuration file is used by this manager." ;;
+                if [ "$id" = brew ]; then
+                    menu_brew_config
+                else
+                    [ -n "$cfg" ] && pm_edit_file "$cfg" || tui_msg "$id" "No single configuration file is used by this manager."
+                fi ;;
             doctor)
                 case "$id" in
                     pip) pip3 check ;;
@@ -3315,92 +3319,269 @@ brew_run_as() { # <description> <brew-args...>
 }
 
 menu_brew_install() {
-    local c script buser status_line
-    buser=$(brew_target_user)
-    status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled)"
-    [ -n "$buser" ] && status_line+=" | Install target: $buser" || status_line+=" | No non-root user found"
+    local c script buser
+    while true; do
+        buser=$(brew_target_user)
+        local status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled)"
+        [ -n "$buser" ] && status_line+=" | Target user: $buser" || status_line+=" | No non-root user found"
 
-    c=$(tui_menu "Install Homebrew" "$status_line\n\nChoose installation method:" \
-        user      "Standard install — run as non-root user (recommended)" \
-        rootcomp  "Root-compatibility layer — install with root permissions (any system)" \
-        rootbypass "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
-        prefix    "Set custom HOMEBREW_PREFIX" \
-        cellar    "Set custom HOMEBREW_CELLAR" \
-        repair    "Repair / re-link existing Homebrew installation" \
-        uninstall "Uninstall Homebrew" \
-        back      "Back") || return 0
+        c=$(tui_menu "Homebrew" "$status_line\n\nInstall / Manage:" \
+            user       "Standard install — run as non-root user (recommended)" \
+            rootcomp   "Root-compatibility layer — install with root permissions (any system)" \
+            reinstall  "Force reinstall — uninstall then reinstall" \
+            rootbypass "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
+            config     "Full configuration setup" \
+            repair     "Repair / re-link existing Homebrew installation" \
+            uninstall  "Uninstall Homebrew" \
+            back       "Back") || return 0
 
-    case "$c" in
-        user)
-            local install_user; install_user=$(brew_target_user)
-            if [ -z "$install_user" ] || [ "$install_user" = root ]; then
-                tui_msg "Homebrew" "No non-root account found to install under.\nCreate a user account first or enable root bypass."
-                return 0
-            fi
-            tui_msg "Homebrew install" "Installing Homebrew as '$install_user'.\nThis will download and run the official install script."
-            run_cmd "Install Homebrew (as $install_user)" \
-                sudo -u "$install_user" -H bash -c \
-                'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-            ;;
-        rootcomp)
-            if [ "$(id -u)" -ne 0 ]; then
-                tui_msg "Homebrew" "Root privileges are required for the root-compat layer."
-                return 0
-            fi
-            script=$(brew_root_compat_script)
-            [ -r "$script" ] || { tui_msg "Homebrew" "Installer script not found:\n$script"; return 0; }
-            run_cmd "Install Homebrew (root-compatible)" bash "$script"
-            ;;
-        rootbypass)
-            if [ "$(id -u)" -ne 0 ]; then
-                tui_msg "Root bypass" "Changing the system-wide root bypass requires root."; return 0
-            fi
-            if brew_root_bypass_enabled; then
-                tui_yesno "Disable root bypass" "Remove HOMEBREW_ALLOW_ROOT from /etc/systui/homebrew.env?" || return 0
-                brew_set_root_bypass 0
-                tui_msg "Root bypass" "Root bypass disabled. brew commands will now run under the non-root target user."
-            else
-                tui_yesno "Enable root bypass" "Set HOMEBREW_ALLOW_ROOT=1 permanently in /etc/systui/homebrew.env?\n\nThis allows brew to run directly as root. Use only if the root-compat layer is installed." || return 0
-                brew_set_root_bypass 1
-                tui_msg "Root bypass" "Root bypass enabled. brew commands will now run as root directly."
-            fi
-            ;;
-        prefix)
-            local val; val=$(tui_input "HOMEBREW_PREFIX" "Custom prefix path (e.g. /home/linuxbrew/.linuxbrew):" "${HOMEBREW_PREFIX:-}") || return 0
-            [ -z "$val" ] && return 0
-            mkdir -p /etc/systui
-            grep -qs 'HOMEBREW_PREFIX=' /etc/systui/homebrew.env \
-                && sed -i "s|^HOMEBREW_PREFIX=.*|HOMEBREW_PREFIX=$val|" /etc/systui/homebrew.env \
-                || echo "HOMEBREW_PREFIX=$val" >> /etc/systui/homebrew.env
-            tui_msg "HOMEBREW_PREFIX" "Set to $val in /etc/systui/homebrew.env"
-            ;;
-        cellar)
-            local val; val=$(tui_input "HOMEBREW_CELLAR" "Custom cellar path (e.g. /home/linuxbrew/.linuxbrew/Cellar):" "${HOMEBREW_CELLAR:-}") || return 0
-            [ -z "$val" ] && return 0
-            mkdir -p /etc/systui
-            grep -qs 'HOMEBREW_CELLAR=' /etc/systui/homebrew.env \
-                && sed -i "s|^HOMEBREW_CELLAR=.*|HOMEBREW_CELLAR=$val|" /etc/systui/homebrew.env \
-                || echo "HOMEBREW_CELLAR=$val" >> /etc/systui/homebrew.env
-            tui_msg "HOMEBREW_CELLAR" "Set to $val in /etc/systui/homebrew.env"
-            ;;
-        repair)
-            brew_run_as "Homebrew repair" cleanup --prune=all
-            brew_run_as "Homebrew relink" link --overwrite --force 2>/dev/null || true
-            brew_run_as "Homebrew doctor" doctor
-            ;;
-        uninstall)
-            tui_yesno "Uninstall Homebrew" "This will remove Homebrew and all installed formulae. Continue?" || return 0
-            local ubuser; ubuser=$(brew_target_user)
-            if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
-                run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
-                    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
-            else
-                run_cmd "Uninstall Homebrew" bash -c \
-                    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
-            fi
-            ;;
-        back|"") return 0 ;;
-    esac
+        case "$c" in
+            user)
+                local install_user; install_user=$(brew_target_user)
+                if [ -z "$install_user" ] || [ "$install_user" = root ]; then
+                    tui_msg "Homebrew" "No non-root account found to install under.\nCreate a user account first or enable root bypass."
+                    continue
+                fi
+                tui_msg "Homebrew install" "Installing Homebrew as '$install_user'.\nThis will download and run the official install script."
+                run_cmd "Install Homebrew (as $install_user)" \
+                    sudo -u "$install_user" -H bash -c \
+                    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                ;;
+            rootcomp)
+                if [ "$(id -u)" -ne 0 ]; then
+                    tui_msg "Homebrew" "Root privileges are required for the root-compat layer."
+                    continue
+                fi
+                script=$(brew_root_compat_script)
+                [ -r "$script" ] || { tui_msg "Homebrew" "Installer script not found:\n$script"; continue; }
+                run_cmd "Install Homebrew (root-compatible)" bash "$script"
+                ;;
+            reinstall)
+                local ri_method
+                ri_method=$(tui_menu "Reinstall Homebrew" "Choose reinstall method:" \
+                    user      "Standard (non-root user)" \
+                    rootcomp  "Root-compatibility layer (requires root)" \
+                    back      "Cancel") || continue
+                [ "$ri_method" = back ] || [ -z "$ri_method" ] && continue
+                tui_yesno "Reinstall Homebrew" "Uninstall existing Homebrew first, then reinstall fresh?\n\nAll installed formulae will be removed." || continue
+                # Uninstall first
+                local ubuser; ubuser=$(brew_target_user)
+                if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
+                    run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
+                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"' || true
+                else
+                    run_cmd "Uninstall Homebrew" bash -c \
+                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"' || true
+                fi
+                # Reinstall
+                case "$ri_method" in
+                    user)
+                        local iu; iu=$(brew_target_user)
+                        if [ -z "$iu" ] || [ "$iu" = root ]; then
+                            tui_msg "Homebrew" "No non-root user found for reinstall."; continue
+                        fi
+                        run_cmd "Reinstall Homebrew (as $iu)" \
+                            sudo -u "$iu" -H bash -c \
+                            'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                        ;;
+                    rootcomp)
+                        if [ "$(id -u)" -ne 0 ]; then
+                            tui_msg "Homebrew" "Root required for root-compat reinstall."; continue
+                        fi
+                        script=$(brew_root_compat_script)
+                        [ -r "$script" ] || { tui_msg "Homebrew" "Installer script not found:\n$script"; continue; }
+                        run_cmd "Reinstall Homebrew (root-compatible)" bash "$script"
+                        ;;
+                esac
+                ;;
+            rootbypass)
+                if [ "$(id -u)" -ne 0 ]; then
+                    tui_msg "Root bypass" "Changing the system-wide root bypass requires root."; continue
+                fi
+                if brew_root_bypass_enabled; then
+                    tui_yesno "Disable root bypass" "Remove HOMEBREW_ALLOW_ROOT from /etc/systui/homebrew.env?" || continue
+                    brew_set_root_bypass 0
+                    tui_msg "Root bypass" "Root bypass disabled. brew commands will now run under the non-root target user."
+                else
+                    tui_yesno "Enable root bypass" "Set HOMEBREW_ALLOW_ROOT=1 permanently in /etc/systui/homebrew.env?\n\nThis allows brew to run directly as root. Use only if the root-compat layer is installed." || continue
+                    brew_set_root_bypass 1
+                    tui_msg "Root bypass" "Root bypass enabled. brew commands will now run as root directly."
+                fi
+                ;;
+            config) menu_brew_config ;;
+            repair)
+                brew_run_as "Homebrew repair" cleanup --prune=all
+                brew_run_as "Homebrew relink" link --overwrite --force 2>/dev/null || true
+                brew_run_as "Homebrew doctor" doctor
+                ;;
+            uninstall)
+                tui_yesno "Uninstall Homebrew" "This will remove Homebrew and all installed formulae. Continue?" || continue
+                local ubuser; ubuser=$(brew_target_user)
+                if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
+                    run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
+                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
+                else
+                    run_cmd "Uninstall Homebrew" bash -c \
+                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
+                fi
+                ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+# Helper: write or remove a single key=value in a Homebrew env file.
+# If value is empty the line is removed; otherwise it is upserted.
+_brew_cfg_set() { # <envfile> <KEY> <value-or-empty>
+    local envf="$1" key="$2" val="$3"
+    mkdir -p "$(dirname "$envf")"
+    touch "$envf" 2>/dev/null || true
+    if [ -z "$val" ]; then
+        sed -i "/^${key}=/d" "$envf" 2>/dev/null || true
+    else
+        if grep -qs "^${key}=" "$envf"; then
+            sed -i "s|^${key}=.*|${key}=${val}|" "$envf"
+        else
+            echo "${key}=${val}" >> "$envf"
+        fi
+    fi
+}
+
+# Helper: read current value for a key from the env file (empty string if unset).
+_brew_cfg_get() { # <envfile> <KEY>
+    grep "^${2}=" "$1" 2>/dev/null | cut -d= -f2- | tail -1
+}
+
+menu_brew_config() {
+    local envf; envf=$(brew_root_compat_env_file)
+
+    while true; do
+        # Reload current values on every iteration so the menu reflects live state.
+        local _a _au _eh _cl _nu _api _verb _dbg _mj _bd _ed _co _pfx _clr _tok
+
+        _a=$(_brew_cfg_get "$envf" HOMEBREW_NO_ANALYTICS)
+        _au=$(_brew_cfg_get "$envf" HOMEBREW_NO_AUTO_UPDATE)
+        _eh=$(_brew_cfg_get "$envf" HOMEBREW_NO_ENV_HINTS)
+        _cl=$(_brew_cfg_get "$envf" HOMEBREW_NO_INSTALL_CLEANUP)
+        _nu=$(_brew_cfg_get "$envf" HOMEBREW_NO_INSTALL_UPGRADE)
+        _api=$(_brew_cfg_get "$envf" HOMEBREW_INSTALL_FROM_API)
+        _verb=$(_brew_cfg_get "$envf" HOMEBREW_VERBOSE)
+        _dbg=$(_brew_cfg_get "$envf" HOMEBREW_DEBUG)
+        _mj=$(_brew_cfg_get "$envf" HOMEBREW_MAKE_JOBS)
+        _bd=$(_brew_cfg_get "$envf" HOMEBREW_BOTTLE_DOMAIN)
+        _ed=$(_brew_cfg_get "$envf" HOMEBREW_EDITOR)
+        _co=$(_brew_cfg_get "$envf" HOMEBREW_CASK_OPTS)
+        _pfx=$(_brew_cfg_get "$envf" HOMEBREW_PREFIX)
+        _clr=$(_brew_cfg_get "$envf" HOMEBREW_CELLAR)
+        _tok=$(_brew_cfg_get "$envf" HOMEBREW_GITHUB_API_TOKEN)
+
+        local _yn; _yn() { [ "$1" = 1 ] && echo "ON" || echo "off"; }
+
+        local c
+        c=$(tui_menu "Homebrew Config" "Config file: $envf\n\nAll settings are persisted to the env file and loaded at brew launch." \
+            toggles  "Feature toggles  (analytics, auto-update, cleanup…)" \
+            makejobs "Parallel build jobs              [${_mj:-default}]" \
+            editor   "Preferred editor  HOMEBREW_EDITOR  [${_ed:-unset}]" \
+            token    "GitHub API token  ($([ -n "$_tok" ] && echo SET || echo unset))" \
+            bottle   "Bottle mirror URL                [${_bd:-upstream}]" \
+            caskopts "Cask install opts HOMEBREW_CASK_OPTS [${_co:-unset}]" \
+            prefix   "Install prefix    HOMEBREW_PREFIX  [${_pfx:-default}]" \
+            cellar   "Cellar path       HOMEBREW_CELLAR  [${_clr:-default}]" \
+            viewfile "View / edit raw config file" \
+            reset    "Reset — remove all systui-managed brew settings" \
+            back     "Back") || return 0
+
+        case "$c" in
+            toggles)
+                local sel
+                sel=$(tui_check "Homebrew feature toggles" \
+                    "SPACE toggles; ENTER saves. Active options have [*]:" \
+                    analytics   "Disable analytics               (HOMEBREW_NO_ANALYTICS)"     "$([ "$_a"    = 1 ] && echo on || echo off)" \
+                    autoupdate  "Disable auto-update on install  (HOMEBREW_NO_AUTO_UPDATE)"   "$([ "$_au"   = 1 ] && echo on || echo off)" \
+                    envhints    "Disable environment hints       (HOMEBREW_NO_ENV_HINTS)"     "$([ "$_eh"   = 1 ] && echo on || echo off)" \
+                    cleanup     "Disable auto-cleanup after ops  (HOMEBREW_NO_INSTALL_CLEANUP)" "$([ "$_cl" = 1 ] && echo on || echo off)" \
+                    noupgrade   "Disable auto-upgrade on install (HOMEBREW_NO_INSTALL_UPGRADE)" "$([ "$_nu" = 1 ] && echo on || echo off)" \
+                    fromapi     "Install from API — faster, no tap clone (HOMEBREW_INSTALL_FROM_API)" "$([ "$_api" = 1 ] && echo on || echo off)" \
+                    verbose     "Verbose output                  (HOMEBREW_VERBOSE)"          "$([ "$_verb" = 1 ] && echo on || echo off)" \
+                    debug       "Debug mode                      (HOMEBREW_DEBUG)"            "$([ "$_dbg"  = 1 ] && echo on || echo off)") || continue
+
+                _brew_cfg_set "$envf" HOMEBREW_NO_ANALYTICS      "$(echo "$sel" | grep -q analytics  && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_NO_AUTO_UPDATE    "$(echo "$sel" | grep -q autoupdate && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_NO_ENV_HINTS      "$(echo "$sel" | grep -q envhints   && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_NO_INSTALL_CLEANUP "$(echo "$sel" | grep -q cleanup   && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_NO_INSTALL_UPGRADE "$(echo "$sel" | grep -q noupgrade && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_INSTALL_FROM_API  "$(echo "$sel" | grep -q fromapi    && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_VERBOSE           "$(echo "$sel" | grep -q verbose    && echo 1 || echo '')"
+                _brew_cfg_set "$envf" HOMEBREW_DEBUG             "$(echo "$sel" | grep -q debug      && echo 1 || echo '')"
+                tui_msg "Toggles saved" "Feature flags written to:\n$envf"
+                ;;
+            makejobs)
+                local v; v=$(tui_input "Parallel build jobs" \
+                    "Number of parallel jobs for make (blank = use nproc default):" \
+                    "${_mj:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_MAKE_JOBS "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_MAKE_JOBS=$v" || tui_msg "Cleared" "HOMEBREW_MAKE_JOBS removed (defaults to nproc)"
+                ;;
+            editor)
+                local v; v=$(tui_input "HOMEBREW_EDITOR" \
+                    "Editor command for 'brew edit' (e.g. nano, vim, code):" \
+                    "${_ed:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_EDITOR "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_EDITOR=$v" || tui_msg "Cleared" "HOMEBREW_EDITOR removed"
+                ;;
+            token)
+                local v; v=$(tui_input "GitHub API token" \
+                    "Personal Access Token for GitHub API (increases rate limits).\nLeave blank to clear." \
+                    "") || continue
+                _brew_cfg_set "$envf" HOMEBREW_GITHUB_API_TOKEN "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_GITHUB_API_TOKEN set (value hidden)." || tui_msg "Cleared" "HOMEBREW_GITHUB_API_TOKEN removed."
+                ;;
+            bottle)
+                local v; v=$(tui_input "Bottle mirror URL" \
+                    "Custom bottle CDN/mirror (e.g. https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles).\nBlank = use upstream." \
+                    "${_bd:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_BOTTLE_DOMAIN "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_BOTTLE_DOMAIN=$v" || tui_msg "Cleared" "Using upstream bottle server."
+                ;;
+            caskopts)
+                local v; v=$(tui_input "HOMEBREW_CASK_OPTS" \
+                    "Options appended to every 'brew install --cask' (e.g. --no-quarantine --appdir=~/Applications):" \
+                    "${_co:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_CASK_OPTS "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_CASK_OPTS=$v" || tui_msg "Cleared" "HOMEBREW_CASK_OPTS removed."
+                ;;
+            prefix)
+                local v; v=$(tui_input "HOMEBREW_PREFIX" \
+                    "Install prefix path (e.g. /home/linuxbrew/.linuxbrew).\nBlank = default." \
+                    "${_pfx:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_PREFIX "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_PREFIX=$v" || tui_msg "Cleared" "Using default prefix."
+                ;;
+            cellar)
+                local v; v=$(tui_input "HOMEBREW_CELLAR" \
+                    "Cellar path (e.g. /home/linuxbrew/.linuxbrew/Cellar).\nBlank = default." \
+                    "${_clr:-}") || continue
+                _brew_cfg_set "$envf" HOMEBREW_CELLAR "$v"
+                [ -n "$v" ] && tui_msg "Saved" "HOMEBREW_CELLAR=$v" || tui_msg "Cleared" "Using default cellar path."
+                ;;
+            viewfile)
+                pm_edit_file "$envf"
+                ;;
+            reset)
+                tui_yesno "Reset brew config" "Remove all Homebrew settings from:\n$envf\n\nThis only clears keys managed by systui. The file is kept." || continue
+                for _k in HOMEBREW_NO_ANALYTICS HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_ENV_HINTS \
+                           HOMEBREW_NO_INSTALL_CLEANUP HOMEBREW_NO_INSTALL_UPGRADE \
+                           HOMEBREW_INSTALL_FROM_API HOMEBREW_VERBOSE HOMEBREW_DEBUG \
+                           HOMEBREW_MAKE_JOBS HOMEBREW_BOTTLE_DOMAIN HOMEBREW_EDITOR \
+                           HOMEBREW_CASK_OPTS HOMEBREW_PREFIX HOMEBREW_CELLAR \
+                           HOMEBREW_GITHUB_API_TOKEN; do
+                    _brew_cfg_set "$envf" "$_k" ""
+                done
+                tui_msg "Reset" "All managed Homebrew settings cleared from $envf"
+                ;;
+            back|"") return 0 ;;
+        esac
+    done
 }
 
 menu_nix_install() {
