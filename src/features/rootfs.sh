@@ -1288,11 +1288,17 @@ xz-utils|xz-utils|xz-utils|xz|xz"
 
     # Build checklist args: tag  "label — description"  on/off
     # Pre-select tools already installed; mark unavailable ones off.
-    local _args=()
+    # Also track initially-installed packages to avoid reinstalling.
+    local _args=() _initially_installed=()
     while IFS='|' read -r _tag _lbl _desc; do
         [ -n "$_tag" ] || continue
         local _state
-        command -v "$_tag" >/dev/null 2>&1 && _state=on || _state=off
+        if command -v "$_tag" >/dev/null 2>&1; then
+            _state=on
+            _initially_installed+=("$_tag")
+        else
+            _state=off
+        fi
         _args+=("$_tag" "$_lbl — $_desc" "$_state")
     done <<'_CATALOGUE_'
 debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
@@ -1317,18 +1323,30 @@ _CATALOGUE_
 
     local _sel
     _sel=$(tui_check "Rootfs Bootstrap Tools" \
-        "SPACE toggles tools; ENTER installs selected:" \
+        "SPACE toggles tools; ENTER installs NEWLY SELECTED ones:" \
         "${_args[@]}") || return 0
     [ -z "$_sel" ] && return 0
 
+    # Calculate only the newly selected packages (not already installed).
     # Map selected display tags to real package names for this distro.
-    local _pkgs=()
+    local _pkgs=() _tag
     for _tag in $_sel; do
+        # Skip packages that were already installed
+        local _skip=0
+        for _inst in "${_initially_installed[@]}"; do
+            [ "$_tag" = "$_inst" ] && { _skip=1; break; }
+        done
+        [ "$_skip" -eq 1 ] && continue
+        
         local _pkg
         _pkg=$(_bs_pkg "$_tag")
         [ -n "$_pkg" ] && _pkgs+=("$_pkg")
     done
-    [ ${#_pkgs[@]} -eq 0 ] && return 0
+    
+    if [ ${#_pkgs[@]} -eq 0 ]; then
+        tui_msg "Bootstrap tools" "All selected tools are already installed."
+        return 0
+    fi
 
     # Try bulk install first; fall back to per-package with web-search on failure.
     if ! run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"; then
@@ -1340,7 +1358,7 @@ _CATALOGUE_
     fi
 }
 
-# Check if package is available in known repos (Debian, Ubuntu, etc.) and offer direct install
+# Check if package is available in known repos (Debian, Ubuntu, etc.) and automatically install
 _rootfs_bs_known_repos() {
     local name="$1"
     
@@ -1361,70 +1379,27 @@ schroot|https://packages.debian.org/bookworm/schroot|https://launchpad.net/ubunt
 
     [ "$found" -eq 0 ] && return 1
 
-    # Show available installation sources
-    local tmpf="${SYSTUI_TMP}/known_repos_$$.txt"
-    {
-        printf 'KNOWN REPOSITORY SOURCES for: %s\n\n' "$name"
-        printf 'Description: %s\n\n' "$desc"
-        printf 'Available from:\n'
-        printf '  • Debian Bookworm:\n    %s\n\n' "$deb_url"
-        printf '  • Ubuntu (via Launchpad):\n    %s\n\n' "$ubuntu_url"
-        printf 'NOTE: These are official sources with pre-built packages.\n'
-        printf 'Direct installation is faster than compiling from source.\n'
-    } > "$tmpf"
-    tui_text "Known repository sources: $name" "$tmpf"
-    rm -f "$tmpf"
-
-    local action
-    action=$(tui_menu "Install from known repo" "Choose installation method:" \
-        debian  "Install from Debian repository" \
-        ubuntu  "Install from Ubuntu repository" \
-        backport "Add Debian backports and install" \
-        ppa     "Enable Ubuntu PPA and install" \
-        web     "Show more installation options (web search)" \
-        skip    "Skip") || return 1
-
-    case "$action" in
-        debian)
-            # Check if running on Debian-like system
-            if [ -f /etc/debian_version ] || command -v apt-get >/dev/null 2>&1; then
-                tui_msg "Debian repository" "To install from Debian Bookworm:\n\n1. Visit: $deb_url\n2. Download .deb package\n3. dpkg -i <package>.deb\n\nOr add Debian repos and:\n  apt-get install $name"
-                return 1
-            fi
-            ;;
-        ubuntu)
-            # Check if running Ubuntu
-            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
-                tui_msg "Ubuntu installation" "Visit: $ubuntu_url\n\nTo install: apt-get install $name\n\nOr manually download and:\n  dpkg -i <package>.deb"
-                return 1
-            fi
-            ;;
-        backport)
-            if [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
-                run_cmd "Add Debian backports" bash -c \
-                    "echo 'deb http://deb.debian.org/debian bookworm-backports main contrib non-free' >> /etc/apt/sources.list.d/backports.list && apt-get update" && \
-                pm_install "$name" && return 0
-            else
-                tui_msg "Not Debian" "Backports only work on Debian systems."
-                return 1
-            fi
-            ;;
-        ppa)
-            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
-                # For Ubuntu, enable universe/multiverse if needed
-                run_cmd "Enable Ubuntu repositories" bash -c \
-                    "apt-get update && apt-get install software-properties-common -y 2>/dev/null && add-apt-repository universe -y 2>/dev/null; apt-get update" && \
-                pm_install "$name" && return 0
-            else
-                tui_msg "Not Ubuntu" "This method requires Ubuntu."
-                return 1
-            fi
-            ;;
-        web)
-            return 1  # Fall through to web fallback
-            ;;
-        skip|"") return 1 ;;
-    esac
+    # Auto-detect system and install from appropriate repo
+    if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
+        # Ubuntu system - try universe/multiverse repos first
+        tui_msg "Installing $name" "Found in Ubuntu repositories.\nEnabling universe/multiverse and installing with all dependencies…"
+        run_cmd "Enable Ubuntu repositories" bash -c \
+            "apt-get update >/dev/null 2>&1; apt-get install software-properties-common -y >/dev/null 2>&1; add-apt-repository universe multiverse -y >/dev/null 2>&1; apt-get update" && \
+        run_cmd "Install $name (with dependencies)" bash -c \
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y '$name'" && return 0
+        return 1
+    elif [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
+        # Debian system - try backports first
+        tui_msg "Installing $name" "Found in Debian repositories.\nAdding backports and installing with all dependencies…"
+        run_cmd "Add Debian backports repository" bash -c \
+            "echo 'deb http://deb.debian.org/debian bookworm-backports main contrib non-free' >> /etc/apt/sources.list.d/backports.list 2>/dev/null; apt-get update" && \
+        run_cmd "Install $name (with dependencies)" bash -c \
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y -t bookworm-backports '$name'" && return 0
+        return 1
+    else
+        # Not a Debian-based system
+        return 1
+    fi
 }
 
 # Parse repology results and offer to add alternative repositories
