@@ -1443,8 +1443,16 @@ _bs_install() {
 
     tui_msg "Installing $_tag" "Attempting installation…"
 
-    # Try default package manager first
-    if pm_install "$_pkg" 2>/dev/null; then
+    # Try default package manager first. Suppress pm_install's own automatic
+    # web-fallback here since this function already runs a more thorough,
+    # bootstrap-specific fallback chain right below (known repos across all
+    # cross-distribution indexes, then web/GitHub search) — avoids prompting
+    # the user with two overlapping fallback flows back-to-back.
+    local _pm_ok=1
+    export SYSTUI_PM_NO_WEB_FALLBACK=1
+    pm_install "$_pkg" 2>/dev/null || _pm_ok=0
+    unset SYSTUI_PM_NO_WEB_FALLBACK
+    if [ "$_pm_ok" -eq 1 ]; then
         tui_msg "Success" "$_tag installed successfully."
         return 0
     fi
@@ -1601,6 +1609,144 @@ _rootfs_bs_force_install_deb() {
     run_cmd "Resolve remaining dependencies" bash -c \
         "apt-get install -f -y >/dev/null 2>&1 || true" \
         || true
+}
+
+###############################################################################
+# CROSS-DISTRIBUTION PACKAGE INDEX REGISTRY
+#
+# Every install path in systui that falls through the native package manager
+# (apt/dnf/pacman/apk/zypper/xbps/emerge) ends up here. Each entry is:
+#   label|search_url_template|kind
+# {PKG} in the URL template is replaced with the package name. "kind" is the
+# native artifact format the index distributes (deb/apk/pkg/rpm/ebuild/xbps).
+# Only "deb" kinds can be downloaded and force-installed directly with dpkg;
+# the rest are surfaced as informational lookups (their binaries are not
+# compatible with a dpkg-based system) with a link to view manually.
+###############################################################################
+_PKG_INDEX_SITES="Debian (packages.debian.org)|https://packages.debian.org/search?keywords={PKG}&searchon=names&suite=all&section=all|deb
+Ubuntu (launchpad.net)|https://launchpad.net/ubuntu/+source/{PKG}|deb
+Kali Linux (pkg.kali.org)|https://pkg.kali.org/search/?query={PKG}|deb
+Devuan (pkginfo.devuan.org)|https://pkginfo.devuan.org/cgi-bin/policy-query.html?package={PKG}|deb
+Alpine Linux (pkgs.alpinelinux.org)|https://pkgs.alpinelinux.org/packages?name={PKG}|apk
+Arch Linux (archlinux.org)|https://archlinux.org/packages/?q={PKG}|pkg.tar.zst
+Fedora (packages.fedoraproject.org)|https://packages.fedoraproject.org/pkgs/{PKG}|rpm
+openSUSE (software.opensuse.org)|https://software.opensuse.org/package/{PKG}|rpm
+openSUSE (search.opensuse.org)|https://search.opensuse.org/packages/?q={PKG}|rpm
+Gentoo (packages.gentoo.org)|https://packages.gentoo.org/packages/search?q={PKG}|ebuild
+Void Linux (voidlinux.org)|https://voidlinux.org/packages/?q={PKG}|xbps"
+
+# Fetch a search/index page for one registry entry and try to locate a direct
+# .deb download link on it (works for any "deb"-kind index — Debian, Kali,
+# Devuan, and as a generic fallback for others that happen to mirror .debs).
+_rootfs_bs_scan_deb_links() { # <name> <search_url>
+    local name="$1" url="$2" origin
+    origin=$(printf '%s' "$url" | grep -oE '^https?://[^/]+')
+    local page
+    page=$(rootfs_fetch_text "$url" 2>/dev/null)
+    [ -z "$page" ] && return 1
+
+    printf '%s\n' "$page" \
+        | grep -oE 'href="[^"]*'"${name}"'[^"]*\.deb"' \
+        | sed -E 's/^href="//; s/"$//' \
+        | while IFS= read -r link; do
+            case "$link" in
+                http://*|https://*) printf '%s\n' "$link" ;;
+                /*) printf '%s%s\n' "$origin" "$link" ;;
+                *) printf '%s/%s\n' "$origin" "$link" ;;
+            esac
+        done \
+        | sort -u
+}
+
+# Download a resolved .deb URL and force-install it (+ dependencies).
+_rootfs_bs_install_deb_url() { # <name> <label> <url>
+    local name="$1" label="$2" url="$3"
+    local workdir="${SYSTUI_TMP:-/tmp}/idxdl_${name}.$$"
+    mkdir -p "$workdir" || return 1
+    local debfile="$workdir/$(basename "$url")"
+
+    run_cmd "Download $name.deb from $label" bash -c \
+        "curl -fsSL -4 -o '$debfile' '$url' 2>/dev/null || wget -q -4 -O '$debfile' '$url'" \
+        || { rm -rf "$workdir"; return 1; }
+
+    _rootfs_bs_force_install_deb "$debfile" "$workdir" "$name ($label)"
+
+    if command -v "$name" >/dev/null 2>&1 || dpkg -s "$name" >/dev/null 2>&1; then
+        rm -rf "$workdir"
+        tui_msg "Installed" "$name installed successfully from $label via dpkg -i (forced, dependencies resolved)."
+        return 0
+    fi
+
+    rm -rf "$workdir"
+    tui_msg "Installation failed" "Force install completed but $name does not appear to be installed. Check the log for details."
+    return 1
+}
+
+# Search a generic deb-hosting index (Kali, Devuan, or any other "deb"-kind
+# registry entry): scan its search page for .deb links, let the user pick one
+# if there are several (e.g. multiple architectures), then force-install it.
+_rootfs_bs_install_index_deb() { # <name> <label> <url_template>
+    local name="$1" label="$2" url_tmpl="$3"
+    local url="${url_tmpl//\{PKG\}/$name}"
+
+    tui_msg "Searching $label" "Querying $label for \"$name\"…"
+
+    local links
+    links=$(_rootfs_bs_scan_deb_links "$name" "$url")
+    if [ -z "$links" ]; then
+        tui_msg "Not found" "No direct .deb download link for \"$name\" was found on $label."
+        return 1
+    fi
+
+    local chosen
+    if [ "$(printf '%s\n' "$links" | wc -l)" -eq 1 ]; then
+        chosen="$links"
+    else
+        local link_menu=() l i=0
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            i=$((i+1))
+            link_menu+=("$i" "$(basename "$l")")
+        done <<< "$links"
+        local pick
+        pick=$(tui_menu "Select .deb" "Multiple $name packages found on $label. Choose one:" \
+            "${link_menu[@]}" "cancel" "Cancel") || return 1
+        [ "$pick" = "cancel" ] && return 1
+        [ -z "$pick" ] && return 1
+        chosen=$(printf '%s\n' "$links" | sed -n "${pick}p")
+    fi
+
+    [ -z "$chosen" ] && return 1
+    _rootfs_bs_install_deb_url "$name" "$label" "$chosen"
+}
+
+# Show an informational lookup for a non-deb index (Alpine/Arch/Fedora/
+# openSUSE/Gentoo/Void): we cannot force-install foreign binary formats on a
+# dpkg-based system, so just report whether the package appears to exist
+# there and give the user the URL to inspect manually.
+_rootfs_bs_show_index_info() { # <name> <label> <url_template> <kind>
+    local name="$1" label="$2" url_tmpl="$3" kind="$4"
+    local url="${url_tmpl//\{PKG\}/$name}"
+
+    tui_msg "Checking $label" "Querying $label for \"$name\"…"
+
+    local page found="not confirmed"
+    page=$(rootfs_fetch_text "$url" 2>/dev/null)
+    if [ -n "$page" ] && printf '%s' "$page" | grep -qi "$name"; then
+        found="likely available"
+    fi
+
+    tui_msg "$label" \
+"Package: $name
+Index: $label
+Native format: $kind (not dpkg-installable on this system)
+Status: $found
+
+URL: $url
+
+This index distributes packages as $kind, which cannot be installed
+with dpkg on this system. Use this as a reference to confirm the
+package exists upstream, or to find build/compile instructions."
 }
 
 # Query the Debian package search (packages.debian.org) to find which Debian
@@ -1861,20 +2007,36 @@ _rootfs_bs_known_repos() {
         done <<< "$repo_data"
     fi
 
-    # Always offer live Debian and Launchpad/Ubuntu package searches as
-    # sources — these query the live sites directly and force-install the
-    # resulting .deb (with all dependencies) via dpkg -i, rather than relying
-    # on any hardcoded tarball/package URL.
-    repo_menu+=("debian-search" "Search packages.debian.org (force-install .deb via dpkg -i)")
-    repo_menu+=("launchpad-search" "Search launchpad.net/ubuntu (force-install .deb via dpkg -i)")
+    # Always offer live cross-distribution package index searches as sources.
+    # deb-hosting indexes (Debian, Ubuntu/Launchpad, Kali, Devuan) resolve and
+    # force-install the .deb directly (with dependency resolution) via dpkg -i.
+    # Non-deb indexes (Alpine/Arch/Fedora/openSUSE/Gentoo/Void) can't be
+    # dpkg-installed on this system, so they're offered as info-only lookups.
+    declare -A _idx_url _idx_kind
+    local _idx_label _idx_urltmpl _idx_kind_v _idx_tag
+    while IFS='|' read -r _idx_label _idx_urltmpl _idx_kind_v; do
+        [ -z "$_idx_label" ] && continue
+        case "$_idx_label" in
+            Debian*) _idx_tag="debian-search" ;;
+            Ubuntu*) _idx_tag="launchpad-search" ;;
+            *)       _idx_tag="idx:${_idx_label}" ;;
+        esac
+        _idx_url["$_idx_tag"]="$_idx_urltmpl"
+        _idx_kind["$_idx_tag"]="$_idx_kind_v"
+        if [ "$_idx_kind_v" = "deb" ]; then
+            repo_menu+=("$_idx_tag" "$_idx_label — force-install .deb via dpkg -i")
+        else
+            repo_menu+=("$_idx_tag" "$_idx_label — info only ($_idx_kind_v, not dpkg-installable)")
+        fi
+    done <<< "$_PKG_INDEX_SITES"
 
     # Show available repositories
     local tmpf="${SYSTUI_TMP:-/tmp}/repo_list_$$.txt"
     {
         printf 'Package "%s" is available from the following sources:\n\n' "$name"
         [ -n "$repo_data" ] && printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
-        printf '\n  • Live search on packages.debian.org (dpkg -i install)\n'
-        printf '  • Live search on launchpad.net/ubuntu (dpkg -i install)\n'
+        printf '\nCross-distribution package indexes:\n'
+        printf '%s\n' "$_PKG_INDEX_SITES" | awk -F'|' '{printf "  • %s (%s)\n", $1, $3}'
         printf '\n\nSelect a source to install from.\n'
     } > "$tmpf"
     tui_text "Available sources for $name" "$tmpf"
@@ -1897,6 +2059,17 @@ _rootfs_bs_known_repos() {
             ;;
         launchpad-search)
             _rootfs_bs_install_launchpad_deb "$name"
+            return $?
+            ;;
+        idx:*)
+            local _sel_label="${selected_repo#idx:}"
+            local _sel_kind="${_idx_kind[$selected_repo]}"
+            local _sel_urltmpl="${_idx_url[$selected_repo]}"
+            if [ "$_sel_kind" = "deb" ]; then
+                _rootfs_bs_install_index_deb "$name" "$_sel_label" "$_sel_urltmpl"
+            else
+                _rootfs_bs_show_index_info "$name" "$_sel_label" "$_sel_urltmpl" "$_sel_kind"
+            fi
             return $?
             ;;
     esac

@@ -56,17 +56,38 @@ parse_package_input() { # <string> <array-name>
 
 pm_install() {
     validate_packages "$@" || return 1
+    local _pm_rc=0
     case "$PM" in
-        apt) run_cmd "apt install $*" apt-get install -y -- "$@" ;;
-        apk) run_cmd "apk add $*" apk add -- "$@" ;;
-        pacman) run_cmd "pacman -S $*" pacman -S --noconfirm --needed -- "$@" ;;
-        dnf) run_cmd "dnf install $*" dnf install -y -- "$@" ;;
-        yum) run_cmd "yum install $*" yum install -y -- "$@" ;;
-        zypper) run_cmd "zypper install $*" zypper --non-interactive install -- "$@" ;;
-        xbps) run_cmd "xbps-install $*" xbps-install -Sy -- "$@" ;;
-        emerge) run_cmd "emerge $*" emerge --ask=n -- "$@" ;;
+        apt) run_cmd "apt install $*" apt-get install -y -- "$@"; _pm_rc=$? ;;
+        apk) run_cmd "apk add $*" apk add -- "$@"; _pm_rc=$? ;;
+        pacman) run_cmd "pacman -S $*" pacman -S --noconfirm --needed -- "$@"; _pm_rc=$? ;;
+        dnf) run_cmd "dnf install $*" dnf install -y -- "$@"; _pm_rc=$? ;;
+        yum) run_cmd "yum install $*" yum install -y -- "$@"; _pm_rc=$? ;;
+        zypper) run_cmd "zypper install $*" zypper --non-interactive install -- "$@"; _pm_rc=$? ;;
+        xbps) run_cmd "xbps-install $*" xbps-install -Sy -- "$@"; _pm_rc=$? ;;
+        emerge) run_cmd "emerge $*" emerge --ask=n -- "$@"; _pm_rc=$? ;;
         *) tui_msg "Error" "No supported package manager found."; return 1 ;;
     esac
+
+    # Universal fallback: if the native package manager failed, automatically
+    # scan every cross-distribution package index systui knows about (Debian,
+    # Ubuntu/Launchpad, Kali, Devuan, Alpine, Arch, Fedora, openSUSE, Gentoo,
+    # Void) for each package still missing, and offer to force-install a .deb
+    # (with dependencies resolved) wherever one is found. This makes the
+    # fallback apply to every install path in systui, since pm_install is the
+    # single install entrypoint used throughout the project. Set
+    # SYSTUI_PM_NO_WEB_FALLBACK=1 to skip this for silent/bulk probing loops.
+    if [ "$_pm_rc" -ne 0 ] && [ "${SYSTUI_PM_NO_WEB_FALLBACK:-0}" != "1" ] \
+        && declare -F pkg_web_fallback >/dev/null 2>&1; then
+        local _pm_pkg
+        for _pm_pkg in "$@"; do
+            command -v "$_pm_pkg" >/dev/null 2>&1 && continue
+            { command -v dpkg >/dev/null 2>&1 && dpkg -s "$_pm_pkg" >/dev/null 2>&1; } && continue
+            pkg_web_fallback "$_pm_pkg"
+        done
+    fi
+
+    return "$_pm_rc"
 }
 
 # Fetch plain text from a URL using curl or wget (IPv4-forced, silent).
@@ -101,11 +122,15 @@ pkg_web_search() {
 
 # pkg_web_fallback <pkgname>
 # Called when a package is not available via the native PM. Searches repology
-# and shows the user alternative names / distro names from the web, then lets
-# them manually enter a correct package name or a one-off shell command to run.
+# and every cross-distribution package index systui knows about (Debian,
+# Ubuntu/Launchpad, Kali, Devuan, Alpine, Arch, Fedora, openSUSE, Gentoo,
+# Void), offering to force-install a matching .deb (with dependencies
+# resolved) wherever one is found — this is the same engine the rootfs
+# bootstrap-tools menu uses, so it's shared across every install path in
+# systui. Falls back to manual rename/custom-command entry if nothing helps.
 pkg_web_fallback() {
     local name="$1"
-    tui_msg "Package not found" "'$name' was not found in the $PM repository.\n\nSearching repology.org for cross-distro alternatives…"
+    tui_msg "Package not found" "'$name' was not found in the $PM repository.\n\nSearching repology.org and cross-distribution package indexes…"
 
     local results
     results=$(pkg_web_search "$name")
@@ -118,13 +143,21 @@ pkg_web_fallback() {
     tui_text "Web search: $name" "$tmpf"
     rm -f "$tmpf"
 
+    local -a menu_opts=()
+    if declare -F _rootfs_bs_known_repos >/dev/null 2>&1; then
+        menu_opts+=(indexes "Scan all package indexes (Debian/Ubuntu/Kali/Devuan/Alpine/Arch/Fedora/openSUSE/Gentoo/Void)")
+    fi
+    menu_opts+=(rename "Try a different package name with $PM")
+    menu_opts+=(cmd    "Run a custom install command")
+    menu_opts+=(back   "Back / skip")
+
     local action
-    action=$(tui_menu "Install alternatives" "How would you like to proceed?" \
-        rename  "Try a different package name with $PM" \
-        cmd     "Run a custom install command" \
-        back    "Back / skip") || return 1
+    action=$(tui_menu "Install alternatives" "How would you like to proceed?" "${menu_opts[@]}") || return 1
 
     case "$action" in
+        indexes)
+            _rootfs_bs_known_repos "$name"
+            ;;
         rename)
             local alt
             alt=$(tui_input "Alternative package name" "Enter the package name to try with $PM:" "$name") || return 1
@@ -2199,7 +2232,7 @@ Status  : $stat" \
                         fish)                      menu_fish_install ;;
                         zsh)                       menu_zsh_install ;;
                         nushell|nu)                menu_nushell_install ;;
-                        *)                         pm_install "$native" || pkg_web_fallback "$native" ;;
+                        *)                         pm_install "$native" ;;
                     esac
                 fi ;;
             remove) [ "$stat" = available ] && tui_msg "Not installed" "$name is not installed." || { tui_yesno "Remove" "Remove $name ($native)?" && pm_remove "$native"; } ;;
