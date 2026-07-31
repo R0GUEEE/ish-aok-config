@@ -3670,6 +3670,81 @@ rootfs_chroot_exec_args() { # <target> <description> <command> [args...]
     return "$rc"
 }
 
+# Make sure the rootfs has the GPG keyrings/trust material its package
+# manager needs before installing anything via chroot. Freshly bootstrapped
+# rootfs trees (mmdebstrap/debootstrap --variant=minbase, pacstrap without
+# archlinux-keyring, etc.) frequently lack these, which makes the very first
+# in-chroot install fail with "NO_PUBKEY"/"signature could not be verified"
+# errors that look unrelated to keyrings. Called once before install/upgrade.
+rootfs_ensure_keyrings() { # <target> <pm>
+    local t="$1" pm="$2"
+    case "$pm" in
+        apt)
+            # Pick the right archive-keyring package for the flavor of this
+            # rootfs. Falls back to debian-archive-keyring for unknown
+            # derivatives since apt/dpkg tooling is shared across the family.
+            local osid keyring_pkg
+            osid=$(grep -m1 '^ID=' "$t/etc/os-release" 2>/dev/null | cut -d= -f2- | tr -d '"')
+            case "$osid" in
+                ubuntu) keyring_pkg="ubuntu-keyring" ;;
+                kali)   keyring_pkg="kali-archive-keyring" ;;
+                devuan) keyring_pkg="devuan-keyring" ;;
+                *)      keyring_pkg="debian-archive-keyring" ;;
+            esac
+            # Already trusted? Nothing to do.
+            if rootfs_exec_raw "$t" sh -c "dpkg -s '$keyring_pkg' >/dev/null 2>&1 && dpkg -s gnupg >/dev/null 2>&1"; then
+                return 0
+            fi
+            # apt can't verify the keyring package's own signature the very
+            # first time (chicken-and-egg), so this one bootstrap install is
+            # allowed unauthenticated; every install after this is verified
+            # normally against the now-installed keyring + gpgv.
+            rootfs_chroot_exec "$t" "Installing $keyring_pkg + gnupg (trust setup)" \
+                "apt-get update -o Acquire::AllowInsecureRepositories=true >/dev/null 2>&1; apt-get install -y --allow-unauthenticated $keyring_pkg gnupg ca-certificates gpgv 2>&1 || true"
+            ;;
+        pacman)
+            # pacman refuses to install anything until its keyring is
+            # initialized and populated with the archlinux (or derivative)
+            # master keys.
+            if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/pacman.d/gnupg 2>/dev/null')" ]; then
+                rootfs_chroot_exec "$t" "Initializing pacman keyring" \
+                    "pacman-key --init && pacman-key --populate archlinux 2>/dev/null || pacman-key --populate 2>/dev/null; pacman -Sy --noconfirm archlinux-keyring 2>/dev/null || true"
+            fi
+            ;;
+        dnf|yum)
+            # dnf/yum normally prompt-import the repo's GPG key on first use;
+            # in a non-interactive chroot there's no prompt, so pre-import any
+            # keys already shipped in the rootfs and trust the repo metadata.
+            rootfs_exec_raw "$t" sh -c 'for k in /etc/pki/rpm-gpg/RPM-GPG-KEY-*; do [ -f "$k" ] && rpm --import "$k" 2>/dev/null; done' >/dev/null 2>&1 || true
+            ;;
+        zypper)
+            rootfs_exec_raw "$t" sh -c 'for k in /etc/pki/rpm-gpg/*; do [ -f "$k" ] && rpm --import "$k" 2>/dev/null; done' >/dev/null 2>&1 || true
+            rootfs_chroot_exec "$t" "Refreshing zypper keys" "zypper --gpg-auto-import-keys refresh 2>&1 || true" ;;
+        apk)
+            # Alpine's apk needs /etc/apk/keys populated; if the rootfs was
+            # built without them (e.g. a stripped-down tarball), fetch the
+            # official Alpine signing keys so `apk add` doesn't fail
+            # signature verification on every package.
+            if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/apk/keys 2>/dev/null')" ]; then
+                if rootfs_exec_raw "$t" sh -c 'command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1'; then
+                    rootfs_chroot_exec "$t" "Fetching Alpine APK signing keys" \
+                        "mkdir -p /etc/apk/keys && (wget -q -P /etc/apk/keys https://alpinelinux.org/keys/*.pub 2>/dev/null || true)"
+                fi
+                if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/apk/keys 2>/dev/null')" ]; then
+                    tui_msg "Missing Alpine keys" "No APK signing keys found in /etc/apk/keys and none\ncould be fetched — package installs inside this rootfs\nmay fail signature verification. Copy keys from the host\n(/etc/apk/keys) into $t/etc/apk/keys if this happens."
+                fi
+            fi
+            ;;
+        xbps)
+            # Void's xbps-keys are normally baked into the base tarball; warn
+            # if they're missing rather than silently failing installs later.
+            if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /var/db/xbps/keys 2>/dev/null')" ]; then
+                tui_msg "Missing Void keys" "No xbps signing keys found in /var/db/xbps/keys —\npackage installs may fail signature verification."
+            fi
+            ;;
+    esac
+}
+
 # In-rootfs package management with the rootfs's own package manager.
 rootfs_pkg_menu() { # <target>
     local t="$1" rpm_
@@ -3694,6 +3769,10 @@ rootfs_pkg_menu() { # <target>
             p=$(tui_input "$c" "Package names (space-separated, native $rpm_ names):" "") || continue
             [ -z "$p" ] && continue; p=$(rootfs_sanitize_packages "$p") || { tui_msg "Invalid package" "Unsafe package name rejected."; continue; } ;;
         esac
+        # Installing/upgrading is what actually needs network trust material
+        # (fetching + verifying package indexes and .debs/.rpms/etc. from a
+        # remote repo); removal and listing only touch what's already local.
+        case "$c" in install|upgrade) rootfs_ensure_keyrings "$t" "$rpm_" ;; esac
         case "$rpm_:$c" in
             apt:install)    rootfs_chroot_exec "$t" "apt install $p" "apt-get update && apt-get install -y $p" ;;
             apt:remove)     rootfs_chroot_exec "$t" "apt remove $p" "apt-get remove -y $p" ;;
@@ -3879,14 +3958,19 @@ EOF
 }
 
 rootfs_manage() {
-    local base
-    # Safely capture input result and handle cancellation
-    if ! base=$(tui_input "Manage rootfs" "Base directory containing rootfs builds:" "$ROOTFS_BASE"); then
-        # User pressed ESC/Cancel - gracefully return
-        return 0
+    # Default straight into the standard rootfs library at $ROOTFS_BASE
+    # (/opt/rootfs) without prompting when it exists — the user can still
+    # switch to a different base directory via the menu option below. Only
+    # ask up front if the default location isn't there.
+    local base="$ROOTFS_BASE"
+    if [ ! -d "$base" ]; then
+        if ! base=$(tui_input "Manage rootfs" "Base directory containing rootfs builds:" "$ROOTFS_BASE"); then
+            # User pressed ESC/Cancel - gracefully return
+            return 0
+        fi
+        [ -z "$base" ] && return 0
+        [ -d "$base" ] || { tui_msg "Not found" "$base does not exist."; return 0; }
     fi
-    [ -z "$base" ] && return 0
-    [ -d "$base" ] || { tui_msg "Not found" "$base does not exist."; return 0; }
 
     while true; do
         # Build the selection menu from directories present.
@@ -3897,15 +3981,34 @@ rootfs_manage() {
             tags+=("$d" "$(du -sh "$d" 2>/dev/null | cut -f1) $( [ -f "$d/etc/systui-build.conf" ] && echo '[systui]')")
             n=$((n+1))
         done
-        [ $n = 0 ] && { tui_msg "Empty" "No rootfs directories found in $base."; return 0; }
         local sel
-        # Safely capture menu result and handle cancellation
-        if ! sel=$(tui_menu "Rootfs in $base" "Select a rootfs:" "${tags[@]}" __back "Back"); then
-            # User pressed ESC/Cancel - gracefully return
-            return 0
+        if [ $n = 0 ]; then
+            # No builds yet — still offer to switch base directory instead of
+            # dead-ending, since the default /opt/rootfs may just be empty.
+            if ! sel=$(tui_menu "Rootfs in $base" "No rootfs directories found here." \
+                __changebase "Change base directory (current: $base)" \
+                __back       "Back"); then
+                return 0
+            fi
+        else
+            # Safely capture menu result and handle cancellation
+            if ! sel=$(tui_menu "Rootfs in $base" "Select a rootfs:" "${tags[@]}" \
+                __changebase "Change base directory (current: $base)" \
+                __back       "Back"); then
+                # User pressed ESC/Cancel - gracefully return
+                return 0
+            fi
         fi
         [ -z "$sel" ] && return 0
         [ "$sel" = __back ] && return 0
+        if [ "$sel" = __changebase ]; then
+            local nb
+            nb=$(tui_input "Base directory" "New base directory containing rootfs builds:" "$base") || continue
+            [ -z "$nb" ] && continue
+            [ -d "$nb" ] || { tui_msg "Not found" "$nb does not exist."; continue; }
+            base="$nb"
+            continue
+        fi
 
         local c
         # Safely capture submenu result and handle cancellation
