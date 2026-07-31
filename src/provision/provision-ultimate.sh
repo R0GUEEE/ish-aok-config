@@ -92,6 +92,14 @@ note "Detected: $DISTRO_NAME ($DISTRO_ID) - packages: $PACKAGE_MANAGER - init: $
     exit 2
 }
 
+# Timeout helper: wraps a command with 'timeout' when available so stalled
+# network downloads never hang the script indefinitely.
+_HAS_TIMEOUT=0
+command -v timeout >/dev/null 2>&1 && _HAS_TIMEOUT=1
+_rto() {  # _rto <secs> <cmd...>
+    if [ "$_HAS_TIMEOUT" = 1 ]; then timeout "$@"; else shift; "$@"; fi
+}
+
 # ---- config (env overrides; prompts interactively when run on a TTY) ------
 NEW_HOSTNAME="${NEW_HOSTNAME:-}"
 SUDO_NOPASSWD="${SUDO_NOPASSWD:-0}"
@@ -164,40 +172,63 @@ fi
 
 refresh_packages() {
     case "$PACKAGE_MANAGER" in
-        apt) apt-get update ;;
-        apk) apk update ;;
-        pacman) pacman -Syu --noconfirm ;;   # -Sy alone desynchronises the system
-        dnf) dnf -y makecache ;;
-        yum) yum -y makecache ;;
-        zypper) zypper --non-interactive refresh ;;
-        xbps) xbps-install -S ;;
-        portage) emerge --sync ;;
+        apt)    _rto 180 apt-get update ;;
+        apk)    _rto 180 apk update ;;
+        pacman) _rto 300 pacman -Syu --noconfirm ;;   # -Sy alone desynchronises the system
+        dnf)    _rto 180 dnf -y makecache ;;
+        yum)    _rto 180 yum -y makecache ;;
+        zypper) _rto 180 zypper --non-interactive refresh ;;
+        xbps)   _rto 180 xbps-install -S ;;
+        portage) _rto 600 emerge --sync ;;
     esac
 }
 
 install_one() {
     case "$PACKAGE_MANAGER" in
-        apt) apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends "$1" ;;
-        apk) apk add --no-progress "$1" ;;
-        pacman) pacman -S --needed --noconfirm "$1" ;;
-        dnf) dnf install -y --setopt=install_weak_deps=False "$1" ;;
-        yum) yum install -y "$1" ;;
-        zypper) zypper --non-interactive install --no-recommends "$1" ;;
-        xbps) xbps-install -y "$1" ;;
-        portage) emerge --noreplace "$1" ;;
+        apt)    _rto 300 apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends "$1" ;;
+        apk)    _rto 300 apk add --no-progress "$1" ;;
+        pacman) _rto 300 pacman -S --needed --noconfirm "$1" ;;
+        dnf)    _rto 300 dnf install -y --setopt=install_weak_deps=False "$1" ;;
+        yum)    _rto 300 yum install -y "$1" ;;
+        zypper) _rto 300 zypper --non-interactive install --no-recommends "$1" ;;
+        xbps)   _rto 300 xbps-install -y "$1" ;;
+        portage) _rto 600 emerge --noreplace "$1" ;;
     esac
 }
 
 refresh_packages >/dev/null 2>&1 || warn "Package index refresh failed; continuing with the current index"
+
+# Fast path: install all packages in one shot — far fewer PM round-trips and
+# much less likely to stall on a single download under slow emulation.
+# If the bulk install fails (e.g. one package name not found), fall back to
+# per-package installs so the rest still get through.
 INSTALLED_COUNT=0 SKIPPED_COUNT=0
-for p in $PKGS; do
-    if install_one "$p" >/dev/null 2>&1; then
-        INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
-    else
-        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
-        note "skipped: $p (unavailable or installation failed)"
-    fi
-done
+_bulk_ok=0
+case "$PACKAGE_MANAGER" in
+    apt)    _rto 1800 apt-get -o Dpkg::Options::="--force-confold" install -y --no-install-recommends $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    apk)    _rto 1800 apk add --no-progress $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    pacman) _rto 1800 pacman -S --needed --noconfirm $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    dnf)    _rto 1800 dnf install -y --setopt=install_weak_deps=False $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    yum)    _rto 1800 yum install -y $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    zypper) _rto 1800 zypper --non-interactive install --no-recommends $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    xbps)   _rto 1800 xbps-install -y $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+    portage) _rto 3600 emerge --noreplace $PKGS >/dev/null 2>&1 && _bulk_ok=1 ;;
+esac
+if [ "$_bulk_ok" = 1 ]; then
+    note "bulk install succeeded"
+    # shellcheck disable=SC2086
+    INSTALLED_COUNT=$(echo $PKGS | wc -w); SKIPPED_COUNT=0
+else
+    note "bulk install failed or timed out; falling back to per-package (slower)..."
+    for p in $PKGS; do
+        if install_one "$p" >/dev/null 2>&1; then
+            INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+        else
+            SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+            note "skipped: $p (unavailable or timed out)"
+        fi
+    done
+fi
 note "package pass complete: $INSTALLED_COUNT installed/already present, $SKIPPED_COUNT skipped"
 if [ "$PACKAGE_MANAGER" = apt ]; then
     dpkg --force-confold --configure -a >/dev/null 2>&1 || warn "Some Debian packages remain unconfigured; run: dpkg --configure -a"
