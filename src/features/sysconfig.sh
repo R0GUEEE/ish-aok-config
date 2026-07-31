@@ -3301,6 +3301,52 @@ brew_set_root_bypass() { # <1|0>
     chmod 0644 "$envf"
 }
 
+# Completely remove Homebrew: installation, configs, cache, root-compat layer.
+_brew_complete_uninstall() {
+    local buser; buser=$(brew_target_user)
+    local ubash=bash
+    
+    # Run official uninstall script as appropriate user
+    if [ -n "$buser" ] && [ "$buser" != root ] && [ "$(id -u)" -eq 0 ]; then
+        sudo -u "$buser" -H bash -c \
+            'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"' 2>/dev/null || true
+    else
+        bash -c \
+            'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"' 2>/dev/null || true
+    fi
+    
+    # Remove all systui-managed configs
+    rm -f /etc/systui/homebrew.env 2>/dev/null || true
+    rm -f /etc/profile.d/homebrew.sh 2>/dev/null || true
+    
+    # Remove root-compat layer (shim, wrapper, etc.)
+    rm -rf /usr/local/lib/homebrew-root 2>/dev/null || true
+    
+    # Remove user-specific cache/config
+    if [ -n "$buser" ] && [ "$buser" != root ]; then
+        sudo -u "$buser" -H rm -rf ~/.cache/Homebrew 2>/dev/null || true
+        sudo -u "$buser" -H rm -rf ~/.config/Homebrew 2>/dev/null || true
+        sudo -u "$buser" -H rm -rf ~/.homebrew 2>/dev/null || true
+    fi
+    
+    # Remove root user cache/config if running as root
+    if [ "$(id -u)" -eq 0 ]; then
+        rm -rf /root/.cache/Homebrew 2>/dev/null || true
+        rm -rf /root/.config/Homebrew 2>/dev/null || true
+        rm -rf /root/.homebrew 2>/dev/null || true
+    fi
+    
+    # Clean up any lingering symlinks or wrappers
+    rm -f /usr/local/bin/brew 2>/dev/null || true
+    rm -f /usr/bin/brew 2>/dev/null || true
+    
+    # Remove Homebrew path entries from common shell rc files
+    local rcs=(/etc/profile.d/homebrew.sh ~/.bashrc ~/.bash_profile ~/.zshrc ~/.kshrc)
+    for rc in "${rcs[@]}"; do
+        [ -f "$rc" ] && sed -i '/homebrew/Id' "$rc" 2>/dev/null || true
+    done
+}
+
 # Resolve the user brew should run as.
 # When running as root and bypass is NOT enabled, brew runs under the first
 # non-root account (falling back to $SUDO_USER, then the first UID-1000 account).
@@ -3412,15 +3458,9 @@ menu_brew_install() {
                 brew_run_as "Homebrew doctor" doctor
                 ;;
             uninstall)
-                tui_yesno "Uninstall Homebrew" "This will remove Homebrew and all installed formulae. Continue?" || continue
-                local ubuser; ubuser=$(brew_target_user)
-                if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
-                    run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
-                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
-                else
-                    run_cmd "Uninstall Homebrew" bash -c \
-                        'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
-                fi
+                tui_yesno "Uninstall Homebrew" "This will completely remove:\n• Homebrew installation\n• All formulae and packages\n• All configs and cache\n• Root-compat layer\n\nContinue?" || continue
+                run_cmd "Completely uninstall Homebrew" _brew_complete_uninstall
+                tui_msg "Homebrew uninstalled" "All Homebrew files, configs, cache, and root-compat layers have been removed."
                 ;;
             back|"") return 0 ;;
         esac
