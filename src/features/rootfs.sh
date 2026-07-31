@@ -3101,15 +3101,27 @@ EOF
     printf '%s\n' "$f"
 }
 
-rootfs_prepare_ubuntu_apt() { # target release arch mirror
-    local target="$1" release="$2" arch="$3" mirror="${4%/}"
-    mkdir -p "$target/etc/apt/apt.conf.d" "$target/etc/apt/sources.list.d"
+# Force apt to resolve/connect over IPv4 only and retry transient failures.
+# iSH-AOK frequently resolves mirror hostnames to an IPv6 address without
+# actually having an IPv6 route, which makes `apt-get update` hang/time out
+# and leave the package lists empty or stale — the rootfs then looks fine but
+# every install fails with "Unable to locate package". This must be applied
+# to every apt-based rootfs (Debian/Devuan/Ubuntu/Kali), not just Ubuntu.
+rootfs_apt_force_ipv4() { # <target>
+    local target="$1"
+    mkdir -p "$target/etc/apt/apt.conf.d"
     cat >"$target/etc/apt/apt.conf.d/99systui-force-ipv4" <<'EOF'
 // iSH-AOK may resolve IPv6 addresses without providing an IPv6 route.
 Acquire::ForceIPv4 "true";
 Acquire::Retries "3";
 Dpkg::Use-Pty "0";
 EOF
+}
+
+rootfs_prepare_ubuntu_apt() { # target release arch mirror
+    local target="$1" release="$2" arch="$3" mirror="${4%/}"
+    mkdir -p "$target/etc/apt/apt.conf.d" "$target/etc/apt/sources.list.d"
+    rootfs_apt_force_ipv4 "$target"
     # Ensure selected catalogue packages from universe/multiverse are visible.
     # Keep initial package installation on the base pocket. Update/security
     # pockets can be enabled later and may not exist for development/EOL suites.
@@ -3397,6 +3409,12 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
     fi
     if [ "$distro" = ubuntu ]; then
         rootfs_prepare_ubuntu_apt "$target" "$release" "$arch" "$mirror"
+    else
+        # Debian/Devuan/Kali don't need the sources.list rewrite (debootstrap/
+        # mmdebstrap/multistrap already wrote a correct one for the requested
+        # components), but they need the same IPv4 fix or apt-get update can
+        # silently fail on iSH and leave the package lists empty.
+        rootfs_apt_force_ipv4 "$target"
     fi
 
     rm -f "$wgetrc"
@@ -3680,6 +3698,21 @@ rootfs_ensure_keyrings() { # <target> <pm>
     local t="$1" pm="$2"
     case "$pm" in
         apt)
+            # Retroactively apply the IPv4 fix to rootfs trees built before
+            # systui added it (idempotent). This is the most common cause of
+            # "Unable to locate package" on iSH: apt-get update silently
+            # times out/fails resolving a mirror over IPv6 with no route,
+            # leaving the package lists empty or stale, so every install
+            # after that looks like the package doesn't exist.
+            rootfs_apt_force_ipv4 "$t"
+
+            # Surface a clear reason up front if there are no active
+            # repositories at all, instead of a confusing "not found" later.
+            if ! grep -hEq '^[[:space:]]*deb(-src)?[[:space:]]' \
+                "$t/etc/apt/sources.list" "$t"/etc/apt/sources.list.d/*.list 2>/dev/null; then
+                tui_msg "No apt sources configured" "No active 'deb' lines were found in\n$t/etc/apt/sources.list (or sources.list.d/*.list).\n\nEvery install will fail with \"Unable to locate package\"\nuntil at least one repository is configured there."
+            fi
+
             # Pick the right archive-keyring package for the flavor of this
             # rootfs. Falls back to debian-archive-keyring for unknown
             # derivatives since apt/dpkg tooling is shared across the family.
