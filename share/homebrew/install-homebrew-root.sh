@@ -66,8 +66,14 @@ _install_brew_deps() {
 log "Installing build dependencies"
 _install_brew_deps
 
+log "Creating linuxbrew user and home directory"
+if ! id -u linuxbrew >/dev/null 2>&1; then
+  useradd -r -m -d /home/linuxbrew -s /bin/bash -c "Homebrew package manager" linuxbrew 2>/dev/null || true
+fi
+install -d -m 0755 -o linuxbrew -g linuxbrew /home/linuxbrew
+chmod 0755 /home/linuxbrew
+
 log "Preparing root-owned Homebrew prefix"
-install -d -m 0755 -o root -g root /home/linuxbrew
 install -d -m 0755 -o root -g root "$BREW_PREFIX"
 
 if [[ -d "$BREW_REPOSITORY" && ! -x "$REAL_BREW" ]]; then
@@ -164,9 +170,17 @@ cat > "$ROOT_WRAPPER" <<EOF_WRAPPER
 #!/usr/bin/env bash
 set -e
 
-export HOME="/root"
-export USER="root"
-export LOGNAME="root"
+# Detect if running as root or non-root
+if [ "\$(id -u)" -eq 0 ]; then
+  export HOME="/root"
+  export USER="root"
+  export LOGNAME="root"
+else
+  export HOME="/home/linuxbrew"
+  export USER="linuxbrew"
+  export LOGNAME="linuxbrew"
+fi
+
 export HOMEBREW_PREFIX="$BREW_PREFIX"
 export HOMEBREW_CELLAR="$BREW_PREFIX/Cellar"
 export HOMEBREW_REPOSITORY="$BREW_REPOSITORY"
@@ -189,6 +203,18 @@ chmod 0755 "$ROOT_WRAPPER"
 # Prevent the prefix symlink from bypassing the root wrapper.
 rm -f "$BREW_LINK"
 ln -s "$ROOT_WRAPPER" "$BREW_LINK"
+
+# Make Homebrew directories accessible to linuxbrew user
+chown -R linuxbrew:linuxbrew "$BREW_PREFIX/Cellar" 2>/dev/null || true
+chown -R linuxbrew:linuxbrew "$BREW_PREFIX/Caskroom" 2>/dev/null || true
+chown -R linuxbrew:linuxbrew "$BREW_PREFIX/opt" 2>/dev/null || true
+chmod -R u+w "$BREW_PREFIX/Cellar" 2>/dev/null || true
+chmod -R u+w "$BREW_PREFIX/Caskroom" 2>/dev/null || true
+chmod -R u+w "$BREW_PREFIX/opt" 2>/dev/null || true
+
+# Ensure linuxbrew can write to var
+chown -R linuxbrew:linuxbrew "$BREW_PREFIX/var/homebrew" 2>/dev/null || true
+chmod -R u+w "$BREW_PREFIX/var/homebrew" 2>/dev/null || true
 
 log "Writing system-wide root Homebrew environment"
 cat > "$PROFILE_FILE" <<EOF_PROFILE
