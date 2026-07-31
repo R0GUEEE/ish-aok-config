@@ -68,6 +68,78 @@ pm_install() {
         *) tui_msg "Error" "No supported package manager found."; return 1 ;;
     esac
 }
+
+# Fetch plain text from a URL using curl or wget (IPv4-forced, silent).
+_sys_fetch_text() { # <url>
+    if command -v curl >/dev/null 2>&1; then
+        curl -4 -LfsS --connect-timeout 8 --max-time 60 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -4 -qO- -T 60 "$1"
+    else
+        return 127
+    fi
+}
+
+# pkg_web_search <pkgname>
+# Query repology.org for the package and return a newline-separated list of
+# "repo: reponame | pkg: pkgname" lines. Prints nothing on network error.
+pkg_web_search() {
+    local name="$1"
+    local url="https://repology.org/api/v1/project/${name}"
+    local json
+    json=$(_sys_fetch_text "$url" 2>/dev/null) || return 0
+    # Parse JSON with only POSIX tools — extract repo and srcname fields.
+    printf '%s\n' "$json" | tr '},{' '\n' \
+        | awk '/"repo"/ && /"srcname"/ {
+            repo=""; pkg=""
+            match($0,/"repo": *"([^"]+)"/); if (RSTART) repo=substr($0,RSTART+7,RLENGTH-8)
+            match($0,/"srcname": *"([^"]+)"/); if (RSTART) pkg=substr($0,RSTART+10,RLENGTH-11)
+            if (!pkg) { match($0,/"binname": *"([^"]+)"/); if (RSTART) pkg=substr($0,RSTART+10,RLENGTH-11) }
+            if (repo && pkg) printf "  %-28s %s\n", repo":", pkg
+        }' | sort -u | head -30
+}
+
+# pkg_web_fallback <pkgname>
+# Called when a package is not available via the native PM. Searches repology
+# and shows the user alternative names / distro names from the web, then lets
+# them manually enter a correct package name or a one-off shell command to run.
+pkg_web_fallback() {
+    local name="$1"
+    tui_msg "Package not found" "'$name' was not found in the $PM repository.\n\nSearching repology.org for cross-distro alternatives…"
+
+    local results
+    results=$(pkg_web_search "$name")
+    if [ -z "$results" ]; then
+        results="(No results found — check your internet connection or try a different name)"
+    fi
+
+    local tmpf="${SYSTUI_TMP}/pkgweb_$$.txt"
+    printf 'Alternative package names found on repology.org for: %s\n\n%s\n' "$name" "$results" > "$tmpf"
+    tui_text "Web search: $name" "$tmpf"
+    rm -f "$tmpf"
+
+    local action
+    action=$(tui_menu "Install alternatives" "How would you like to proceed?" \
+        rename  "Try a different package name with $PM" \
+        cmd     "Run a custom install command" \
+        back    "Back / skip") || return 1
+
+    case "$action" in
+        rename)
+            local alt
+            alt=$(tui_input "Alternative package name" "Enter the package name to try with $PM:" "$name") || return 1
+            [ -z "$alt" ] && return 1
+            pm_install "$alt"
+            ;;
+        cmd)
+            local icmd
+            icmd=$(tui_input "Custom install command" "Shell command to install $name:" "") || return 1
+            [ -z "$icmd" ] && return 1
+            run_cmd "Custom install: $name" bash -c "$icmd"
+            ;;
+        back|"") return 1 ;;
+    esac
+}
 pm_remove() {
     validate_packages "$@" || return 1
     case "$PM" in
@@ -2127,7 +2199,7 @@ Status  : $stat" \
                         fish)                      menu_fish_install ;;
                         zsh)                       menu_zsh_install ;;
                         nushell|nu)                menu_nushell_install ;;
-                        *)                         pm_install "$native" ;;
+                        *)                         pm_install "$native" || pkg_web_fallback "$native" ;;
                     esac
                 fi ;;
             remove) [ "$stat" = available ] && tui_msg "Not installed" "$name is not installed." || { tui_yesno "Remove" "Remove $name ($native)?" && pm_remove "$native"; } ;;
@@ -2450,7 +2522,7 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     gem) gem install "$q" ;;
                     composer) composer global require "$q" ;;
                     go) GOBIN="${GOBIN:-$HOME/go/bin}" go install "$q" ;;
-                    brew) brew install "$q" ;;
+                    brew) brew_run_as "brew install $q" install "$q" ;;
                     nix) nix profile install "$q" ;;
                 esac ;;
             update)
@@ -2464,7 +2536,7 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     gem) gem update ;;
                     composer) composer global update ;;
                     go) tui_msg "Go" "Go does not maintain a global upgrade database; reinstall modules with @latest." ;;
-                    brew) brew update && brew upgrade ;;
+                    brew) brew_run_as "brew update && upgrade" update && brew_run_as "brew upgrade" upgrade ;;
                     nix) nix profile upgrade '.*' ;;
                 esac ;;
             list)
@@ -2478,7 +2550,7 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     gem) gem list ;;
                     composer) composer global show ;;
                     go) find "${GOBIN:-$HOME/go/bin}" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null ;;
-                    brew) brew list --versions ;;
+                    brew) { local _btu; _btu=$(brew_target_user); if [ -n "$_btu" ] && [ "$_btu" != root ] && [ "$(id -u)" -eq 0 ]; then sudo -u "$_btu" -H brew list --versions; else brew list --versions; fi; } ;;
                     nix) nix profile list ;;
                 esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$id installed" ${SYSTUI_TMP}/pkg ;;
             cache)
@@ -2492,7 +2564,7 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     gem) gem cleanup ;;
                     composer) composer clear-cache ;;
                     go) go clean -cache -testcache; tui_msg "Go cache" "Build and test caches cleaned." ;;
-                    brew) brew cleanup -s ;;
+                    brew) brew_run_as "brew cleanup" cleanup -s ;;
                     nix) nix store gc ;;
                 esac ;;
             config)
@@ -2508,7 +2580,7 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
                     gem) gem environment ;;
                     composer) composer diagnose ;;
                     go) go env ;;
-                    brew) brew doctor ;;
+                    brew) { local _btu; _btu=$(brew_target_user); if [ -n "$_btu" ] && [ "$_btu" != root ] && [ "$(id -u)" -eq 0 ]; then sudo -u "$_btu" -H brew doctor; else brew doctor; fi; } ;;
                     nix) nix config show 2>/dev/null || nix show-config ;;
                 esac > ${SYSTUI_TMP}/pkg 2>&1; tui_text "$id diagnostics" ${SYSTUI_TMP}/pkg ;;
             back|"") return 0 ;;
@@ -3194,20 +3266,139 @@ brew_root_compat_env_file() {
     fi
 }
 
+# Returns 1 when root bypass is permanently enabled (HOMEBREW_ALLOW_ROOT=1 in
+# /etc/systui/homebrew.env), 0 otherwise.
+brew_root_bypass_enabled() {
+    grep -qs 'HOMEBREW_ALLOW_ROOT=1' /etc/systui/homebrew.env 2>/dev/null
+}
+
+# Write/remove the persistent root-bypass flag in /etc/systui/homebrew.env.
+brew_set_root_bypass() { # <1|0>
+    local flag="$1"
+    mkdir -p /etc/systui
+    local envf=/etc/systui/homebrew.env
+    touch "$envf" 2>/dev/null || true
+    if [ "$flag" = 1 ]; then
+        grep -qs 'HOMEBREW_ALLOW_ROOT=' "$envf" \
+            && sed -i 's/^HOMEBREW_ALLOW_ROOT=.*/HOMEBREW_ALLOW_ROOT=1/' "$envf" \
+            || echo 'HOMEBREW_ALLOW_ROOT=1' >> "$envf"
+    else
+        sed -i '/^HOMEBREW_ALLOW_ROOT=/d' "$envf" 2>/dev/null || true
+    fi
+    chmod 0644 "$envf"
+}
+
+# Resolve the user brew should run as.
+# When running as root and bypass is NOT enabled, brew runs under the first
+# non-root account (falling back to $SUDO_USER, then the first UID-1000 account).
+brew_target_user() {
+    if [ "$(id -u)" -ne 0 ] || brew_root_bypass_enabled; then
+        printf '%s\n' "$(id -un)"
+        return 0
+    fi
+    local u="${SUDO_USER:-}"
+    [ -z "$u" ] || [ "$u" = root ] && \
+        u=$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd 2>/dev/null || true)
+    [ -n "$u" ] || u=""
+    printf '%s\n' "$u"
+}
+
+# Run a brew command as the appropriate user (or directly when bypass is on).
+brew_run_as() { # <description> <brew-args...>
+    local desc="$1"; shift
+    local buser; buser=$(brew_target_user)
+    if [ -z "$buser" ] || [ "$buser" = root ] || [ "$(id -u)" -ne 0 ]; then
+        run_cmd "$desc" brew "$@"
+    else
+        run_cmd "$desc (as $buser)" sudo -u "$buser" -H brew "$@"
+    fi
+}
+
 menu_brew_install() {
-    local c script
-    c=$(tui_menu "Install Homebrew" "Choose installation method:" \
-        root   "Install permanent root-compatibility layer (iSH-AOK / Debian arm64)" \
-        back   "Back") || return 0
+    local c script buser status_line
+    buser=$(brew_target_user)
+    status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled)"
+    [ -n "$buser" ] && status_line+=" | Install target: $buser" || status_line+=" | No non-root user found"
+
+    c=$(tui_menu "Install Homebrew" "$status_line\n\nChoose installation method:" \
+        user      "Standard install — run as non-root user (recommended)" \
+        rootcomp  "Root-compatibility layer — iSH-AOK / Debian arm64 (requires root)" \
+        rootbypass "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
+        prefix    "Set custom HOMEBREW_PREFIX" \
+        cellar    "Set custom HOMEBREW_CELLAR" \
+        repair    "Repair / re-link existing Homebrew installation" \
+        uninstall "Uninstall Homebrew" \
+        back      "Back") || return 0
+
     case "$c" in
-        root)
+        user)
+            local install_user; install_user=$(brew_target_user)
+            if [ -z "$install_user" ] || [ "$install_user" = root ]; then
+                tui_msg "Homebrew" "No non-root account found to install under.\nCreate a user account first or enable root bypass."
+                return 0
+            fi
+            tui_msg "Homebrew install" "Installing Homebrew as '$install_user'.\nThis will download and run the official install script."
+            run_cmd "Install Homebrew (as $install_user)" \
+                sudo -u "$install_user" -H bash -c \
+                'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+            ;;
+        rootcomp)
             if [ "$(id -u)" -ne 0 ]; then
-                tui_msg "Homebrew" "Root privileges are required. Re-run systui as root (sudo)."
+                tui_msg "Homebrew" "Root privileges are required for the root-compat layer."
                 return 0
             fi
             script=$(brew_root_compat_script)
             [ -r "$script" ] || { tui_msg "Homebrew" "Installer script not found:\n$script"; return 0; }
-            run_cmd "Install Homebrew (root-compatible)" bash "$script" ;;
+            run_cmd "Install Homebrew (root-compatible)" bash "$script"
+            ;;
+        rootbypass)
+            if [ "$(id -u)" -ne 0 ]; then
+                tui_msg "Root bypass" "Changing the system-wide root bypass requires root."; return 0
+            fi
+            if brew_root_bypass_enabled; then
+                tui_yesno "Disable root bypass" "Remove HOMEBREW_ALLOW_ROOT from /etc/systui/homebrew.env?" || return 0
+                brew_set_root_bypass 0
+                tui_msg "Root bypass" "Root bypass disabled. brew commands will now run under the non-root target user."
+            else
+                tui_yesno "Enable root bypass" "Set HOMEBREW_ALLOW_ROOT=1 permanently in /etc/systui/homebrew.env?\n\nThis allows brew to run directly as root. Use only if the root-compat layer is installed." || return 0
+                brew_set_root_bypass 1
+                tui_msg "Root bypass" "Root bypass enabled. brew commands will now run as root directly."
+            fi
+            ;;
+        prefix)
+            local val; val=$(tui_input "HOMEBREW_PREFIX" "Custom prefix path (e.g. /home/linuxbrew/.linuxbrew):" "${HOMEBREW_PREFIX:-}") || return 0
+            [ -z "$val" ] && return 0
+            mkdir -p /etc/systui
+            grep -qs 'HOMEBREW_PREFIX=' /etc/systui/homebrew.env \
+                && sed -i "s|^HOMEBREW_PREFIX=.*|HOMEBREW_PREFIX=$val|" /etc/systui/homebrew.env \
+                || echo "HOMEBREW_PREFIX=$val" >> /etc/systui/homebrew.env
+            tui_msg "HOMEBREW_PREFIX" "Set to $val in /etc/systui/homebrew.env"
+            ;;
+        cellar)
+            local val; val=$(tui_input "HOMEBREW_CELLAR" "Custom cellar path (e.g. /home/linuxbrew/.linuxbrew/Cellar):" "${HOMEBREW_CELLAR:-}") || return 0
+            [ -z "$val" ] && return 0
+            mkdir -p /etc/systui
+            grep -qs 'HOMEBREW_CELLAR=' /etc/systui/homebrew.env \
+                && sed -i "s|^HOMEBREW_CELLAR=.*|HOMEBREW_CELLAR=$val|" /etc/systui/homebrew.env \
+                || echo "HOMEBREW_CELLAR=$val" >> /etc/systui/homebrew.env
+            tui_msg "HOMEBREW_CELLAR" "Set to $val in /etc/systui/homebrew.env"
+            ;;
+        repair)
+            brew_run_as "Homebrew repair" cleanup --prune=all
+            brew_run_as "Homebrew relink" link --overwrite --force 2>/dev/null || true
+            brew_run_as "Homebrew doctor" doctor
+            ;;
+        uninstall)
+            tui_yesno "Uninstall Homebrew" "This will remove Homebrew and all installed formulae. Continue?" || return 0
+            local ubuser; ubuser=$(brew_target_user)
+            if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
+                run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
+                    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
+            else
+                run_cmd "Uninstall Homebrew" bash -c \
+                    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
+            fi
+            ;;
         back|"") return 0 ;;
     esac
 }

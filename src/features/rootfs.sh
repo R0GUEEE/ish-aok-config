@@ -1286,7 +1286,61 @@ _CATALOGUE_
     done
     [ ${#_pkgs[@]} -eq 0 ] && return 0
 
-    run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"
+    # Try bulk install first; fall back to per-package with web-search on failure.
+    if ! run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"; then
+        for _pkg in "${_pkgs[@]}"; do
+            if ! pm_install "$_pkg" 2>/dev/null; then
+                _rootfs_bs_web_fallback "$_pkg"
+            fi
+        done
+    fi
+}
+
+# Offer a web-search fallback when a bootstrap tool cannot be installed via the
+# native package manager.  Uses rootfs_fetch_text (curl/wget, IPv4, silent).
+_rootfs_bs_web_fallback() {
+    local name="$1"
+    tui_msg "Bootstrap tool not found" "'$name' is not available via $PM.\n\nSearching repology.org for alternatives…"
+
+    local results
+    results=$(rootfs_fetch_text "https://repology.org/api/v1/project/${name}" 2>/dev/null \
+        | tr '},{' '\n' \
+        | awk '/"repo"/ && /"srcname"/ {
+            repo=""; pkg=""
+            match($0,/"repo": *"([^"]+)"/); if (RSTART) repo=substr($0,RSTART+7,RLENGTH-8)
+            match($0,/"srcname": *"([^"]+)"/); if (RSTART) pkg=substr($0,RSTART+10,RLENGTH-11)
+            if (!pkg) { match($0,/"binname": *"([^"]+)"/); if (RSTART) pkg=substr($0,RSTART+10,RLENGTH-11) }
+            if (repo && pkg) printf "  %-28s %s\n", repo":", pkg
+        }' 2>/dev/null | sort -u | head -30)
+
+    [ -z "$results" ] && results="(No results — check network or try a different name)"
+
+    local tmpf="${SYSTUI_TMP}/bsweb_$$.txt"
+    printf 'Repology results for: %s\n\n%s\n' "$name" "$results" > "$tmpf"
+    tui_text "Web search: $name" "$tmpf"
+    rm -f "$tmpf"
+
+    local action
+    action=$(tui_menu "Install $name" "Choose an alternative install method:" \
+        rename  "Try a different package name via $PM" \
+        cmd     "Run a custom install command" \
+        skip    "Skip this tool") || return 0
+
+    case "$action" in
+        rename)
+            local alt
+            alt=$(tui_input "Package name" "Enter alternative package name for $PM:" "$name") || return 0
+            [ -z "$alt" ] && return 0
+            pm_install "$alt"
+            ;;
+        cmd)
+            local icmd
+            icmd=$(tui_input "Custom command" "Shell command to install $name:" "") || return 0
+            [ -z "$icmd" ] && return 0
+            run_cmd "Custom install: $name" bash -c "$icmd"
+            ;;
+        skip|"") return 0 ;;
+    esac
 }
 menu_rootfs() {
     while true; do
