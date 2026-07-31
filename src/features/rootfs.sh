@@ -1340,6 +1340,113 @@ _CATALOGUE_
     fi
 }
 
+# Parse repology results and offer to add alternative repositories
+_rootfs_bs_add_repo() {
+    local name="$1"
+    
+    # Parse repology API to find which repos have the package
+    local repo_list
+    repo_list=$(rootfs_fetch_text "https://repology.org/api/v1/project/${name}" 2>/dev/null \
+        | tr '},{' '\n' \
+        | awk -F'"' '/repo.*srcname/ {
+            for (i=1; i<=NF; i++) {
+                if ($i == "repo") repo=$(i+2)
+                if ($i == "srcname") pkg=$(i+2)
+            }
+            if (repo && pkg) print repo
+        }' 2>/dev/null | sort -u)
+
+    [ -z "$repo_list" ] && { tui_msg "No alternatives" "Package '$name' not found in any public repository."; return 1; }
+
+    # Show available repositories
+    local tmpf="${SYSTUI_TMP}/repos_$$.txt"
+    {
+        printf 'Package "%s" is available in:\n\n' "$name"
+        printf '%s\n' "$repo_list" | sed 's/^/  • /'
+        printf '\n\nNOTE: These are repositories outside your system package manager.\n'
+        printf 'You can enable third-party repos (PPAs, COPR, AUR, etc) or install manually.\n'
+    } > "$tmpf"
+    tui_text "Available repositories" "$tmpf"
+    rm -f "$tmpf"
+
+    # Offer to enable repositories based on distro
+    local repo_action
+    repo_action=$(tui_menu "Add repository" "Choose an option:" \
+        ubuntu_ppa    "Enable Ubuntu PPA (if applicable)" \
+        debian_backports "Enable Debian backports" \
+        fedora_copr   "Enable Fedora COPR (if applicable)" \
+        aur           "Install from Arch AUR (if applicable)" \
+        manual        "Manual repository setup instructions" \
+        skip          "Skip") || return 1
+
+    case "$repo_action" in
+        ubuntu_ppa)
+            if [ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release; then
+                local ppa
+                ppa=$(tui_input "Ubuntu PPA" "Enter PPA (format: ppa:user/repo):" "") || return 1
+                [ -z "$ppa" ] && return 1
+                run_cmd "Add Ubuntu PPA" bash -c "add-apt-repository -y '$ppa' && apt-get update" && \
+                pm_install "$name"
+            else
+                tui_msg "Not Ubuntu" "PPA is only for Ubuntu systems."
+                return 1
+            fi
+            ;;
+        debian_backports)
+            if [ -f /etc/os-release ] && grep -qi debian /etc/os-release; then
+                local backports_entry="deb http://deb.debian.org/debian \$(lsb_release -cs)-backports main contrib non-free"
+                run_cmd "Add Debian backports" bash -c "echo '$backports_entry' >> /etc/apt/sources.list && apt-get update" && \
+                pm_install "$name"
+            else
+                tui_msg "Not Debian" "Backports are only for Debian systems."
+                return 1
+            fi
+            ;;
+        fedora_copr)
+            if [ -f /etc/os-release ] && grep -qi fedora /etc/os-release; then
+                local copr
+                copr=$(tui_input "Fedora COPR" "Enter COPR (format: @group/project):" "") || return 1
+                [ -z "$copr" ] && return 1
+                run_cmd "Add Fedora COPR" bash -c "dnf copr enable '$copr' && dnf install -y '$name'" || true
+            else
+                tui_msg "Not Fedora" "COPR is only for Fedora/RHEL systems."
+                return 1
+            fi
+            ;;
+        aur)
+            if [ -f /etc/os-release ] && grep -qi arch /etc/os-release; then
+                tui_msg "AUR installation" "Install yay or paru first:\n  pacman -S yay\n\nThen:\n  yay -S $name"
+            else
+                tui_msg "Not Arch" "AUR is only for Arch Linux systems."
+                return 1
+            fi
+            ;;
+        manual)
+            local tmpf="${SYSTUI_TMP}/repo_instructions_$$.txt"
+            {
+                printf 'MANUAL REPOSITORY SETUP\n\n'
+                printf 'For Ubuntu/Debian:\n'
+                printf '  1. Find PPA: https://launchpad.net/~username/+archive\n'
+                printf '  2. add-apt-repository ppa:user/repo\n'
+                printf '  3. apt-get update && apt-get install %s\n\n' "$name"
+                printf 'For Fedora/RHEL:\n'
+                printf '  1. Find COPR: https://copr.fedorainfracloud.org/coprs/\n'
+                printf '  2. dnf copr enable @user/project\n'
+                printf '  3. dnf install %s\n\n' "$name"
+                printf 'For Arch:\n'
+                printf '  1. Install AUR helper: pacman -S yay\n'
+                printf '  2. yay -S %s\n\n' "$name"
+                printf 'Alternative: Download pre-built binary or compile from source\n'
+                printf 'See the previous menu for GitHub or custom install options.\n'
+            } > "$tmpf"
+            tui_text "Repository setup instructions" "$tmpf"
+            rm -f "$tmpf"
+            return 0
+            ;;
+        skip|"") return 1 ;;
+    esac
+}
+
 # Offer a web-search fallback when a bootstrap tool cannot be installed via the
 # native package manager. Searches repology.org + GitHub releases for alternatives.
 _rootfs_bs_web_fallback() {
@@ -1390,6 +1497,7 @@ _rootfs_bs_web_fallback() {
     local action
     action=$(tui_menu "Install $name" "Choose an alternative install method:" \
         rename  "Try a different package name via $PM" \
+        altrepo "Add alternative repository for this package" \
         github  "Search GitHub releases for pre-built binary" \
         cmd     "Run a custom install command" \
         compile "Compile from source" \
@@ -1401,6 +1509,9 @@ _rootfs_bs_web_fallback() {
             alt=$(tui_input "Package name" "Enter alternative package name for $PM:" "$name") || return 0
             [ -z "$alt" ] && return 0
             pm_install "$alt"
+            ;;
+        altrepo)
+            _rootfs_bs_add_repo "$name"
             ;;
         github)
             local gh_project
