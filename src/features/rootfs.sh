@@ -1334,10 +1334,97 @@ _CATALOGUE_
     if ! run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"; then
         for _pkg in "${_pkgs[@]}"; do
             if ! pm_install "$_pkg" 2>/dev/null; then
-                _rootfs_bs_web_fallback "$_pkg"
+                _rootfs_bs_known_repos "$_pkg" || _rootfs_bs_web_fallback "$_pkg"
             fi
         done
     fi
+}
+
+# Check if package is available in known repos (Debian, Ubuntu, etc.) and offer direct install
+_rootfs_bs_known_repos() {
+    local name="$1"
+    
+    # Known packages and their direct repository URLs
+    # Format: pkg_name|debian_url|ubuntu_url|description
+    local known_pkgs="multistrap|https://packages.debian.org/bookworm/multistrap|https://launchpad.net/ubuntu/+source/multistrap|Multi-mirror Debian rootfs installer
+mmdebstrap|https://packages.debian.org/bookworm/mmdebstrap|https://launchpad.net/ubuntu/+source/mmdebstrap|Modern APT-based bootstrap
+debootstrap|https://packages.debian.org/bookworm/debootstrap|https://launchpad.net/ubuntu/+source/debootstrap|Official Debian bootstrap
+cdebootstrap|https://packages.debian.org/bookworm/cdebootstrap|https://launchpad.net/ubuntu/+source/cdebootstrap|Compiled bootstrap tool
+schroot|https://packages.debian.org/bookworm/schroot|https://launchpad.net/ubuntu/+source/schroot|Chroot session manager"
+
+    local found=0 deb_url ubuntu_url desc
+    while IFS='|' read -r pkg deb_url ubuntu_url desc; do
+        [ "$pkg" = "$name" ] || continue
+        found=1
+        break
+    done <<< "$known_pkgs"
+
+    [ "$found" -eq 0 ] && return 1
+
+    # Show available installation sources
+    local tmpf="${SYSTUI_TMP}/known_repos_$$.txt"
+    {
+        printf 'KNOWN REPOSITORY SOURCES for: %s\n\n' "$name"
+        printf 'Description: %s\n\n' "$desc"
+        printf 'Available from:\n'
+        printf '  • Debian Bookworm:\n    %s\n\n' "$deb_url"
+        printf '  • Ubuntu (via Launchpad):\n    %s\n\n' "$ubuntu_url"
+        printf 'NOTE: These are official sources with pre-built packages.\n'
+        printf 'Direct installation is faster than compiling from source.\n'
+    } > "$tmpf"
+    tui_text "Known repository sources: $name" "$tmpf"
+    rm -f "$tmpf"
+
+    local action
+    action=$(tui_menu "Install from known repo" "Choose installation method:" \
+        debian  "Install from Debian repository" \
+        ubuntu  "Install from Ubuntu repository" \
+        backport "Add Debian backports and install" \
+        ppa     "Enable Ubuntu PPA and install" \
+        web     "Show more installation options (web search)" \
+        skip    "Skip") || return 1
+
+    case "$action" in
+        debian)
+            # Check if running on Debian-like system
+            if [ -f /etc/debian_version ] || command -v apt-get >/dev/null 2>&1; then
+                tui_msg "Debian repository" "To install from Debian Bookworm:\n\n1. Visit: $deb_url\n2. Download .deb package\n3. dpkg -i <package>.deb\n\nOr add Debian repos and:\n  apt-get install $name"
+                return 1
+            fi
+            ;;
+        ubuntu)
+            # Check if running Ubuntu
+            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
+                tui_msg "Ubuntu installation" "Visit: $ubuntu_url\n\nTo install: apt-get install $name\n\nOr manually download and:\n  dpkg -i <package>.deb"
+                return 1
+            fi
+            ;;
+        backport)
+            if [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
+                run_cmd "Add Debian backports" bash -c \
+                    "echo 'deb http://deb.debian.org/debian bookworm-backports main contrib non-free' >> /etc/apt/sources.list.d/backports.list && apt-get update" && \
+                pm_install "$name" && return 0
+            else
+                tui_msg "Not Debian" "Backports only work on Debian systems."
+                return 1
+            fi
+            ;;
+        ppa)
+            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
+                # For Ubuntu, enable universe/multiverse if needed
+                run_cmd "Enable Ubuntu repositories" bash -c \
+                    "apt-get update && apt-get install software-properties-common -y 2>/dev/null && add-apt-repository universe -y 2>/dev/null; apt-get update" && \
+                pm_install "$name" && return 0
+            else
+                tui_msg "Not Ubuntu" "This method requires Ubuntu."
+                return 1
+            fi
+            ;;
+        web)
+            return 1  # Fall through to web fallback
+            ;;
+        skip|"") return 1 ;;
+    esac
 }
 
 # Parse repology results and offer to add alternative repositories
