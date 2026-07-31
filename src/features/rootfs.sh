@@ -1546,73 +1546,124 @@ Use 'man $_tag' or '$_tag --help' for more information."
 }
 
 # Check if package is available in known repos (Debian, Ubuntu, etc.) and offer installation options
-# Known upstream source-tarball URLs for packages not available via apt/known repos.
-# Format: pkg|label|url
-_rootfs_bs_tarball_sources() {
+# Query the Debian package search (packages.debian.org) to find which Debian
+# suites carry a given package, so we can fetch its .deb directly and install
+# it with dpkg -i instead of relying on hardcoded upstream tarballs.
+# Format returned: suite|section  (one per line, deduplicated)
+_rootfs_bs_debian_suites() {
     local name="$1"
-    grep -F "${name}|" <<'_BS_TARBALLS_'
-multistrap|Ubuntu (Launchpad source tarball)|https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/multistrap/2.2.11/multistrap_2.2.11.tar.xz
-multistrap|Debian (deb.debian.org source tarball)|http://deb.debian.org/debian/pool/main/m/multistrap/multistrap_2.2.11.tar.xz
-_BS_TARBALLS_
+    local html
+    html=$(rootfs_fetch_text "https://packages.debian.org/search?keywords=${name}&searchon=names&suite=all&section=all" 2>/dev/null)
+    [ -z "$html" ] && return 1
+
+    # Result links look like: <a href="/bookworm/multistrap">multistrap</a>
+    # or href="/source/bookworm/multistrap". Extract "<suite>/<name>" pairs.
+    printf '%s\n' "$html" \
+        | grep -oE "href=\"/(source/)?[a-z]+/${name}\"" \
+        | sed -E "s#href=\"/(source/)?##; s#/${name}\"##" \
+        | sort -u
 }
 
-# Download, extract, and install a package from a known source tarball URL.
-_rootfs_bs_install_tarball() {
-    local name="$1" url="$2"
-    local workdir="${SYSTUI_TMP:-/tmp}/tarball_${name}.$$"
-    mkdir -p "$workdir" || return 1
+# Given a Debian suite, find the direct .deb download URL for a package by
+# following packages.debian.org's per-architecture download page.
+_rootfs_bs_debian_deb_url() {
+    local name="$1" suite="$2"
+    local pkg_page
+    pkg_page=$(rootfs_fetch_text "https://packages.debian.org/${suite}/${name}" 2>/dev/null)
+    [ -z "$pkg_page" ] && return 1
 
-    tui_msg "Installing $name from tarball" "Downloading:\n$url\n\nThis will download, extract, and build/install $name."
+    # Find the download page link, e.g. href="/bookworm/all/multistrap/download"
+    local dl_page_path
+    dl_page_path=$(printf '%s\n' "$pkg_page" \
+        | grep -oE "href=\"/${suite}/[a-zA-Z0-9]+/${name}/download\"" \
+        | sed -E 's/^href="//; s/"$//' \
+        | head -n1)
 
-    local archive="$workdir/$(basename "$url")"
-    run_cmd "Download $name tarball" bash -c \
-        "curl -fsSL -4 -o '$archive' '$url' 2>/dev/null || wget -q -4 -O '$archive' '$url'" \
-        || { rm -rf "$workdir"; return 1; }
+    # Fall back to common architectures if the page didn't expose a direct link.
+    local -a candidates=()
+    if [ -n "$dl_page_path" ]; then
+        candidates+=("https://packages.debian.org${dl_page_path}")
+    fi
+    candidates+=(
+        "https://packages.debian.org/${suite}/all/${name}/download"
+        "https://packages.debian.org/${suite}/amd64/${name}/download"
+        "https://packages.debian.org/${suite}/arm64/${name}/download"
+    )
 
-    run_cmd "Extract $name tarball" bash -c \
-        "cd '$workdir' && tar xf '$archive'" \
-        || { rm -rf "$workdir"; return 1; }
+    local dl_page url c
+    for c in "${candidates[@]}"; do
+        dl_page=$(rootfs_fetch_text "$c" 2>/dev/null) || continue
+        [ -z "$dl_page" ] && continue
+        # Mirror links look like: href="http://ftp.debian.org/debian/pool/main/m/multistrap/multistrap_2.2.11_all.deb"
+        url=$(printf '%s\n' "$dl_page" \
+            | grep -oE 'href="https?://[^"]+/'"${name}"'_[^"]+\.deb"' \
+            | sed -E 's/^href="//; s/"$//' \
+            | head -n1)
+        [ -n "$url" ] && { printf '%s' "$url"; return 0; }
+    done
 
-    # Find the extracted source directory (top-level dir other than the archive).
-    local srcdir
-    srcdir=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
-    [ -z "$srcdir" ] && srcdir="$workdir"
+    return 1
+}
 
-    # Prefer a Makefile-driven install if one is present.
-    if [ -f "$srcdir/Makefile" ] || [ -f "$srcdir/makefile" ]; then
-        if run_cmd "Build & install $name (make install)" bash -c \
-            "cd '$srcdir' && make && make install PREFIX=/usr/local DESTDIR="; then
-            rm -rf "$workdir"
-            return 0
-        fi
+# Search packages.debian.org for the package, let the user pick which Debian
+# suite to pull it from, download the .deb, and install it with dpkg -i.
+_rootfs_bs_install_debian_deb() {
+    local name="$1"
+
+    tui_msg "Searching Debian packages" "Querying packages.debian.org for \"$name\"…"
+
+    local suites
+    suites=$(_rootfs_bs_debian_suites "$name")
+    if [ -z "$suites" ]; then
+        tui_msg "Not found" "\"$name\" was not found on packages.debian.org."
+        return 1
     fi
 
-    # Fallback: locate the main executable/script matching the package name and
-    # install it directly, plus any man pages found alongside it.
-    local script
-    script=$(find "$srcdir" -maxdepth 2 -type f -name "$name" -perm -u+x 2>/dev/null | head -n1)
-    [ -z "$script" ] && script=$(find "$srcdir" -maxdepth 2 -type f -name "$name" | head -n1)
+    local suite_menu=() s
+    while IFS= read -r s; do
+        [ -z "$s" ] && continue
+        suite_menu+=("$s" "Debian suite: $s")
+    done <<< "$suites"
 
-    if [ -n "$script" ]; then
-        run_cmd "Install $name script" bash -c \
-            "install -Dm755 '$script' /usr/local/sbin/$name" || { rm -rf "$workdir"; return 1; }
+    local selected_suite
+    selected_suite=$(tui_menu "Select Debian suite" \
+        "\"$name\" is available in these Debian suites. Choose one to install from:" \
+        "${suite_menu[@]}" "cancel" "Cancel") || return 1
+    [ "$selected_suite" = "cancel" ] && return 1
+    [ -z "$selected_suite" ] && return 1
 
-        # Install man page(s) if present.
-        local manpage
-        manpage=$(find "$srcdir" -maxdepth 3 -type f -name "${name}.[1-8]*" | head -n1)
-        if [ -n "$manpage" ]; then
-            local section="${manpage##*.}"
-            run_cmd "Install $name man page" bash -c \
-                "install -Dm644 '$manpage' /usr/local/share/man/man${section}/$(basename "$manpage")" || true
-        fi
+    tui_msg "Locating .deb" "Finding the $name .deb download URL for suite \"$selected_suite\"…"
 
+    local deb_url
+    deb_url=$(_rootfs_bs_debian_deb_url "$name" "$selected_suite")
+    if [ -z "$deb_url" ]; then
+        tui_msg "Not found" "Could not locate a direct .deb download link for $name in $selected_suite."
+        return 1
+    fi
+
+    local workdir="${SYSTUI_TMP:-/tmp}/debdl_${name}.$$"
+    mkdir -p "$workdir" || return 1
+    local debfile="$workdir/$(basename "$deb_url")"
+
+    run_cmd "Download $name.deb from Debian ($selected_suite)" bash -c \
+        "curl -fsSL -4 -o '$debfile' '$deb_url' 2>/dev/null || wget -q -4 -O '$debfile' '$deb_url'" \
+        || { rm -rf "$workdir"; return 1; }
+
+    run_cmd "Install $name with dpkg -i" bash -c \
+        "dpkg -i '$debfile' || true" \
+        || true
+    run_cmd "Resolve dependencies" bash -c \
+        "apt-get install -f -y >/dev/null 2>&1 || true" \
+        || true
+
+    if command -v "$name" >/dev/null 2>&1 || dpkg -s "$name" >/dev/null 2>&1; then
         rm -rf "$workdir"
-        tui_msg "Installed" "$name installed to /usr/local/sbin/$name from source tarball."
+        tui_msg "Installed" "$name installed successfully from Debian $selected_suite via dpkg -i."
         return 0
     fi
 
-    tui_msg "Manual install required" \
-        "Could not auto-detect an install method for $name.\nSource extracted at: $srcdir\nPlease inspect and install manually."
+    rm -rf "$workdir"
+    tui_msg "Installation failed" "dpkg -i completed but $name does not appear to be installed. Check the log for details."
     return 1
 }
 
@@ -1634,14 +1685,6 @@ _rootfs_bs_known_repos() {
             }
         ' 2>/dev/null | sort -u)
 
-    # Also check for known upstream source tarballs for this package.
-    local tarball_data
-    tarball_data=$(_rootfs_bs_tarball_sources "$name")
-
-    if [ -z "$repo_data" ] && [ -z "$tarball_data" ]; then
-        return 1
-    fi
-
     # Build menu of available repositories
     local repo_menu=()
     declare -A seen_repos
@@ -1655,33 +1698,17 @@ _rootfs_bs_known_repos() {
         done <<< "$repo_data"
     fi
 
-    # Append tarball sources as distinct, directly-installable options.
-    declare -A tarball_urls
-    if [ -n "$tarball_data" ]; then
-        local _pkg _label _url
-        while IFS='|' read -r _pkg _label _url; do
-            [ -z "$_label" ] && continue
-            local _tagkey="tarball:${_label}"
-            tarball_urls["$_tagkey"]="$_url"
-            repo_menu+=("$_tagkey" "$_label (tarball)")
-        done <<< "$tarball_data"
-    fi
-
-    if [ ${#repo_menu[@]} -eq 0 ]; then
-        return 1
-    fi
+    # Always offer a live Debian package search as a source — it queries
+    # packages.debian.org directly and installs the resulting .deb via dpkg -i,
+    # rather than relying on any hardcoded tarball/package URL.
+    repo_menu+=("debian-search" "Search packages.debian.org (install .deb via dpkg -i)")
 
     # Show available repositories
     local tmpf="${SYSTUI_TMP:-/tmp}/repo_list_$$.txt"
     {
         printf 'Package "%s" is available from the following sources:\n\n' "$name"
         [ -n "$repo_data" ] && printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
-        if [ ${#tarball_urls[@]} -gt 0 ]; then
-            printf '\nSource tarballs:\n'
-            for _k in "${!tarball_urls[@]}"; do
-                printf '  • %s\n' "${_k#tarball:}"
-            done
-        fi
+        printf '\n  • Live search on packages.debian.org (dpkg -i install)\n'
         printf '\n\nSelect a source to install from.\n'
     } > "$tmpf"
     tui_text "Available sources for $name" "$tmpf"
@@ -1695,15 +1722,12 @@ _rootfs_bs_known_repos() {
     [ "$selected_repo" = "cancel" ] && return 1
     [ -z "$selected_repo" ] && return 1
 
-    # Tarball sources install directly — no package-manager/dpkg method needed.
-    case "$selected_repo" in
-        tarball:*)
-            local _url="${tarball_urls[$selected_repo]}"
-            [ -z "$_url" ] && { tui_msg "Error" "Could not resolve tarball URL."; return 1; }
-            _rootfs_bs_install_tarball "$name" "$_url"
-            return $?
-            ;;
-    esac
+    # Debian package search installs directly via dpkg -i — no separate
+    # package-manager/dpkg method prompt needed.
+    if [ "$selected_repo" = "debian-search" ]; then
+        _rootfs_bs_install_debian_deb "$name"
+        return $?
+    fi
 
     # Now offer installation method
     local install_method
