@@ -212,6 +212,50 @@ check "Kali has only its dedicated systemd init branch" not_contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "debian|ubuntu|kali)"
 unset -f curl
 
+# --- Rootfs input validation (added during the rootfs audit) ----------------
+check "mirror validator accepts plain http(s) URLs" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; rootfs_valid_mirror "https://deb.debian.org/debian" && rootfs_valid_mirror "http://dl-cdn.alpinelinux.org/alpine"' _ "$PROJECT_DIR"
+check "mirror validator rejects quotes and backticks" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; ! rootfs_valid_mirror "https://evil.example/a\"b" && ! rootfs_valid_mirror "https://evil.example/a\`b"' _ "$PROJECT_DIR"
+check "mirror validator rejects whitespace and shell metacharacters" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; ! rootfs_valid_mirror "https://evil.example/a b" && ! rootfs_valid_mirror "https://evil.example/a;rm -rf /"' _ "$PROJECT_DIR"
+check "release validator accepts sane release names" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; rootfs_valid_release "noble" && rootfs_valid_release "v3.20" && rootfs_valid_release "sid-slim"' _ "$PROJECT_DIR"
+check "release validator rejects path or shell characters" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; ! rootfs_valid_release "../../etc" && ! rootfs_valid_release "edge main"' _ "$PROJECT_DIR"
+check "service validator accepts systemd/openrc unit names" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; rootfs_valid_service "nginx" && rootfs_valid_service "sshd@.service" && rootfs_valid_service "mysql-default"' _ "$PROJECT_DIR"
+check "service validator rejects shell metacharacters" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; ! rootfs_valid_service "a;rm -rf /" && ! rootfs_valid_service "\$(touch /pwned)"' _ "$PROJECT_DIR"
+check "port validator accepts valid ports only" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; rootfs_valid_port 22 && ! rootfs_valid_port 0 && ! rootfs_valid_port 65536 && ! rootfs_valid_port "2x"' _ "$PROJECT_DIR"
+check "locale validator rejects path or shell characters" \
+    bash -c '. "$1/src/features/rootfs.sh" 2>/dev/null; rootfs_valid_locale "en_US.UTF-8" && ! rootfs_valid_locale "../../x" && ! rootfs_valid_locale "a b"' _ "$PROJECT_DIR"
+globdir="$tmpdir/globtest"
+mkdir -p "$globdir"
+touch "$globdir/a.c" "$globdir/b.c" "$globdir/x"
+# rootfs.sh is a leaf module; when tested standalone it has no warn().
+warn() { :; }
+# Pre-fix, "*.c" would be expanded against the cwd into "a.c b.c" and the
+# whole list would pass validation. Post-fix the glob is treated literally,
+# fails the package-name check, and sanitize rejects the input outright.
+if (cd "$globdir" && rootfs_sanitize_packages "a.c *.c" >/dev/null 2>&1); then
+    check "package sanitizer treats globs literally instead of expanding them" false
+else
+    check "package sanitizer treats globs literally instead of expanding them" true
+fi
+if rootfs_sanitize_packages "curl;rm -rf /" >/dev/null 2>&1; then
+    check "package sanitizer rejects unsafe names" false
+else
+    check "package sanitizer rejects unsafe names" true
+fi
+check "alpine host arch maps from uname instead of defaulting to target" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "host_apk_arch=\"x86_64\""
+check "apk key seeding no longer uses the BusyBox-unsafe wildcard fetch" not_contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "wget -q -P /etc/apk/keys"
+check "build_alpine fails loudly on unknown host arch" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "Unknown host architecture"
+
 # Rootfs bootstrap tools menu checks
 check "menu_rootfs_bootstrap_tools function exists" function_exists menu_rootfs_bootstrap_tools
 check "bootstrap tools menu wired into menu_rootfs" contains \

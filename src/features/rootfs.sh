@@ -378,11 +378,11 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
                     "done" "Use these settings") || return 1
                 case "$c" in
-                    variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "debootstrap variant" "Base package set:" minbase "Required packages plus apt" on buildd "Build environment" off default "Required and important packages" off) || true ;;
+                    variant) value=$(tui_radio "debootstrap variant" "Base package set:" minbase "Required packages plus apt" on buildd "Build environment" off default "Required and important packages" off) || continue; ROOTFS_BACKEND_VARIANT="$value" ;;
                     components) value=$(tui_input "Archive components" "Comma-separated components:" "$ROOTFS_BACKEND_COMPONENTS") || continue; rootfs_backend_valid_components "$value" && ROOTFS_BACKEND_COMPONENTS="${value// /,}" || tui_msg "Invalid components" "Use names separated by commas, such as main,contrib,non-free." ;;
                     include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
                     exclude) value=$(rootfs_backend_edit_packages "Bootstrap exclude" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
-                    merged) ROOTFS_BACKEND_MERGED=$(tui_radio "Merged /usr" "Control /bin, /sbin and /lib symlinks:" auto "Tool/release default" on yes "Force merged /usr" off no "Force split /usr" off) || true ;;
+                    merged) value=$(tui_radio "Merged /usr" "Control /bin, /sbin and /lib symlinks:" auto "Tool/release default" on yes "Force merged /usr" off no "Force split /usr" off) || continue; ROOTFS_BACKEND_MERGED="$value" ;;
                     keyring) rootfs_backend_keyring_menu ;;
                     verbose) [ "$ROOTFS_BACKEND_VERBOSE" = yes ] && ROOTFS_BACKEND_VERBOSE=no || ROOTFS_BACKEND_VERBOSE=yes ;;
                     done) return 0 ;;
@@ -399,8 +399,8 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
                     "done" "Use these settings") || return 1
                 case "$c" in
-                    variant) ROOTFS_BACKEND_VARIANT=$(tui_radio "mmdebstrap variant" "Base package set:" minbase "Minimal debootstrap-compatible root" on apt "Essential packages plus apt" off required "Required priority" off important "Required and important priority" off standard "Standard system" off buildd "Build environment" off) || true ;;
-                    mode) ROOTFS_MMDEBSTRAP_MODE=$(tui_radio "mmdebstrap mode" "Filesystem ownership/execution mode:" root "Run directly as root" on auto "Let mmdebstrap choose" off unshare "User namespace mode" off) || true ;;
+                    variant) value=$(tui_radio "mmdebstrap variant" "Base package set:" minbase "Minimal debootstrap-compatible root" on apt "Essential packages plus apt" off required "Required priority" off important "Required and important priority" off standard "Standard system" off buildd "Build environment" off) || continue; ROOTFS_BACKEND_VARIANT="$value" ;;
+                    mode) value=$(tui_radio "mmdebstrap mode" "Filesystem ownership/execution mode:" root "Run directly as root" on auto "Let mmdebstrap choose" off unshare "User namespace mode" off) || continue; ROOTFS_MMDEBSTRAP_MODE="$value" ;;
                     components) value=$(tui_input "Archive components" "Comma-separated components:" "$ROOTFS_BACKEND_COMPONENTS") || continue; rootfs_backend_valid_components "$value" && ROOTFS_BACKEND_COMPONENTS="${value// /,}" || tui_msg "Invalid components" "Use names separated by commas." ;;
                     include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
                     exclude) value=$(rootfs_backend_edit_packages "APT remove patterns" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
@@ -420,7 +420,7 @@ rootfs_backend_config_menu() { # <distro> <backend> [preserve]
                     verbose "Verbose output: $ROOTFS_BACKEND_VERBOSE" \
                     "done" "Use these settings") || return 1
                 case "$c" in
-                    flavour) ROOTFS_BACKEND_VARIANT=$(tui_radio "cdebootstrap flavour" "Base package set:" minimal "Essential packages plus apt" on standard "Required and important packages" off build "Build environment" off) || true ;;
+                    flavour) value=$(tui_radio "cdebootstrap flavour" "Base package set:" minimal "Essential packages plus apt" on standard "Required and important packages" off build "Build environment" off) || continue; ROOTFS_BACKEND_VARIANT="$value" ;;
                     include) value=$(rootfs_backend_edit_packages "Bootstrap include" "$ROOTFS_BACKEND_INCLUDE") && ROOTFS_BACKEND_INCLUDE="$value" ;;
                     exclude) value=$(rootfs_backend_edit_packages "Bootstrap exclude" "$ROOTFS_BACKEND_EXCLUDE") && ROOTFS_BACKEND_EXCLUDE="$value" ;;
                     configdir) value=$(tui_input "cdebootstrap config" "Optional absolute configuration directory (blank for system default):" "$ROOTFS_CDEBOOTSTRAP_CONFIGDIR") || continue; if [ -z "$value" ]; then ROOTFS_CDEBOOTSTRAP_CONFIGDIR=""; elif [ "${value#/}" != "$value" ] && [ -d "$value" ]; then ROOTFS_CDEBOOTSTRAP_CONFIGDIR="$value"; else tui_msg "Invalid directory" "Select an existing absolute directory or leave blank."; fi ;;
@@ -622,7 +622,12 @@ rootfs_valid_package_name() {
 
 rootfs_sanitize_packages() { # <space-separated list>
     local input="$1" p out=""
-    for p in $input; do
+    local -a _pkglist=()
+    # read -a word-splits on IFS without pathname expansion, so glob
+    # characters in the input are treated literally instead of being
+    # expanded against the host's working directory.
+    read -r -a _pkglist <<< "$input" || true
+    for p in "${_pkglist[@]}"; do
         if rootfs_valid_package_name "$p"; then
             case " $out " in *" $p "*) ;; *) out="$out $p" ;; esac
         else
@@ -643,6 +648,15 @@ rootfs_valid_timezone() {
     return 0
 }
 rootfs_valid_locale() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_@.-]+$'; }
+# Release/branch names are interpolated into generated config heredocs, so
+# restrict them to URL- and config-file-safe characters.
+rootfs_valid_release() { [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]*$'; }
+# Service/unit names get embedded in shell command strings; allow only the
+# characters systemd and openrc accept, rejecting any shell metacharacter.
+rootfs_valid_service() { [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9@_.:-]{0,127}$'; }
+# Mirrors feed generated config heredocs and fetch URLs, so reject anything
+# containing whitespace, quotes, backticks or shell redirection characters.
+rootfs_valid_mirror() { [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^https?://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'; }
 
 rootfs_target_arch() { # <target>
     local t="$1" a
@@ -839,14 +853,20 @@ rootfs_run_second_stage() { # <target> <arch> <use_qemu>
     local t="$1" arch="$2" use_qemu="$3" mounts="" rc=1
     rootfs_mount_chroot_fs "$t" || true
     mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
+    # Second stage runs for minutes; a Ctrl-C/TERM must detach the temporary
+    # mounts instead of leaking them. Exiting 130/143 matches the global
+    # signal handlers installed by config.sh.
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"; exit 130' INT
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"; exit 143' TERM HUP
     if chroot "$t" /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
         rc=0
     elif [ "$use_qemu" = 1 ]; then
-        setup_qemu_chroot "$t" "$arch" || { rootfs_unmount_chroot_fs "$t" "$mounts"; return 1; }
+        setup_qemu_chroot "$t" "$arch" || { trap - INT TERM HUP; rootfs_unmount_chroot_fs "$t" "$mounts"; return 1; }
         if rootfs_qemu_chroot_exec_raw "$t" "$arch" /bin/sh /debootstrap/debootstrap --second-stage >>"$LOGFILE" 2>&1; then
             rc=0
         fi
     fi
+    trap - INT TERM HUP
     rootfs_unmount_chroot_fs "$t" "$mounts"
     return "$rc"
 }
@@ -925,6 +945,7 @@ rootfs_release_menu() { # <distro> <arch>
     r=$(tui_radio "Rootfs Builder 4/13" "Release from the $distro repository (SPACE selects):" "${tags[@]}") || return 1
     if [ "$r" = custom ]; then
         r=$(tui_input "Custom release" "Release/branch name:" "$def") || return 1
+        rootfs_valid_release "$r" || { tui_msg "Invalid release" "Use only letters, digits, and . _ + - characters."; return 1; }
     fi
     [ -n "$r" ] || return 1
     printf '%s\n' "$r"
@@ -2760,6 +2781,7 @@ user creation). Install on the host first if you haven't:
         void)   def_mirror="https://repo-default.voidlinux.org" ;;
     esac
     mirror=$(tui_input "Rootfs Builder 7/13" "Mirror URL:" "$def_mirror") || return 0
+    rootfs_valid_mirror "$mirror" || { tui_msg "Invalid mirror" "Enter an http(s) URL without spaces or quotes."; return 0; }
 
     # ---- 7: target directory ----
     target=$(tui_input "Rootfs Builder 8/13" "Target directory for the rootfs:" \
@@ -3444,11 +3466,22 @@ build_alpine() { # release arch mirror target pkgs
     local mapped; mapped=$(map_packages alpine $pkgs)
     local workdir; workdir=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-apk.XXXXXX") || return 1
     # apk.static must match the HOST arch; --arch selects the TARGET arch.
+    # Use the Alpine repository's architecture names for common hosts and fail
+    # loudly for anything unknown — silently falling back to the target arch
+    # produces a binary that cannot execute on this host.
     local host_apk_arch
     case "$(uname -m)" in
-        x86_64) host_apk_arch="x86_64" ;;
-        aarch64) host_apk_arch="aarch64" ;;
-        *) host_apk_arch="$arch" ;;
+        x86_64|amd64)        host_apk_arch="x86_64" ;;
+        aarch64|arm64)       host_apk_arch="aarch64" ;;
+        armv7l|armv6l|armhf) host_apk_arch="armv7" ;;
+        i686|i586|i386|x86)  host_apk_arch="x86" ;;
+        ppc64le|ppc64)       host_apk_arch="ppc64le" ;;
+        s390x)               host_apk_arch="s390x" ;;
+        riscv64)             host_apk_arch="riscv64" ;;
+        *)
+            warn "Unknown host architecture '$(uname -m)' — cannot select an apk.static that matches the host."
+            rm -rf "$workdir"; return 1
+            ;;
     esac
     local apkdir="$mirror/$release/main/$host_apk_arch"
 
@@ -3466,12 +3499,12 @@ build_alpine() { # release arch mirror target pkgs
     run_cmd "apk.static bootstrap (alpine $release/$arch)" \
         "$workdir/sbin/apk.static" \
             -X "$mirror/$release/main" --arch "$arch" \
-            --root "$target" --initdb add alpine-base $mapped
-    local rc=$?
+            --root "$target" --initdb add alpine-base $mapped \
+        || { warn "apk.static bootstrap failed"; rm -rf "$workdir"; return 1; }
     printf '%s/%s/main\n%s/%s/community\n' "$mirror" "$release" "$mirror" "$release" \
         > "$target/etc/apk/repositories"
     rm -rf "$workdir"
-    return $rc
+    return 0
 }
 
 build_arch() { # mirror target pkgs backend
@@ -3520,7 +3553,10 @@ Then retry."
 
 build_opensuse() { # distro release debarch mirror target pkgs
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6"
+    # map_packages has no openSUSE family entry, so catalogue names pass
+    # through unchanged and are handed to zypper as-is.
     local mapped; mapped=$(map_packages opensuse $pkgs)
+    [ -z "${mapped// }" ] || warn "openSUSE has no package-name mapping — names are passed to zypper as entered; verify they exist in the $distro repos."
     command -v zypper >/dev/null 2>&1 || {
         tui_msg "Missing tool" "openSUSE bootstrapping requires zypper on the host."; return 1; }
     local suse_arch repo
@@ -3585,8 +3621,10 @@ build_void() { # arch mirror target pkgs use_qemu
         fi
         printf 'nameserver 1.1.1.1\n' > "$target/etc/resolv.conf"
         local void_args=() vp
+        local -a void_pkgs=()
         mapped=$(rootfs_sanitize_packages "$mapped") || return 1
-        for vp in $mapped; do void_args+=("$vp"); done
+        read -r -a void_pkgs <<< "$mapped" || true
+        for vp in "${void_pkgs[@]}"; do void_args+=("$vp"); done
         if in_chroot "$target" xbps-install -Syu xbps && in_chroot "$target" xbps-install -y "${void_args[@]}"; then
             log "void: extra packages installed in chroot"
         else
@@ -3624,6 +3662,12 @@ enter_chroot() { # enter_chroot <target>
     clear
     rootfs_mount_chroot_fs "$t" || true
     mounts="${ROOTFS_ACTIVE_MOUNTS:-}"
+    # The interactive shell inside the chroot runs in its own process group,
+    # so a Ctrl-C there normally never reaches us. If it ever does (or the
+    # TUI itself is signalled while the mounts are up), tear the mounts down
+    # instead of leaking them; exit codes mirror the global handlers.
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"; exit 130' INT
+    trap 'rootfs_unmount_chroot_fs "$t" "$mounts"; exit 143' TERM HUP
     echo "==============================================================="
     echo " Entering chroot: $t"
     echo " Shell: $shell   Directory: $workdir"
@@ -3640,6 +3684,7 @@ enter_chroot() { # enter_chroot <target>
     else
         rootfs_exec_raw "$t" "$shell" -lc "cd '$workdir' 2>/dev/null || cd /; exec '$shell' -l" || rc=$?
     fi
+    trap - INT TERM HUP
     rootfs_unmount_chroot_fs "$t" "$mounts"
     echo "Left chroot; temporary mounts detached."
     read -rp "(press Enter)" _ || true
@@ -3763,13 +3808,40 @@ rootfs_ensure_keyrings() { # <target> <pm>
             rootfs_chroot_exec "$t" "Refreshing zypper keys" "zypper --gpg-auto-import-keys refresh 2>&1 || true" ;;
         apk)
             # Alpine's apk needs /etc/apk/keys populated; if the rootfs was
-            # built without them (e.g. a stripped-down tarball), fetch the
-            # official Alpine signing keys so `apk add` doesn't fail
-            # signature verification on every package.
+            # built without them (e.g. a stripped-down tarball), seed the keys
+            # so `apk add` doesn't fail signature verification on every
+            # package. The old https://alpinelinux.org/keys/*.pub wildcard
+            # only works with GNU wget — BusyBox wget (the norm on iSH) treats
+            # it as a literal URL — so keys are copied from the host keyring
+            # or fetched by enumerating the key list explicitly.
             if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/apk/keys 2>/dev/null')" ]; then
-                if rootfs_exec_raw "$t" sh -c 'command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1'; then
-                    rootfs_chroot_exec "$t" "Fetching Alpine APK signing keys" \
-                        "mkdir -p /etc/apk/keys && (wget -q -P /etc/apk/keys https://alpinelinux.org/keys/*.pub 2>/dev/null || true)"
+                local _seeded=0 _apkkeys _pub
+                # 1) The host usually already carries a valid Alpine keyring
+                #    (iSH itself runs Alpine); reuse it instead of fetching.
+                if [ -d /etc/apk/keys ] && [ -n "$(ls -A /etc/apk/keys 2>/dev/null)" ]; then
+                    mkdir -p "$t/etc/apk/keys"
+                    cp /etc/apk/keys/* "$t/etc/apk/keys/" 2>/dev/null && _seeded=1
+                fi
+                # 2) Otherwise fetch each key file explicitly from the host,
+                #    where GNU wget or curl is available.
+                if [ "$_seeded" = 0 ] && { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; }; then
+                    if command -v curl >/dev/null 2>&1; then
+                        _apkkeys=$(curl -4 -LfsS --connect-timeout 10 --max-time 60 https://alpinelinux.org/keys/ 2>/dev/null || true)
+                    else
+                        _apkkeys=$(wget -4 -qO- -T 60 https://alpinelinux.org/keys/ 2>/dev/null || true)
+                    fi
+                    while IFS= read -r _pub; do
+                        [ -n "$_pub" ] || continue
+                        mkdir -p "$t/etc/apk/keys"
+                        if command -v curl >/dev/null 2>&1; then
+                            curl -4 -LfsS --connect-timeout 10 --max-time 60 \
+                                -o "$t/etc/apk/keys/$_pub" "https://alpinelinux.org/keys/$_pub" \
+                                2>/dev/null || rm -f "$t/etc/apk/keys/$_pub"
+                        else
+                            wget -4 -q -T 60 -O "$t/etc/apk/keys/$_pub" "https://alpinelinux.org/keys/$_pub" \
+                                2>/dev/null || rm -f "$t/etc/apk/keys/$_pub"
+                        fi
+                    done <<< "$(printf '%s' "$_apkkeys" | sed -nE 's/.*href="([^"]*\.pub)".*/\1/p' | sort -u)"
                 fi
                 if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/apk/keys 2>/dev/null')" ]; then
                     tui_msg "Missing Alpine keys" "No APK signing keys found in /etc/apk/keys and none\ncould be fetched — package installs inside this rootfs\nmay fail signature verification. Copy keys from the host\n(/etc/apk/keys) into $t/etc/apk/keys if this happens."
@@ -3915,13 +3987,17 @@ rootfs_cfg_menu() { # <target>
                 [ -e "$t/usr/share/zoneinfo/$z" ] && { ln -sf "/usr/share/zoneinfo/$z" "$t/etc/localtime"; echo "$z" > "$t/etc/timezone"; tui_msg "Done" "Timezone set to $z."; } || tui_msg "Missing" "Timezone data is not installed." ;;
             locale)
                 local l; l=$(tui_input "Locale" "Locale:" "C.UTF-8") || continue
+                rootfs_valid_locale "$l" || { tui_msg "Invalid locale" "Use a locale such as en_US.UTF-8 or C.UTF-8."; continue; }
                 mkdir -p "$t/etc/profile.d"; printf 'export LANG=%s\nexport LC_ALL=%s\n' "$l" "$l" > "$t/etc/profile.d/locale.sh"
                 [ -f "$t/etc/locale.gen" ] && { grep -qF "$l UTF-8" "$t/etc/locale.gen" || echo "$l UTF-8" >> "$t/etc/locale.gen"; rootfs_chroot_exec "$t" "Generate locale" "locale-gen || true"; }
                 tui_msg "Done" "Locale configured as $l." ;;
             shell)
-                local shv u; shv=$(tui_radio "Default shell" "Shell:" bash Bash on zsh Zsh off fish Fish off) || continue
+                local shv u shpath
+                shv=$(tui_radio "Default shell" "Shell:" bash Bash on zsh Zsh off fish Fish off) || continue
                 u=$(tui_input "Account" "Account to update:" "root") || continue
-                rootfs_chroot_exec "$t" "Set shell for $u" "chsh -s $( [ "$shv" = fish ] && echo /usr/bin/fish || echo /bin/$shv ) $u" ;;
+                rootfs_valid_username "$u" || { tui_msg "Invalid account" "Enter a valid local account name."; continue; }
+                [ "$shv" = fish ] && shpath=/usr/bin/fish || shpath="/bin/$shv"
+                rootfs_chroot_exec "$t" "Set shell for $u" "chsh -s '$shpath' '$u'" ;;
             editor)
                 local ed; ed=$(tui_radio "Default editor" "Editor:" nano Nano on vim Vim off neovim Neovim off micro Micro off) || continue
                 mkdir -p "$t/etc/profile.d"; printf 'export EDITOR=%s\nexport VISUAL=%s\n' "$ed" "$ed" > "$t/etc/profile.d/editor.sh"
@@ -3929,6 +4005,7 @@ rootfs_cfg_menu() { # <target>
             ssh)
                 local port rootlogin passauth
                 port=$(tui_input "SSH" "Port:" "22") || continue
+                rootfs_valid_port "$port" || { tui_msg "Invalid port" "Enter a number from 1 to 65535."; continue; }
                 rootlogin=$(tui_radio "SSH root login" "Policy:" no "Prohibit root password login" on yes "Allow root login" off) || continue
                 passauth=$(tui_radio "SSH passwords" "Password authentication:" yes Enabled on no Disabled off) || continue
                 [ -f "$t/etc/ssh/sshd_config" ] || { tui_msg "Missing" "OpenSSH server is not installed."; continue; }
@@ -3959,6 +4036,7 @@ EOF
                     disable "Disable at boot" off) || continue
                 s=$(tui_input "Service" "Service name (as the rootfs's init knows it):" "") || continue
                 [ -z "$s" ] && continue
+                rootfs_valid_service "$s" || { tui_msg "Invalid service" "Use a plain service/unit name (letters, digits, @, _, ., :, -)."; continue; }
                 case "$rinit" in
                     systemd)
                         rootfs_chroot_exec "$t" "systemctl $a $s" "systemctl $a $s" ;;
