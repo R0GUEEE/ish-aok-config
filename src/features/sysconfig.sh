@@ -2505,10 +2505,15 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
             version "Version and executable" install "Install package/application" \
             update "Update installed packages" list "List installed packages" \
             cache "Clean or inspect cache" config "Edit configuration" \
-            doctor "Diagnostics/health check" back "Back") || return 0
+            doctor "Diagnostics/health check" \
+            setup "$([ "$id" = brew ] && echo 'Setup / reinstall / root config' || echo '')" \
+            back "Back") || return 0
         case "$c" in
             advanced) pm_advanced_menu "$id" ;;
             version) pm_generic_health "$cmd" ;;
+            setup)
+                [ "$id" = brew ] && menu_brew_install
+                ;;
             install)
                 if [ "$id" = brew ]; then
                     menu_brew_pkgops
