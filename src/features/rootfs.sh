@@ -1266,6 +1266,17 @@ menu_rootfs_bootstrap_tools() {
         printf '%s' "$_tag"
     }
 
+    # Returns the display label for a tool
+    _bs_label() { # <tag>
+        local _tag="$1"
+        while IFS='|' read -r t _lbl _; do
+            [ "$t" = "$_tag" ] || continue
+            printf '%s' "$_lbl"
+            return
+        done <<< "$_BS_CATALOGUE"
+        printf '%s' "$_tag"
+    }
+
     # Package name map: tag|apt|pacman|dnf|apk
     local _BS_PKGS="debootstrap|debootstrap|debootstrap|debootstrap|debootstrap
 mmdebstrap|mmdebstrap|mmdebstrap|mmdebstrap|
@@ -1286,22 +1297,8 @@ zypper|zypper|zypper|zypper|
 zstd|zstd|zstd|zstd|zstd
 xz-utils|xz-utils|xz-utils|xz|xz"
 
-    # Build checklist args: tag  "label — description"  on/off
-    # Pre-select tools already installed; mark unavailable ones off.
-    # Also track initially-installed packages to avoid reinstalling.
-    local _args=() _initially_installed=()
-    while IFS='|' read -r _tag _lbl _desc; do
-        [ -n "$_tag" ] || continue
-        local _state
-        if command -v "$_tag" >/dev/null 2>&1; then
-            _state=on
-            _initially_installed+=("$_tag")
-        else
-            _state=off
-        fi
-        _args+=("$_tag" "$_lbl — $_desc" "$_state")
-    done <<'_CATALOGUE_'
-debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
+    # Catalogue: tag|label|description
+    local _BS_CATALOGUE="debootstrap|debootstrap|Classic two-stage Debian/Ubuntu bootstrap
 mmdebstrap|mmdebstrap|Modern APT-based bootstrap via fakechroot (supports any variant/arch)
 cdebootstrap|cdebootstrap|Compiled minimal Debian bootstrap (small and fast)
 multistrap|multistrap|Configuration-driven multi-mirror APT bootstrap
@@ -1318,44 +1315,230 @@ xbps-tools|xbps-install|Void Linux rootfs bootstrap via xbps-install --rootdir
 dnf|dnf|Fedora/RPM rootfs bootstrap via dnf --installroot
 zypper|zypper|openSUSE/SUSE rootfs bootstrap via zypper --root
 zstd|zstd|Zstandard compression (needed for Arch bootstrap tarballs)
-xz-utils|xz-utils|XZ/LZMA compression (needed for Void/Gentoo tarballs)
-_CATALOGUE_
+xz-utils|xz-utils|XZ/LZMA compression (needed for Void/Gentoo tarballs)"
 
-    local _sel
-    _sel=$(tui_check "Rootfs Bootstrap Tools" \
-        "SPACE toggles tools; ENTER installs NEWLY SELECTED ones:" \
-        "${_args[@]}") || return 0
-    [ -z "$_sel" ] && return 0
+    # Build menu items: "tag  [INSTALLED|NOT INSTALLED]  description"
+    local _items=() _tag
+    while IFS='|' read -r _tag _lbl _desc; do
+        [ -n "$_tag" ] || continue
+        local _status
+        if command -v "$_tag" >/dev/null 2>&1; then
+            _status="✓ INSTALLED"
+        else
+            _status="○ not installed"
+        fi
+        _items+=("$_tag" "$_status  $_lbl")
+    done <<< "$_BS_CATALOGUE"
 
-    # Calculate only the newly selected packages (not already installed).
-    # Map selected display tags to real package names for this distro.
-    local _pkgs=() _tag
-    for _tag in $_sel; do
-        # Skip packages that were already installed
-        local _skip=0
-        for _inst in "${_initially_installed[@]}"; do
-            [ "$_tag" = "$_inst" ] && { _skip=1; break; }
-        done
-        [ "$_skip" -eq 1 ] && continue
-        
-        local _pkg
-        _pkg=$(_bs_pkg "$_tag")
-        [ -n "$_pkg" ] && _pkgs+=("$_pkg")
+    # Main bootstrap tools menu loop
+    while true; do
+        local _choice
+        _choice=$(tui_menu "Rootfs Bootstrap Tools" \
+            "Select a package to install, uninstall, or configure:" \
+            "${_items[@]}" "← Back") || return 0
+
+        [ "$_choice" = "← Back" ] && return 0
+        [ -z "$_choice" ] && continue
+
+        # Show submenu for selected package
+        _menu_bs_package "$_choice" _BS_PKGS _BS_CATALOGUE || true
     done
+}
+
+# Submenu for individual bootstrap package operations
+_menu_bs_package() {
+    local _tag="$1" _BS_PKGS="$2" _BS_CATALOGUE="$3"
     
-    if [ ${#_pkgs[@]} -eq 0 ]; then
-        tui_msg "Bootstrap tools" "All selected tools are already installed."
+    _bs_pkg() { # <tag>
+        local _tag="$1" _apt _pac _dnf _apk
+        while IFS='|' read -r t _apt _pac _dnf _apk _; do
+            [ "$t" = "$_tag" ] || continue
+            case "$PM" in
+                apt)    printf '%s' "${_apt:-$_tag}" ;;
+                pacman) printf '%s' "${_pac:-$_tag}" ;;
+                dnf|yum) printf '%s' "${_dnf:-$_tag}" ;;
+                apk)    printf '%s' "${_apk:-$_tag}" ;;
+                *)      printf '%s' "$_tag" ;;
+            esac
+            return
+        done <<< "$_BS_PKGS"
+        printf '%s' "$_tag"
+    }
+
+    _bs_label() { # <tag>
+        local _tag="$1"
+        while IFS='|' read -r t _lbl _desc; do
+            [ "$t" = "$_tag" ] || continue
+            printf '%s' "$_lbl"
+            return
+        done <<< "$_BS_CATALOGUE"
+        printf '%s' "$_tag"
+    }
+
+    _bs_desc() { # <tag>
+        local _tag="$1"
+        while IFS='|' read -r t _lbl _desc; do
+            [ "$t" = "$_tag" ] || continue
+            printf '%s' "$_desc"
+            return
+        done <<< "$_BS_CATALOGUE"
+        printf '%s' "$_tag"
+    }
+
+    local _pkg _label _desc _status
+    _pkg=$(_bs_pkg "$_tag")
+    _label=$(_bs_label "$_tag")
+    _desc=$(_bs_desc "$_tag")
+
+    if command -v "$_tag" >/dev/null 2>&1; then
+        _status="installed"
+    else
+        _status="not installed"
+    fi
+
+    while true; do
+        local _choice
+        _choice=$(tui_menu "$_label ($_status)" \
+            "Description: $_desc" \
+            "install" "Install package" \
+            "uninstall" "Uninstall package" \
+            "config" "View/edit configuration" \
+            "← Back" "") || return 0
+
+        case "$_choice" in
+            install)
+                _bs_install "$_tag" "$_pkg" "$_BS_PKGS"
+                ;;
+            uninstall)
+                _bs_uninstall "$_tag" "$_pkg"
+                ;;
+            config)
+                _bs_config "$_tag" "$_label"
+                ;;
+            "← Back")
+                return 0
+                ;;
+            *)
+                continue
+                ;;
+        esac
+    done
+}
+
+# Install bootstrap package with fallback chain
+_bs_install() {
+    local _tag="$1" _pkg="$2" _BS_PKGS="$3"
+    
+    if command -v "$_tag" >/dev/null 2>&1; then
+        tui_msg "$_tag" "$_tag is already installed."
         return 0
     fi
 
-    # Try bulk install first; fall back to per-package with web-search on failure.
-    if ! run_cmd "Install bootstrap tools" pm_install "${_pkgs[@]}"; then
-        for _pkg in "${_pkgs[@]}"; do
-            if ! pm_install "$_pkg" 2>/dev/null; then
-                _rootfs_bs_known_repos "$_pkg" || _rootfs_bs_web_fallback "$_pkg"
-            fi
-        done
+    tui_msg "Installing $_tag" "Attempting installation…"
+
+    # Try default package manager first
+    if pm_install "$_pkg" 2>/dev/null; then
+        tui_msg "Success" "$_tag installed successfully."
+        return 0
     fi
+
+    # Fall back to known repos if available
+    if _rootfs_bs_known_repos "$_pkg"; then
+        return 0
+    fi
+
+    # Fall back to web search
+    if _rootfs_bs_web_fallback "$_pkg"; then
+        return 0
+    fi
+
+    tui_msg "Installation failed" "Could not find $_tag in any repository or online source."
+}
+
+# Uninstall bootstrap package
+_bs_uninstall() {
+    local _tag="$1" _pkg="$2"
+
+    if ! command -v "$_tag" >/dev/null 2>&1; then
+        tui_msg "$_tag" "$_tag is not installed."
+        return 0
+    fi
+
+    local _confirm
+    _confirm=$(tui_confirm "Uninstall $_tag?" "This will remove the package from your system.") || return 0
+    
+    if [ "$_confirm" = "yes" ]; then
+        case "$PM" in
+            apt)
+                run_cmd "Remove $_tag" bash -c "apt-get remove -y '$_pkg'" && \
+                run_cmd "Cleanup" bash -c "apt-get autoremove -y >/dev/null 2>&1 || true"
+                ;;
+            pacman)
+                run_cmd "Remove $_tag" bash -c "pacman -R --noconfirm '$_pkg'"
+                ;;
+            dnf|yum)
+                run_cmd "Remove $_tag" bash -c "$PM remove -y '$_pkg'"
+                ;;
+            apk)
+                run_cmd "Remove $_tag" bash -c "apk del '$_pkg'"
+                ;;
+            *)
+                tui_msg "Error" "Unsupported package manager: $PM"
+                return 1
+                ;;
+        esac
+    fi
+}
+
+# Show configuration options for bootstrap package
+_bs_config() {
+    local _tag="$1" _label="$2"
+
+    case "$_tag" in
+        mmdebstrap)
+            tui_msg "mmdebstrap configuration" \
+"Common options:
+  --variant=minbase         Minimal base system
+  --mode=root              Use root mode (required for iSH)
+  --prune=yes              Remove unneeded packages
+  --include=pkg1,pkg2      Add specific packages
+  
+Edit /etc/mmdebstrap.conf or use:
+  mmdebstrap --help"
+            ;;
+        debootstrap)
+            tui_msg "debootstrap configuration" \
+"Common options:
+  --variant=minbase        Minimal base system
+  --include=pkg1,pkg2      Add specific packages
+  
+Edit debootstrap config or use:
+  debootstrap --help"
+            ;;
+        schroot)
+            tui_msg "schroot configuration" \
+"Config file: /etc/schroot/schroot.conf
+Session profiles: /etc/schroot/default/ and /etc/schroot/desktop/
+
+Edit /etc/schroot/schroot.conf to add chroot sessions.
+Common session types: plain, lvm, btrfs, file"
+            ;;
+        qemu-user-static)
+            tui_msg "qemu-user-static configuration" \
+"QEMU binaries installed in: /usr/bin/qemu-*-static
+Register with binfmt_misc: update-binfmts --install
+
+Common architectures:
+  arm64 - ARM 64-bit
+  arm   - ARM 32-bit
+  i386  - x86 32-bit"
+            ;;
+        *)
+            tui_msg "$_label configuration" \
+"No specific configuration tool available.
+Use 'man $_tag' or '$_tag --help' for more information."
+            ;;
+    esac
 }
 
 # Check if package is available in known repos (Debian, Ubuntu, etc.) and offer installation options
