@@ -6786,7 +6786,29 @@ EOF
             keys) u=$(tui_input "SSH keys" "User:" "${SUDO_USER:-root}") || continue; h=$(user_home "$u"); [ -n "$h" ] || continue; mkdir -p "$h/.ssh"; touch "$h/.ssh/authorized_keys"; chmod 700 "$h/.ssh"; chmod 600 "$h/.ssh/authorized_keys"; chown -R "$u":"$(id -gn "$u")" "$h/.ssh"; safe_edit "$h/.ssh/authorized_keys" ;;
             forwarding) v=$(tui_check "SSH forwarding" "SPACE selects enabled forwarding:" x11 "X11Forwarding" off tcp "AllowTcpForwarding" on agent "AllowAgentForwarding" on gateway "GatewayPorts" off) || continue; mkdir -p /etc/ssh/sshd_config.d; { for f in x11 tcp agent gateway; do case " $v " in *" $f "*) x=yes;; *) x=no;; esac; case "$f" in x11) echo "X11Forwarding $x";; tcp) echo "AllowTcpForwarding $x";; agent) echo "AllowAgentForwarding $x";; gateway) echo "GatewayPorts $x";; esac; done; } > /etc/ssh/sshd_config.d/50-systui-forwarding.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/50-systui-forwarding.conf ;;
             keepalive) p=$(tui_input "Keepalive" "ClientAliveInterval seconds:" "300") || continue; v=$(tui_input "Keepalive" "ClientAliveCountMax:" "2") || continue; valid_uint "$p" && valid_uint "$v" && [ "$p" -le 86400 ] && [ "$v" -le 100 ] || { tui_msg "Invalid" "Keepalive values must be non-negative integers in range."; continue; }; mkdir -p /etc/ssh/sshd_config.d; tmp="$SYSTUI_TMP/ssh-keepalive.conf"; printf 'ClientAliveInterval %s\nClientAliveCountMax %s\nTCPKeepAlive yes\n' "$p" "$v" > "$tmp"; atomic_install_file "$tmp" /etc/ssh/sshd_config.d/60-systui-keepalive.conf; sshd -t 2>"$SYSTUI_TMP/ssherr" || { rm -f /etc/ssh/sshd_config.d/60-systui-keepalive.conf; tui_text "SSH validation failed" "$SYSTUI_TMP/ssherr"; } ;;
-            sftp) mkdir -p /etc/ssh/sshd_config.d; echo 'Subsystem sftp internal-sftp' > /etc/ssh/sshd_config.d/70-systui-sftp.conf; sshd -t || rm -f /etc/ssh/sshd_config.d/70-systui-sftp.conf ;;
+            sftp) 
+                mkdir -p /etc/ssh/sshd_config.d
+                cat > /etc/ssh/sshd_config.d/70-systui-sftp.conf <<'SFTP_EOF'
+# Internal SFTP subsystem configuration
+Subsystem sftp internal-sftp -f AUTHPRIV -l INFO
+
+# Optional: chroot SFTP users to their home directory
+# Uncomment and adjust Match block below to enable
+# Match User sftp-only
+#   ChrootDirectory %h
+#   AllowTcpForwarding no
+#   AllowAgentForwarding no
+#   PermitTTY no
+#   X11Forwarding no
+#   ForceCommand internal-sftp -f AUTHPRIV -l INFO
+SFTP_EOF
+                if sshd -t 2>${SYSTUI_TMP}/ssherr; then 
+                    tui_msg "SFTP subsystem" "Internal SFTP configured successfully.\nEnable chroot: edit /etc/ssh/sshd_config.d/70-systui-sftp.conf"
+                else 
+                    rm -f /etc/ssh/sshd_config.d/70-systui-sftp.conf
+                    tui_text "SFTP validation failed" ${SYSTUI_TMP}/ssherr
+                fi
+                ;;
             banners) f=$(tui_input "SSH banner" "Banner file (blank disables):" "/etc/issue.net") || continue; mkdir -p /etc/ssh/sshd_config.d; if [ -n "$f" ]; then case "$f" in /etc/*) ;; *) tui_msg "Invalid path" "SSH banners must be stored under /etc/."; continue;; esac; [ ! -L "$f" ] || { tui_msg "Invalid path" "Refusing to edit a symbolic link."; continue; }; touch "$f"; safe_edit "$f"; echo "Banner $f" > /etc/ssh/sshd_config.d/80-systui-banner.conf; else rm -f /etc/ssh/sshd_config.d/80-systui-banner.conf; fi ;;
             hostkeys) ssh-keygen -A; ls -l /etc/ssh/ssh_host_* > ${SYSTUI_TMP}/ssh 2>&1; tui_text "SSH host keys" ${SYSTUI_TMP}/ssh ;;
             test) sshd -t > ${SYSTUI_TMP}/ssh 2>&1 && echo "Configuration valid." > ${SYSTUI_TMP}/ssh; tui_text "sshd validation" ${SYSTUI_TMP}/ssh ;;
