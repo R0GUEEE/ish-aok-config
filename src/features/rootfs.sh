@@ -1546,6 +1546,76 @@ Use 'man $_tag' or '$_tag --help' for more information."
 }
 
 # Check if package is available in known repos (Debian, Ubuntu, etc.) and offer installation options
+# Known upstream source-tarball URLs for packages not available via apt/known repos.
+# Format: pkg|label|url
+_rootfs_bs_tarball_sources() {
+    local name="$1"
+    grep -F "${name}|" <<'_BS_TARBALLS_'
+multistrap|Ubuntu (Launchpad source tarball)|https://launchpad.net/ubuntu/+archive/primary/+sourcefiles/multistrap/2.2.11/multistrap_2.2.11.tar.xz
+multistrap|Debian (deb.debian.org source tarball)|http://deb.debian.org/debian/pool/main/m/multistrap/multistrap_2.2.11.tar.xz
+_BS_TARBALLS_
+}
+
+# Download, extract, and install a package from a known source tarball URL.
+_rootfs_bs_install_tarball() {
+    local name="$1" url="$2"
+    local workdir="${SYSTUI_TMP:-/tmp}/tarball_${name}.$$"
+    mkdir -p "$workdir" || return 1
+
+    tui_msg "Installing $name from tarball" "Downloading:\n$url\n\nThis will download, extract, and build/install $name."
+
+    local archive="$workdir/$(basename "$url")"
+    run_cmd "Download $name tarball" bash -c \
+        "curl -fsSL -4 -o '$archive' '$url' 2>/dev/null || wget -q -4 -O '$archive' '$url'" \
+        || { rm -rf "$workdir"; return 1; }
+
+    run_cmd "Extract $name tarball" bash -c \
+        "cd '$workdir' && tar xf '$archive'" \
+        || { rm -rf "$workdir"; return 1; }
+
+    # Find the extracted source directory (top-level dir other than the archive).
+    local srcdir
+    srcdir=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d | head -n1)
+    [ -z "$srcdir" ] && srcdir="$workdir"
+
+    # Prefer a Makefile-driven install if one is present.
+    if [ -f "$srcdir/Makefile" ] || [ -f "$srcdir/makefile" ]; then
+        if run_cmd "Build & install $name (make install)" bash -c \
+            "cd '$srcdir' && make && make install PREFIX=/usr/local DESTDIR="; then
+            rm -rf "$workdir"
+            return 0
+        fi
+    fi
+
+    # Fallback: locate the main executable/script matching the package name and
+    # install it directly, plus any man pages found alongside it.
+    local script
+    script=$(find "$srcdir" -maxdepth 2 -type f -name "$name" -perm -u+x 2>/dev/null | head -n1)
+    [ -z "$script" ] && script=$(find "$srcdir" -maxdepth 2 -type f -name "$name" | head -n1)
+
+    if [ -n "$script" ]; then
+        run_cmd "Install $name script" bash -c \
+            "install -Dm755 '$script' /usr/local/sbin/$name" || { rm -rf "$workdir"; return 1; }
+
+        # Install man page(s) if present.
+        local manpage
+        manpage=$(find "$srcdir" -maxdepth 3 -type f -name "${name}.[1-8]*" | head -n1)
+        if [ -n "$manpage" ]; then
+            local section="${manpage##*.}"
+            run_cmd "Install $name man page" bash -c \
+                "install -Dm644 '$manpage' /usr/local/share/man/man${section}/$(basename "$manpage")" || true
+        fi
+
+        rm -rf "$workdir"
+        tui_msg "Installed" "$name installed to /usr/local/sbin/$name from source tarball."
+        return 0
+    fi
+
+    tui_msg "Manual install required" \
+        "Could not auto-detect an install method for $name.\nSource extracted at: $srcdir\nPlease inspect and install manually."
+    return 1
+}
+
 _rootfs_bs_known_repos() {
     local name="$1"
     
@@ -1563,41 +1633,77 @@ _rootfs_bs_known_repos() {
                 if (repo && pkg) print repo"|"pkg
             }
         ' 2>/dev/null | sort -u)
-    
-    [ -z "$repo_data" ] && return 1
+
+    # Also check for known upstream source tarballs for this package.
+    local tarball_data
+    tarball_data=$(_rootfs_bs_tarball_sources "$name")
+
+    if [ -z "$repo_data" ] && [ -z "$tarball_data" ]; then
+        return 1
+    fi
 
     # Build menu of available repositories
-    local repo_menu=() repo_list
+    local repo_menu=()
     declare -A seen_repos
-    while IFS='|' read -r repo pkg; do
-        [ -z "$repo" ] && continue
-        if [ -z "${seen_repos[$repo]}" ]; then
-            seen_repos[$repo]=1
-            repo_menu+=("$repo" "$pkg")
-        fi
-    done <<< "$repo_data"
+    if [ -n "$repo_data" ]; then
+        while IFS='|' read -r repo pkg; do
+            [ -z "$repo" ] && continue
+            if [ -z "${seen_repos[$repo]}" ]; then
+                seen_repos[$repo]=1
+                repo_menu+=("$repo" "$pkg")
+            fi
+        done <<< "$repo_data"
+    fi
+
+    # Append tarball sources as distinct, directly-installable options.
+    declare -A tarball_urls
+    if [ -n "$tarball_data" ]; then
+        local _pkg _label _url
+        while IFS='|' read -r _pkg _label _url; do
+            [ -z "$_label" ] && continue
+            local _tagkey="tarball:${_label}"
+            tarball_urls["$_tagkey"]="$_url"
+            repo_menu+=("$_tagkey" "$_label (tarball)")
+        done <<< "$tarball_data"
+    fi
 
     if [ ${#repo_menu[@]} -eq 0 ]; then
         return 1
     fi
 
     # Show available repositories
-    local tmpf="${SYSTUI_TMP}/repo_list_$$.txt"
+    local tmpf="${SYSTUI_TMP:-/tmp}/repo_list_$$.txt"
     {
-        printf 'Package "%s" is available in the following repositories:\n\n' "$name"
-        printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
-        printf '\n\nSelect a repository to install from.\n'
+        printf 'Package "%s" is available from the following sources:\n\n' "$name"
+        [ -n "$repo_data" ] && printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
+        if [ ${#tarball_urls[@]} -gt 0 ]; then
+            printf '\nSource tarballs:\n'
+            for _k in "${!tarball_urls[@]}"; do
+                printf '  • %s\n' "${_k#tarball:}"
+            done
+        fi
+        printf '\n\nSelect a source to install from.\n'
     } > "$tmpf"
-    tui_text "Available repositories for $name" "$tmpf"
+    tui_text "Available sources for $name" "$tmpf"
     rm -f "$tmpf"
 
-    # Present repository selection menu
+    # Present repository/source selection menu
     local selected_repo
-    selected_repo=$(tui_menu "Select repository" "Choose repository to install $name from:" \
+    selected_repo=$(tui_menu "Select source" "Choose where to install $name from:" \
         "${repo_menu[@]}" "cancel" "Cancel") || return 1
     
     [ "$selected_repo" = "cancel" ] && return 1
     [ -z "$selected_repo" ] && return 1
+
+    # Tarball sources install directly — no package-manager/dpkg method needed.
+    case "$selected_repo" in
+        tarball:*)
+            local _url="${tarball_urls[$selected_repo]}"
+            [ -z "$_url" ] && { tui_msg "Error" "Could not resolve tarball URL."; return 1; }
+            _rootfs_bs_install_tarball "$name" "$_url"
+            return $?
+            ;;
+    esac
 
     # Now offer installation method
     local install_method
