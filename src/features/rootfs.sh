@@ -212,6 +212,88 @@ rootfs_backend_config_defaults() { # <distro> <backend>
     esac
 }
 
+# Applies build-tested optimal settings for a given distro+backend pair.
+# Three-pass cascade: distro-level → backend-level → combined (highest specificity).
+# Called once after backend selection so the config menu starts from tuned values
+# rather than generic defaults. The "preserve" flag on the config menu keeps them.
+rootfs_backend_auto_optimize() { # <distro> <backend>
+    local distro="$1" backend="$2"
+    # Initialise every variable before layering overrides.
+    rootfs_backend_config_defaults "$distro" "$backend"
+
+    # ---- Pass 1: distro-level overrides ----
+    case "$distro" in
+        ubuntu)
+            # universe is required for the broad package catalogue; restrict to
+            # the base pocket only (security/updates are added inside the rootfs).
+            ROOTFS_BACKEND_COMPONENTS="main,universe"
+            ;;
+        kali)
+            # Kali distributes its tools across all three components.
+            ROOTFS_BACKEND_COMPONENTS="main,contrib,non-free"
+            ;;
+        devuan)
+            # Devuan explicitly avoids a merged /usr for SysV init compatibility.
+            ROOTFS_BACKEND_MERGED=no
+            ;;
+    esac
+
+    # ---- Pass 2: backend-level overrides ----
+    case "$backend" in
+        mmdebstrap)
+            # 'root' mode is the only mode that works reliably on iSH-AOK: the
+            # host kernel does not support user namespaces ('unshare' would fail).
+            ROOTFS_MMDEBSTRAP_MODE=root
+            # Strip /usr/share/man, /usr/share/locale (except locale.alias), and
+            # /usr/share/doc (except copyright) via dpkg path-exclude filters.
+            # Saves 10–30 MB per rootfs — critical on iSH where storage is scarce.
+            ROOTFS_MMDEBSTRAP_PRUNE=yes
+            ;;
+        debootstrap|qemu-debootstrap)
+            ROOTFS_BACKEND_VARIANT=minbase
+            # 'auto' follows the suite's own merged-usr policy (Debian 12+ ships
+            # merged; Buster/Stretch and Devuan do not).
+            ROOTFS_BACKEND_MERGED=auto
+            ;;
+        cdebootstrap)
+            # 'minimal' is lighter than 'standard' and is the right flavour for a
+            # base rootfs that will receive additional packages afterward.
+            ROOTFS_BACKEND_VARIANT=minimal
+            ;;
+        multistrap)
+            # Clean downloaded debs and track dependency ownership so
+            # apt autoremove works correctly inside the rootfs later.
+            ROOTFS_MULTISTRAP_CLEANUP=yes
+            ROOTFS_MULTISTRAP_MARKAUTO=yes
+            ;;
+    esac
+
+    # ---- Pass 3: combined distro+backend overrides (highest specificity) ----
+    case "$distro:$backend" in
+        ubuntu:mmdebstrap)
+            # The 'apt' variant is required so mmdebstrap can resolve universe
+            # packages. 'minbase' only resolves Priority:required from main.
+            ROOTFS_BACKEND_VARIANT=apt
+            ;;
+        debian:mmdebstrap|devuan:mmdebstrap|kali:mmdebstrap)
+            ROOTFS_BACKEND_VARIANT=minbase
+            ;;
+        ubuntu:debootstrap|ubuntu:qemu-debootstrap|ubuntu:cdebootstrap)
+            ROOTFS_BACKEND_COMPONENTS="main,universe"
+            ;;
+        ubuntu:multistrap)
+            ROOTFS_BACKEND_COMPONENTS="main,universe"
+            # Priority:important gives a more complete Ubuntu base.
+            ROOTFS_MULTISTRAP_IMPORTANT=yes
+            ;;
+        devuan:debootstrap|devuan:qemu-debootstrap|devuan:cdebootstrap|devuan:multistrap)
+            ROOTFS_BACKEND_MERGED=no
+            ;;
+    esac
+
+    log "rootfs: auto-optimized $distro/$backend — variant=$ROOTFS_BACKEND_VARIANT components=$ROOTFS_BACKEND_COMPONENTS merged=$ROOTFS_BACKEND_MERGED mmdebstrap_mode=${ROOTFS_MMDEBSTRAP_MODE} prune=${ROOTFS_MMDEBSTRAP_PRUNE}"
+}
+
 rootfs_backend_valid_components() {
     [ -n "$1" ] && printf '%s' "$1" | grep -Eq '^[A-Za-z0-9+.-]+([,[:space:]]+[A-Za-z0-9+.-]+)*$'
 }
@@ -650,7 +732,7 @@ rootfs_mount_chroot_fs() { # <target>
         fi
     fi
     if [ -r /etc/resolv.conf ]; then
-        ROOTFS_DNS_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/systui-dns.XXXXXX" 2>/dev/null || true)
+        ROOTFS_DNS_BACKUP=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-dns.XXXXXX" 2>/dev/null || true)
         if [ -n "$ROOTFS_DNS_BACKUP" ]; then
             if [ -L "$t/etc/resolv.conf" ]; then
                 readlink "$t/etc/resolv.conf" > "$ROOTFS_DNS_BACKUP/link"
@@ -1038,7 +1120,7 @@ rootfs_catalog_select_category() { # category title
 }
 
 rootfs_catalog_search() {
-    local q tag desc state
+    local q tag desc state category
     q=$(tui_input "Search package catalogue" "Package name or description:" "") || return 0
     [ -n "$q" ] || return 0
     local args=()
@@ -1277,7 +1359,7 @@ rootfs_set_build_stage() { # <target> <stage>
 rootfs_fetch_ubuntu_keyring() {
     local existing=/usr/share/keyrings/ubuntu-archive-keyring.gpg tmp page deb
     [ -r "$existing" ] && { printf '%s\n' "$existing"; return 0; }
-    tmp=$(mktemp -d) || return 1
+    tmp=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-ukr.XXXXXX") || return 1
     if command -v apt-get >/dev/null 2>&1; then
         (cd "$tmp" && apt-get -o Acquire::ForceIPv4=true update >/dev/null 2>&1 && apt-get -o Acquire::ForceIPv4=true download ubuntu-keyring >/dev/null 2>&1) || true
     fi
@@ -1395,9 +1477,13 @@ rootfs_builder_impl() {
         tui_msg "Missing backend" "The selected backend '$backend' is not available on this host.\n\nInstall its command or required downloader/archive tools, then retry."
         return 0
     fi
+    # Auto-optimize build settings for this distro+backend before showing the
+    # config menu. The user sees pre-tuned values instead of raw defaults, and
+    # can still adjust anything via the menu before proceeding.
     case "$distro" in
         debian|devuan|ubuntu|kali)
-            rootfs_backend_config_menu "$distro" "$backend" || return 0
+            rootfs_backend_auto_optimize "$distro" "$backend"
+            rootfs_backend_config_menu "$distro" "$backend" preserve || return 0
             ;;
     esac
 
@@ -1933,7 +2019,7 @@ rootfs_select_ubuntu_mirror() { # requested arch release
 # from choosing an unusable IPv6 route. GNU wget reads this through WGETRC.
 rootfs_ipv4_wgetrc() {
     local f
-    f=$(mktemp "${TMPDIR:-/tmp}/systui-wgetrc.XXXXXX") || return 1
+    f=$(mktemp "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-wgetrc.XXXXXX") || return 1
     cat >"$f" <<'EOF'
 inet4_only = on
 timeout = 30
@@ -2200,7 +2286,7 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
         if [ -n "$ROOTFS_MULTISTRAP_CONFIG" ]; then
             msconf="$ROOTFS_MULTISTRAP_CONFIG"
         else
-            msconf=$(mktemp "${TMPDIR:-/tmp}/systui-multistrap.XXXXXX.conf") || return 1
+            msconf=$(mktemp "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-multistrap.XXXXXX.conf") || return 1
             [ -n "$mspkg" ] || mspkg="$keyring_pkg"
             rootfs_multistrap_config_write "$msconf" "$arch" "$target" "$mirror" "$release" \
                 "$ROOTFS_BACKEND_COMPONENTS" "$ROOTFS_BACKEND_INCLUDE" "$mspkg"
@@ -2258,7 +2344,7 @@ Install ubuntu-keyring on the host or use System Configuration > Packages > Repo
 build_alpine() { # release arch mirror target pkgs
     local release="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
     local mapped; mapped=$(map_packages alpine $pkgs)
-    local workdir; workdir=$(mktemp -d)
+    local workdir; workdir=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-apk.XXXXXX") || return 1
     # apk.static must match the HOST arch; --arch selects the TARGET arch.
     local host_apk_arch
     case "$(uname -m)" in
@@ -2299,7 +2385,7 @@ build_arch() { # mirror target pkgs backend
         run_cmd "pacstrap (Arch)" pacstrap -c "$target" base $mapped
     elif [ "$backend" = arch-bootstrap ]; then
         rootfs_backend_available arch-bootstrap || { tui_msg "Missing tools" "The Arch bootstrap tarball backend requires tar, zstd, and curl or wget."; return 1; }
-        local tarball="archlinux-bootstrap-x86_64.tar.zst" workdir; workdir=$(mktemp -d) || return 1
+        local tarball="archlinux-bootstrap-x86_64.tar.zst" workdir; workdir=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-arch.XXXXXX") || return 1
         run_cmd "Downloading Arch bootstrap tarball" \
             rootfs_fetch_file "$mirror/iso/latest/$tarball" "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }
         run_cmd "Extracting bootstrap tarball" \
@@ -2336,7 +2422,7 @@ Then retry."
 
 build_opensuse() { # distro release debarch mirror target pkgs
     local distro="$1" release="$2" arch="$3" mirror="$4" target="$5" pkgs="$6"
-    local mapped; mapped=$(map_packages opensuse "$pkgs") || return 1
+    local mapped; mapped=$(map_packages opensuse $pkgs)
     command -v zypper >/dev/null 2>&1 || {
         tui_msg "Missing tool" "openSUSE bootstrapping requires zypper on the host."; return 1; }
     local suse_arch repo
@@ -2355,7 +2441,7 @@ build_opensuse() { # distro release debarch mirror target pkgs
 
 build_gentoo() { # flavor debarch mirror target pkgs
     local flavor="$1" arch="$2" mirror="$3" target="$4" pkgs="$5"
-    local garch stage url meta tarball workdir; workdir=$(mktemp -d) || return 1
+    local garch stage url meta tarball workdir; workdir=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-gentoo.XXXXXX") || return 1
     case "$arch" in
         amd64) garch=amd64; stage="stage3-amd64-$flavor" ;;
         arm64) garch=arm64; stage="stage3-arm64-$flavor" ;;
@@ -2366,8 +2452,8 @@ build_gentoo() { # flavor debarch mirror target pkgs
     url="$mirror/$garch/autobuilds/current-$stage"
     meta="latest-$stage.txt"
     tarball=$(rootfs_fetch_text "$url/$meta" 2>>"$LOGFILE" | awk '!/^#/ && /tar\.(xz|bz2)/ {print $1; exit}')
-    [ -n "$tarball" ] || { warn "Could not discover Gentoo stage3 at $url/$meta"; return 1; }
-    run_cmd "Downloading Gentoo stage3" rootfs_fetch_file "$mirror/$garch/autobuilds/$tarball" "$workdir/$(basename "$tarball")" || return 1
+    [ -n "$tarball" ] || { warn "Could not discover Gentoo stage3 at $url/$meta"; rm -rf "$workdir"; return 1; }
+    run_cmd "Downloading Gentoo stage3" rootfs_fetch_file "$mirror/$garch/autobuilds/$tarball" "$workdir/$(basename "$tarball")" || { rm -rf "$workdir"; return 1; }
     run_cmd "Extracting Gentoo stage3" tar -C "$target" --numeric-owner -xpf "$workdir/$(basename "$tarball")" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     printf 'GENTOO_MIRRORS="%s"\n' "$mirror" >> "$target/etc/portage/make.conf"
     [ -n "${pkgs// }" ] && warn "Gentoo extras were not installed automatically. Use Rootfs > Manage > Packages after entering the rootfs."
@@ -2376,15 +2462,15 @@ build_gentoo() { # flavor debarch mirror target pkgs
 build_void() { # arch mirror target pkgs use_qemu
     local arch="$1" mirror="$2" target="$3" pkgs="$4" use_qemu="$5"
     local mapped; mapped=$(map_packages void $pkgs)
-    local listing tarball workdir; workdir=$(mktemp -d) || return 1
+    local listing tarball workdir; workdir=$(mktemp -d "${SYSTUI_TMP:-${TMPDIR:-/tmp}}/systui-void.XXXXXX") || return 1
     listing=$(rootfs_fetch_text "$mirror/live/current/" 2>>"$LOGFILE")
     tarball=$(grep -o "void-${arch}-ROOTFS-[0-9]*\.tar\.xz" <<<"$listing" | sort -u | tail -n1)
     if [ -z "$tarball" ]; then
         warn "Could not find a void-${arch}-ROOTFS tarball at $mirror/live/current/"
-        return 1
+        rm -rf "$workdir"; return 1
     fi
     run_cmd "Downloading Void rootfs ($tarball)" \
-        rootfs_fetch_file "$mirror/live/current/$tarball" "$workdir/$tarball" || return 1
+        rootfs_fetch_file "$mirror/live/current/$tarball" "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }
     run_cmd "Extracting Void rootfs" \
         tar -C "$target" --numeric-owner -xJf "$workdir/$tarball" || { rm -rf "$workdir"; return 1; }; rm -rf "$workdir"
     if [ -n "${mapped// }" ]; then
