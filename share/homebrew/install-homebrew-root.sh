@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Root-managed Homebrew installer for Debian arm64 on iSH-AOK.
+# Root-managed Homebrew installer — any Linux, any architecture.
 #
 # WARNING: Homebrew does not officially support operation as root. This script
 # installs a small LD_PRELOAD compatibility shim so Homebrew and its subprocesses
@@ -28,30 +28,43 @@ die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Run this installer as root."
 [[ $(uname -s) == Linux ]] || die "This installer only supports Linux."
 
-case "$(uname -m)" in
-  aarch64|arm64) ;;
-  *) die "This installer requires Debian arm64/aarch64. Detected: $(uname -m)" ;;
-esac
+log "Detected: $(uname -m) / $(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-unknown}" || printf unknown)"
 
-[[ -r /etc/os-release ]] || die "/etc/os-release is missing."
-# shellcheck disable=SC1091
-. /etc/os-release
-[[ ${ID:-} == debian || ${ID_LIKE:-} == *debian* ]] || \
-  die "This installer requires Debian or a Debian-derived rootfs. Detected: ${PRETTY_NAME:-unknown}."
+# ---- Install build dependencies using whatever PM is available ---------------
+_install_brew_deps() {
+    if command -v apt-get >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y --no-install-recommends \
+            bash build-essential ca-certificates curl file git procps \
+            gcc g++ make libc6-dev patch perl python3 ruby \
+            tar gzip bzip2 xz-utils unzip
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y \
+            bash gcc gcc-c++ make curl file git procps-ng \
+            patch perl python3 ruby tar gzip bzip2 xz unzip ca-certificates
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y \
+            bash gcc gcc-c++ make curl file git procps-ng \
+            patch perl python3 ruby tar gzip bzip2 xz unzip ca-certificates
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm --needed \
+            base-devel curl file git python ruby ca-certificates
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install \
+            bash gcc gcc-c++ make curl file git procps \
+            patch perl python3 ruby tar gzip bzip2 xz unzip ca-certificates
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache \
+            bash gcc g++ make curl file git python3 ruby \
+            patch perl tar gzip bzip2 xz unzip ca-certificates
+    else
+        warn "No recognised package manager found — build dependencies may be missing."
+    fi
+}
 
-if ! grep -Eqi 'ish([_-]?aok)?|ish_aok|ish' \
-  /proc/version /proc/sys/kernel/osrelease 2>/dev/null; then
-  warn "iSH-AOK was not positively detected; continuing because Debian arm64 checks passed."
-fi
-
-export DEBIAN_FRONTEND=noninteractive
-
-log "Installing Debian build dependencies"
-apt-get update
-apt-get install -y --no-install-recommends \
-  bash build-essential ca-certificates curl file git procps \
-  gcc g++ make libc6-dev patch perl python3 ruby \
-  tar gzip bzip2 xz-utils unzip
+log "Installing build dependencies"
+_install_brew_deps
 
 log "Preparing root-owned Homebrew prefix"
 install -d -m 0755 -o root -g root /home/linuxbrew
@@ -194,7 +207,7 @@ for profile in /root/.bashrc /root/.profile; do
   if ! grep -Fq '/etc/profile.d/homebrew.sh' "$profile"; then
     cat >> "$profile" <<'EOF_PROFILE_LOAD'
 
-# Root-managed Homebrew for Debian arm64 on iSH-AOK
+# Root-managed Homebrew
 [ -r /etc/profile.d/homebrew.sh ] && . /etc/profile.d/homebrew.sh
 EOF_PROFILE_LOAD
   fi
@@ -219,5 +232,6 @@ Compatibility layer assets:
   Env file: $ROOT_ENV_FILE
   Shim:    $SHIM_LIBRARY
 
-Homebrew root mode is an unsupported iSH-AOK compatibility configuration.
+Note: Homebrew running as root uses a UID shim (LD_PRELOAD) to satisfy
+Homebrew's non-root requirement. This is unsupported upstream.
 EOF_DONE
