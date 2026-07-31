@@ -1335,13 +1335,13 @@ xz-utils|xz-utils|XZ/LZMA compression (needed for Void/Gentoo tarballs)"
         local _choice
         _choice=$(tui_menu "Rootfs Bootstrap Tools" \
             "Select a package to install, uninstall, or configure:" \
-            "${_items[@]}" "← Back") || return 0
+            "${_items[@]}" "back" "← Back") || return 0
 
-        [ "$_choice" = "← Back" ] && return 0
+        [ "$_choice" = "back" ] && return 0
         [ -z "$_choice" ] && continue
 
         # Show submenu for selected package
-        _menu_bs_package "$_choice" _BS_PKGS _BS_CATALOGUE || true
+        _menu_bs_package "$_choice" "$_BS_PKGS" "$_BS_CATALOGUE" || true
     done
 }
 
@@ -1397,13 +1397,20 @@ _menu_bs_package() {
     fi
 
     while true; do
+        # Refresh install status in case it changed
+        if command -v "$_tag" >/dev/null 2>&1; then
+            _status="installed"
+        else
+            _status="not installed"
+        fi
+
         local _choice
         _choice=$(tui_menu "$_label ($_status)" \
             "Description: $_desc" \
             "install" "Install package" \
             "uninstall" "Uninstall package" \
             "config" "View/edit configuration" \
-            "← Back" "") || return 0
+            "back" "← Back") || return 0
 
         case "$_choice" in
             install)
@@ -1415,7 +1422,7 @@ _menu_bs_package() {
             config)
                 _bs_config "$_tag" "$_label"
                 ;;
-            "← Back")
+            back)
                 return 0
                 ;;
             *)
@@ -1464,10 +1471,7 @@ _bs_uninstall() {
         return 0
     fi
 
-    local _confirm
-    _confirm=$(tui_confirm "Uninstall $_tag?" "This will remove the package from your system.") || return 0
-    
-    if [ "$_confirm" = "yes" ]; then
+    if tui_confirm "Uninstall $_tag?" "This will remove the package from your system."; then
         case "$PM" in
             apt)
                 run_cmd "Remove $_tag" bash -c "apt-get remove -y '$_pkg'" && \
