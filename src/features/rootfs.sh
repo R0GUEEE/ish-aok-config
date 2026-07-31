@@ -1379,25 +1379,43 @@ schroot|https://packages.debian.org/bookworm/schroot|https://launchpad.net/ubunt
 
     [ "$found" -eq 0 ] && return 1
 
+    local dldir="${SYSTUI_TMP}/dpkg_$name.$$"
+    mkdir -p "$dldir"
+
     # Auto-detect system and install from appropriate repo
     if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
-        # Ubuntu system - try universe/multiverse repos first
-        tui_msg "Installing $name" "Found in Ubuntu repositories.\nEnabling universe/multiverse and installing with all dependencies…"
-        run_cmd "Enable Ubuntu repositories" bash -c \
-            "apt-get update >/dev/null 2>&1; apt-get install software-properties-common -y >/dev/null 2>&1; add-apt-repository universe multiverse -y >/dev/null 2>&1; apt-get update" && \
-        run_cmd "Install $name (with dependencies)" bash -c \
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y '$name'" && return 0
-        return 1
+        # Ubuntu system - download from Launchpad/Ubuntu repos
+        tui_msg "Installing $name" "Found in Ubuntu repositories.\nDownloading and installing $name with all dependencies from Ubuntu repos…"
+        
+        run_cmd "Download $name package" bash -c \
+            "cd '$dldir' && apt-get download '$name' 2>/dev/null || \
+             wget -q -O - 'https://packages.ubuntu.com/search?keywords=$name&searchon=names' | grep -oP 'href=\"/pool[^\"]+\.deb\"' | head -1 | sed 's/href=\"//; s/\"$/' | xargs -I {} wget -q 'https://packages.ubuntu.com{}' || \
+             curl -fsSL 'http://archive.ubuntu.com/ubuntu/pool/main/' 2>/dev/null | grep -o \"href=\\\"[^\\\"]*$name[^\\\"]*\\.deb\\\"\" | head -1 | cut -d'\"' -f2 | xargs -I {} curl -fsSL 'http://archive.ubuntu.com/ubuntu/pool/main/{}' -o '$name.deb'" && \
+        
+        run_cmd "Install $name and dependencies (dpkg)" bash -c \
+            "cd '$dldir' && apt-get install -y --download-only '$name' 2>/dev/null && dpkg -i -R . 2>/dev/null || dpkg -i $name*.deb 2>/dev/null || true" && \
+        
+        rm -rf "$dldir"
+        return 0
+        
     elif [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
-        # Debian system - try backports first
-        tui_msg "Installing $name" "Found in Debian repositories.\nAdding backports and installing with all dependencies…"
-        run_cmd "Add Debian backports repository" bash -c \
-            "echo 'deb http://deb.debian.org/debian bookworm-backports main contrib non-free' >> /etc/apt/sources.list.d/backports.list 2>/dev/null; apt-get update" && \
-        run_cmd "Install $name (with dependencies)" bash -c \
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y -t bookworm-backports '$name'" && return 0
-        return 1
+        # Debian system - download from Debian repos via apt
+        tui_msg "Installing $name" "Found in Debian repositories.\nDownloading and installing $name with all dependencies from Debian repos…"
+        
+        run_cmd "Download $name package and dependencies (dpkg)" bash -c \
+            "mkdir -p '$dldir' && cd '$dldir' && \
+             apt-get update >/dev/null 2>&1 && \
+             apt-get install -y --download-only -t bookworm-backports '$name' 2>/dev/null || apt-get install -y --download-only '$name' 2>/dev/null && \
+             dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
+        
+        run_cmd "Resolve package dependencies" bash -c \
+            "apt-get install -f -y >/dev/null 2>&1 || true" && \
+        
+        rm -rf "$dldir"
+        return 0
     else
         # Not a Debian-based system
+        rm -rf "$dldir"
         return 1
     fi
 }
