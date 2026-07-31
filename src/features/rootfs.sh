@@ -1358,66 +1358,142 @@ _CATALOGUE_
     fi
 }
 
-# Check if package is available in known repos (Debian, Ubuntu, etc.) and automatically install
+# Check if package is available in known repos (Debian, Ubuntu, etc.) and offer installation options
 _rootfs_bs_known_repos() {
     local name="$1"
     
-    # Known packages and their direct repository URLs
-    # Format: pkg_name|debian_url|ubuntu_url|description
-    local known_pkgs="multistrap|https://packages.debian.org/bookworm/multistrap|https://launchpad.net/ubuntu/+source/multistrap|Multi-mirror Debian rootfs installer
-mmdebstrap|https://packages.debian.org/bookworm/mmdebstrap|https://launchpad.net/ubuntu/+source/mmdebstrap|Modern APT-based bootstrap
-debootstrap|https://packages.debian.org/bookworm/debootstrap|https://launchpad.net/ubuntu/+source/debootstrap|Official Debian bootstrap
-cdebootstrap|https://packages.debian.org/bookworm/cdebootstrap|https://launchpad.net/ubuntu/+source/cdebootstrap|Compiled bootstrap tool
-schroot|https://packages.debian.org/bookworm/schroot|https://launchpad.net/ubuntu/+source/schroot|Chroot session manager"
+    # Query repology.org for which repos have this package
+    local repo_data
+    repo_data=$(rootfs_fetch_text "https://repology.org/api/v1/project/${name}" 2>/dev/null \
+        | tr '},{' '\n' \
+        | awk -F'"' '
+            /repo.*srcname/ {
+                repo=""; pkg=""
+                for (i=1; i<=NF; i++) {
+                    if ($i == "repo") repo=$(i+2)
+                    if ($i == "srcname") pkg=$(i+2)
+                }
+                if (repo && pkg) print repo"|"pkg
+            }
+        ' 2>/dev/null | sort -u)
+    
+    [ -z "$repo_data" ] && return 1
 
-    local found=0 deb_url ubuntu_url desc
-    while IFS='|' read -r pkg deb_url ubuntu_url desc; do
-        [ "$pkg" = "$name" ] || continue
-        found=1
-        break
-    done <<< "$known_pkgs"
+    # Build menu of available repositories
+    local repo_menu=() repo_list
+    declare -A seen_repos
+    while IFS='|' read -r repo pkg; do
+        [ -z "$repo" ] && continue
+        if [ -z "${seen_repos[$repo]}" ]; then
+            seen_repos[$repo]=1
+            repo_menu+=("$repo" "$pkg")
+        fi
+    done <<< "$repo_data"
 
-    [ "$found" -eq 0 ] && return 1
-
-    local dldir="${SYSTUI_TMP}/dpkg_$name.$$"
-    mkdir -p "$dldir"
-
-    # Auto-detect system and install from appropriate repo
-    if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
-        # Ubuntu system - download from Launchpad/Ubuntu repos
-        tui_msg "Installing $name" "Found in Ubuntu repositories.\nDownloading and installing $name with all dependencies from Ubuntu repos…"
-        
-        run_cmd "Download $name package" bash -c \
-            "cd '$dldir' && apt-get download '$name' 2>/dev/null || \
-             wget -q -O - 'https://packages.ubuntu.com/search?keywords=$name&searchon=names' | grep -oP 'href=\"/pool[^\"]+\.deb\"' | head -1 | sed 's/href=\"//; s/\"$/' | xargs -I {} wget -q 'https://packages.ubuntu.com{}' || \
-             curl -fsSL 'http://archive.ubuntu.com/ubuntu/pool/main/' 2>/dev/null | grep -o \"href=\\\"[^\\\"]*$name[^\\\"]*\\.deb\\\"\" | head -1 | cut -d'\"' -f2 | xargs -I {} curl -fsSL 'http://archive.ubuntu.com/ubuntu/pool/main/{}' -o '$name.deb'" && \
-        
-        run_cmd "Install $name and dependencies (dpkg)" bash -c \
-            "cd '$dldir' && apt-get install -y --download-only '$name' 2>/dev/null && dpkg -i -R . 2>/dev/null || dpkg -i $name*.deb 2>/dev/null || true" && \
-        
-        rm -rf "$dldir"
-        return 0
-        
-    elif [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
-        # Debian system - download from Debian repos via apt
-        tui_msg "Installing $name" "Found in Debian repositories.\nDownloading and installing $name with all dependencies from Debian repos…"
-        
-        run_cmd "Download $name package and dependencies (dpkg)" bash -c \
-            "mkdir -p '$dldir' && cd '$dldir' && \
-             apt-get update >/dev/null 2>&1 && \
-             apt-get install -y --download-only -t bookworm-backports '$name' 2>/dev/null || apt-get install -y --download-only '$name' 2>/dev/null && \
-             dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
-        
-        run_cmd "Resolve package dependencies" bash -c \
-            "apt-get install -f -y >/dev/null 2>&1 || true" && \
-        
-        rm -rf "$dldir"
-        return 0
-    else
-        # Not a Debian-based system
-        rm -rf "$dldir"
+    if [ ${#repo_menu[@]} -eq 0 ]; then
         return 1
     fi
+
+    # Show available repositories
+    local tmpf="${SYSTUI_TMP}/repo_list_$$.txt"
+    {
+        printf 'Package "%s" is available in the following repositories:\n\n' "$name"
+        printf '%s\n' "${!seen_repos[@]}" | sort | sed 's/^/  • /'
+        printf '\n\nSelect a repository to install from.\n'
+    } > "$tmpf"
+    tui_text "Available repositories for $name" "$tmpf"
+    rm -f "$tmpf"
+
+    # Present repository selection menu
+    local selected_repo
+    selected_repo=$(tui_menu "Select repository" "Choose repository to install $name from:" \
+        "${repo_menu[@]}" "cancel" "Cancel") || return 1
+    
+    [ "$selected_repo" = "cancel" ] && return 1
+    [ -z "$selected_repo" ] && return 1
+
+    # Now offer installation method
+    local install_method
+    install_method=$(tui_menu "Installation method" "How to install $name from $selected_repo:" \
+        pm     "Use package manager (apt/dnf/pacman)" \
+        dpkg   "Use dpkg -i (download and install .deb files)" \
+        cancel "Cancel") || return 1
+    
+    [ "$install_method" = "cancel" ] && return 1
+    [ -z "$install_method" ] && return 1
+
+    case "$install_method" in
+        pm)
+            # Use package manager to install
+            tui_msg "Installing via package manager" "Installing $name from $selected_repo repositories…"
+            
+            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
+                # Ubuntu system
+                run_cmd "Update Ubuntu repositories" bash -c \
+                    "apt-get update >/dev/null 2>&1" && \
+                run_cmd "Install $name (via apt)" bash -c \
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y '$name'" && return 0
+                return 1
+            elif [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
+                # Debian system
+                run_cmd "Update Debian repositories" bash -c \
+                    "apt-get update >/dev/null 2>&1" && \
+                run_cmd "Install $name (via apt)" bash -c \
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y '$name'" && return 0
+                return 1
+            elif command -v dnf >/dev/null 2>&1; then
+                # Fedora/RHEL
+                run_cmd "Install $name (via dnf)" bash -c \
+                    "dnf install -y '$name'" && return 0
+                return 1
+            elif command -v pacman >/dev/null 2>&1; then
+                # Arch
+                run_cmd "Install $name (via pacman)" bash -c \
+                    "pacman -Sy --noconfirm '$name'" && return 0
+                return 1
+            else
+                tui_msg "No PM found" "Could not find a compatible package manager."
+                return 1
+            fi
+            ;;
+        dpkg)
+            # Download and install with dpkg
+            local dldir="${SYSTUI_TMP}/dpkg_$name.$$"
+            mkdir -p "$dldir"
+            
+            tui_msg "Installing via dpkg" "Downloading $name and all dependencies from $selected_repo, then installing with dpkg -i…"
+            
+            if [ -f /etc/lsb-release ] || ([ -f /etc/os-release ] && grep -qi ubuntu /etc/os-release); then
+                # Ubuntu system
+                run_cmd "Download $name and dependencies (dpkg)" bash -c \
+                    "cd '$dldir' && apt-get update >/dev/null 2>&1 && \
+                     apt-get install -y --download-only '$name' 2>/dev/null && \
+                     ls -la *.deb 2>/dev/null | wc -l" && \
+                run_cmd "Install packages with dpkg -i" bash -c \
+                    "cd '$dldir' && dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
+                run_cmd "Resolve dependencies" bash -c \
+                    "apt-get install -f -y >/dev/null 2>&1 || true" && \
+                rm -rf "$dldir"
+                return 0
+            elif [ -f /etc/debian_version ] || grep -qi debian /etc/os-release; then
+                # Debian system
+                run_cmd "Download $name and dependencies (dpkg)" bash -c \
+                    "cd '$dldir' && apt-get update >/dev/null 2>&1 && \
+                     apt-get install -y --download-only '$name' 2>/dev/null && \
+                     ls -la *.deb 2>/dev/null | wc -l" && \
+                run_cmd "Install packages with dpkg -i" bash -c \
+                    "cd '$dldir' && dpkg -i -R . 2>/dev/null || dpkg -i *.deb 2>/dev/null || true" && \
+                run_cmd "Resolve dependencies" bash -c \
+                    "apt-get install -f -y >/dev/null 2>&1 || true" && \
+                rm -rf "$dldir"
+                return 0
+            else
+                tui_msg "Not supported" "dpkg installation only works on Debian-based systems."
+                rm -rf "$dldir"
+                return 1
+            fi
+            ;;
+    esac
 }
 
 # Parse repology results and offer to add alternative repositories
