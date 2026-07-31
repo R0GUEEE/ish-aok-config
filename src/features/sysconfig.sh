@@ -2510,21 +2510,24 @@ menu_cfg_cli_manager() { # id command config install-package [install-fn]
             advanced) pm_advanced_menu "$id" ;;
             version) pm_generic_health "$cmd" ;;
             install)
-                q=$(tui_input "$id install" "Package/application name:" "") || continue
-                [ -z "$q" ] && continue
-                case "$id" in
-                    pip) pip3 install --break-system-packages $q 2>/dev/null || pip3 install $q ;;
-                    pipx) pipx install "$q" ;;
-                    npm) npm install -g "$q" ;;
-                    pnpm) pnpm add -g "$q" ;;
-                    yarn) yarn global add "$q" ;;
-                    cargo) cargo install "$q" ;;
-                    gem) gem install "$q" ;;
-                    composer) composer global require "$q" ;;
-                    go) GOBIN="${GOBIN:-$HOME/go/bin}" go install "$q" ;;
-                    brew) brew_run_as "brew install $q" install "$q" ;;
-                    nix) nix profile install "$q" ;;
-                esac ;;
+                if [ "$id" = brew ]; then
+                    menu_brew_pkgops
+                else
+                    q=$(tui_input "$id install" "Package/application name:" "") || continue
+                    [ -z "$q" ] && continue
+                    case "$id" in
+                        pip) pip3 install --break-system-packages $q 2>/dev/null || pip3 install $q ;;
+                        pipx) pipx install "$q" ;;
+                        npm) npm install -g "$q" ;;
+                        pnpm) pnpm add -g "$q" ;;
+                        yarn) yarn global add "$q" ;;
+                        cargo) cargo install "$q" ;;
+                        gem) gem install "$q" ;;
+                        composer) composer global require "$q" ;;
+                        go) GOBIN="${GOBIN:-$HOME/go/bin}" go install "$q" ;;
+                        nix) nix profile install "$q" ;;
+                    esac
+                fi ;;
             update)
                 case "$id" in
                     pip) pip3 list --outdated; tui_msg "pip" "Use the install action with an exact package to upgrade safely." ;;
@@ -3053,6 +3056,7 @@ pm_adv_brew() {
         pm_adv_has "$o" parallel     && echo 'HOMEBREW_DOWNLOAD_CONCURRENCY=auto'
     } | pm_adv_write_block "$f" brew
     tui_msg "Applied" "$f updated inside a managed systui block."
+    tui_yesno "Root configuration" "Open Root configuration menu (bypass, shim, wrapper)?" && menu_brew_root_config || true
 }
 
 # ---- Language / ecosystem package managers ----------------------------------
@@ -3322,14 +3326,16 @@ menu_brew_install() {
     local c script buser
     while true; do
         buser=$(brew_target_user)
-        local status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled)"
+        local shim_st; shim_st=$([ -f /usr/local/lib/homebrew-root/libhomebrew_fakeuid.so ] && echo "shim:OK" || echo "shim:none")
+        local status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled) | $shim_st"
         [ -n "$buser" ] && status_line+=" | Target user: $buser" || status_line+=" | No non-root user found"
 
         c=$(tui_menu "Homebrew" "$status_line\n\nInstall / Manage:" \
             user       "Standard install — run as non-root user (recommended)" \
             rootcomp   "Root-compatibility layer — install with root permissions (any system)" \
             reinstall  "Force reinstall — uninstall then reinstall" \
-            rootbypass "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
+            rootconfig "Root configuration — bypass, shim, wrapper, permissions" \
+            pkgops     "Formula operations — install / reinstall / remove" \
             config     "Full configuration setup" \
             repair     "Repair / re-link existing Homebrew installation" \
             uninstall  "Uninstall Homebrew" \
@@ -3364,7 +3370,6 @@ menu_brew_install() {
                     back      "Cancel") || continue
                 [ "$ri_method" = back ] || [ -z "$ri_method" ] && continue
                 tui_yesno "Reinstall Homebrew" "Uninstall existing Homebrew first, then reinstall fresh?\n\nAll installed formulae will be removed." || continue
-                # Uninstall first
                 local ubuser; ubuser=$(brew_target_user)
                 if [ -n "$ubuser" ] && [ "$ubuser" != root ] && [ "$(id -u)" -eq 0 ]; then
                     run_cmd "Uninstall Homebrew" sudo -u "$ubuser" -H bash -c \
@@ -3373,7 +3378,6 @@ menu_brew_install() {
                     run_cmd "Uninstall Homebrew" bash -c \
                         'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"' || true
                 fi
-                # Reinstall
                 case "$ri_method" in
                     user)
                         local iu; iu=$(brew_target_user)
@@ -3394,21 +3398,9 @@ menu_brew_install() {
                         ;;
                 esac
                 ;;
-            rootbypass)
-                if [ "$(id -u)" -ne 0 ]; then
-                    tui_msg "Root bypass" "Changing the system-wide root bypass requires root."; continue
-                fi
-                if brew_root_bypass_enabled; then
-                    tui_yesno "Disable root bypass" "Remove HOMEBREW_ALLOW_ROOT from /etc/systui/homebrew.env?" || continue
-                    brew_set_root_bypass 0
-                    tui_msg "Root bypass" "Root bypass disabled. brew commands will now run under the non-root target user."
-                else
-                    tui_yesno "Enable root bypass" "Set HOMEBREW_ALLOW_ROOT=1 permanently in /etc/systui/homebrew.env?\n\nThis allows brew to run directly as root. Use only if the root-compat layer is installed." || continue
-                    brew_set_root_bypass 1
-                    tui_msg "Root bypass" "Root bypass enabled. brew commands will now run as root directly."
-                fi
-                ;;
-            config) menu_brew_config ;;
+            rootconfig) menu_brew_root_config ;;
+            pkgops)     menu_brew_pkgops ;;
+            config)     menu_brew_config ;;
             repair)
                 brew_run_as "Homebrew repair" cleanup --prune=all
                 brew_run_as "Homebrew relink" link --overwrite --force 2>/dev/null || true
@@ -3424,6 +3416,227 @@ menu_brew_install() {
                     run_cmd "Uninstall Homebrew" bash -c \
                         'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'
                 fi
+                ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Root reconfiguration helpers — each performs one atomic step so they can be
+# called independently without re-running the full installer.
+# ---------------------------------------------------------------------------
+
+_brew_root_shim_dir()    { printf '%s' "/usr/local/lib/homebrew-root"; }
+_brew_root_wrapper()     { printf '%s' "/usr/local/bin/brew"; }
+_brew_root_profile()     { printf '%s' "/etc/profile.d/homebrew.sh"; }
+_brew_root_prefix()      {
+    local p; p=$(_brew_cfg_get /etc/systui/homebrew.env HOMEBREW_PREFIX)
+    printf '%s' "${p:-/home/linuxbrew/.linuxbrew}"
+}
+
+_brew_root_rebuild_shim() {
+    if [ "$(id -u)" -ne 0 ]; then tui_msg "Root required" "Rebuilding the shim requires root."; return 1; fi
+    command -v gcc >/dev/null 2>&1 || { tui_msg "Missing tool" "gcc is required to compile the UID shim.\nInstall build-essential (apt) or equivalent."; return 1; }
+    local sdir; sdir=$(_brew_root_shim_dir)
+    local src="$sdir/fakeuid.c" lib="$sdir/libhomebrew_fakeuid.so"
+    install -d -m 0755 -o root -g root "$sdir"
+    cat > "$src" <<'EOF_C'
+#define _GNU_SOURCE
+#include <sys/types.h>
+#include <unistd.h>
+uid_t getuid(void)  { return (uid_t)1000; }
+uid_t geteuid(void) { return (uid_t)1000; }
+gid_t getgid(void)  { return (gid_t)1000; }
+gid_t getegid(void) { return (gid_t)1000; }
+int getresuid(uid_t *r,uid_t *e,uid_t *s){if(r)*r=1000;if(e)*e=1000;if(s)*s=1000;return 0;}
+int getresgid(gid_t *r,gid_t *e,gid_t *s){if(r)*r=1000;if(e)*e=1000;if(s)*s=1000;return 0;}
+EOF_C
+    run_cmd "Compile UID shim" gcc -shared -fPIC -O2 -Wall -Wextra -o "$lib" "$src" || return 1
+    chmod 0755 "$lib"
+    tui_msg "Shim rebuilt" "UID shim written to:\n$lib"
+}
+
+_brew_root_reinstall_wrapper() {
+    if [ "$(id -u)" -ne 0 ]; then tui_msg "Root required" "Reinstalling the wrapper requires root."; return 1; fi
+    local prefix; prefix=$(_brew_root_prefix)
+    local repo="$prefix/Homebrew"
+    local real_brew="$repo/bin/brew"
+    local wrapper; wrapper=$(_brew_root_wrapper)
+    local shim="$(_brew_root_shim_dir)/libhomebrew_fakeuid.so"
+    local envf=/etc/systui/homebrew.env
+    cat > "$wrapper" <<WRAP
+#!/usr/bin/env bash
+set -e
+export HOME="/root"
+export USER="root"
+export LOGNAME="root"
+export HOMEBREW_PREFIX="$prefix"
+export HOMEBREW_CELLAR="$prefix/Cellar"
+export HOMEBREW_REPOSITORY="$repo"
+export PATH="$prefix/bin:$prefix/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+[ -r "$envf" ] && . "$envf"
+: "\${HOMEBREW_NO_ANALYTICS:=1}"
+: "\${HOMEBREW_NO_ENV_HINTS:=1}"
+: "\${HOMEBREW_NO_AUTO_UPDATE:=1}"
+: "\${HOMEBREW_NO_INSTALL_CLEANUP:=1}"
+export HOMEBREW_NO_ANALYTICS HOMEBREW_NO_ENV_HINTS HOMEBREW_NO_AUTO_UPDATE HOMEBREW_NO_INSTALL_CLEANUP
+export LD_PRELOAD="$shim\${LD_PRELOAD:+:\$LD_PRELOAD}"
+exec "$real_brew" "\$@"
+WRAP
+    chmod 0755 "$wrapper"
+    tui_msg "Wrapper reinstalled" "Root brew wrapper written to:\n$wrapper\nUsing prefix: $prefix"
+}
+
+_brew_root_fix_perms() {
+    if [ "$(id -u)" -ne 0 ]; then tui_msg "Root required" "Fixing permissions requires root."; return 1; fi
+    local prefix; prefix=$(_brew_root_prefix)
+    [ -d "$prefix" ] || { tui_msg "Not found" "Homebrew prefix not found:\n$prefix\nInstall Homebrew first."; return 1; }
+    run_cmd "Fix Homebrew prefix ownership" chown -R root:root "$prefix"
+    run_cmd "Fix Homebrew prefix permissions" chmod -R u+rwX,go+rX "$prefix"
+    tui_msg "Permissions fixed" "Ownership and permissions updated for:\n$prefix"
+}
+
+_brew_root_update_profile() {
+    if [ "$(id -u)" -ne 0 ]; then tui_msg "Root required" "Updating the profile requires root."; return 1; fi
+    local prefix; prefix=$(_brew_root_prefix)
+    local prof; prof=$(_brew_root_profile)
+    local envf=/etc/systui/homebrew.env
+    mkdir -p /etc/profile.d
+    cat > "$prof" <<PROF
+export HOMEBREW_PREFIX="$prefix"
+export HOMEBREW_CELLAR="$prefix/Cellar"
+export HOMEBREW_REPOSITORY="$prefix/Homebrew"
+export PATH="/usr/local/bin:$prefix/bin:$prefix/sbin:\$PATH"
+export MANPATH="$prefix/share/man\${MANPATH+:\$MANPATH}"
+export INFOPATH="$prefix/share/info\${INFOPATH+:\$INFOPATH}"
+[ -r "$envf" ] && . "$envf"
+PROF
+    chmod 0644 "$prof"
+    for _pf in /root/.bashrc /root/.profile; do
+        touch "$_pf" 2>/dev/null || true
+        grep -Fq '/etc/profile.d/homebrew.sh' "$_pf" 2>/dev/null || \
+            printf '\n# Root-managed Homebrew\n[ -r /etc/profile.d/homebrew.sh ] && . /etc/profile.d/homebrew.sh\n' >> "$_pf"
+    done
+    tui_msg "Profile updated" "$prof written.\nPrefix: $prefix"
+}
+
+_brew_root_remove_layer() {
+    if [ "$(id -u)" -ne 0 ]; then tui_msg "Root required" "Removing the root layer requires root."; return 1; fi
+    tui_yesno "Remove root-compat layer" "This will:\n• Remove /usr/local/bin/brew wrapper\n• Remove the UID shim library\n• Remove /etc/profile.d/homebrew.sh\n• Remove /etc/systui/homebrew.env\n\nThe Homebrew installation itself is kept. Continue?" || return 0
+    rm -f "$(_brew_root_wrapper)" 2>/dev/null || true
+    rm -rf "$(_brew_root_shim_dir)" 2>/dev/null || true
+    rm -f "$(_brew_root_profile)" 2>/dev/null || true
+    rm -f /etc/systui/homebrew.env 2>/dev/null || true
+    for _pf in /root/.bashrc /root/.profile; do
+        [ -f "$_pf" ] && sed -i '/Root-managed Homebrew/d;/etc\/profile\.d\/homebrew\.sh/d' "$_pf" 2>/dev/null || true
+    done
+    tui_msg "Root layer removed" "All root-compat files have been removed.\nTo use brew again, log in as a non-root user or reinstall the compat layer."
+}
+
+menu_brew_root_config() {
+    while true; do
+        local shim_ok wrapper_ok bypass_state prefix
+        shim_ok=$([ -f "$(_brew_root_shim_dir)/libhomebrew_fakeuid.so" ] && echo "✓ installed" || echo "✗ not found")
+        wrapper_ok=$([ -x "$(_brew_root_wrapper)" ] && echo "✓ present" || echo "✗ not found")
+        bypass_state=$(brew_root_bypass_enabled && echo "ENABLED" || echo "disabled")
+        prefix=$(_brew_root_prefix)
+
+        local c
+        c=$(tui_menu "Brew Root Config" \
+            "Root bypass: $bypass_state | Shim: $shim_ok | Wrapper: $wrapper_ok\nPrefix: $prefix\n\nRoot compatibility options:" \
+            bypass    "$(brew_root_bypass_enabled && echo 'Disable' || echo 'Enable') permanent root bypass (HOMEBREW_ALLOW_ROOT)" \
+            shim      "Rebuild UID shim  (libhomebrew_fakeuid.so)" \
+            wrapper   "Reinstall root wrapper  (/usr/local/bin/brew)" \
+            perms     "Fix prefix ownership and permissions" \
+            profile   "Update /etc/profile.d/homebrew.sh" \
+            full      "Full root-compat reinstall (re-run installer script)" \
+            remove    "Remove root-compat layer" \
+            back      "Back") || return 0
+
+        case "$c" in
+            bypass)
+                if [ "$(id -u)" -ne 0 ]; then
+                    tui_msg "Root bypass" "Changing the system-wide root bypass requires root."; continue
+                fi
+                if brew_root_bypass_enabled; then
+                    tui_yesno "Disable root bypass" "Remove HOMEBREW_ALLOW_ROOT from /etc/systui/homebrew.env?" || continue
+                    brew_set_root_bypass 0
+                    tui_msg "Root bypass" "Root bypass disabled. brew runs under the non-root target user."
+                else
+                    tui_yesno "Enable root bypass" "Set HOMEBREW_ALLOW_ROOT=1 permanently?\n\nOnly enable this if the root-compat layer (shim + wrapper) is installed." || continue
+                    brew_set_root_bypass 1
+                    tui_msg "Root bypass" "Root bypass enabled. brew runs directly as root."
+                fi
+                ;;
+            shim)    _brew_root_rebuild_shim ;;
+            wrapper) _brew_root_reinstall_wrapper ;;
+            perms)   _brew_root_fix_perms ;;
+            profile) _brew_root_update_profile ;;
+            full)
+                if [ "$(id -u)" -ne 0 ]; then
+                    tui_msg "Homebrew" "Full root-compat reinstall requires root."; continue
+                fi
+                script=$(brew_root_compat_script)
+                [ -r "$script" ] || { tui_msg "Homebrew" "Installer script not found:\n$script"; continue; }
+                run_cmd "Reinstall Homebrew root-compat layer" bash "$script"
+                ;;
+            remove) _brew_root_remove_layer ;;
+            back|"") return 0 ;;
+        esac
+    done
+}
+
+# Formula-level package operations menu (install / reinstall / remove / autoremove).
+menu_brew_pkgops() {
+    while true; do
+        local c
+        c=$(tui_menu "Homebrew formula operations" "Manage installed formulae:" \
+            install    "Install a formula or cask" \
+            reinstall  "Reinstall a formula (keeps config, refreshes binary)" \
+            remove     "Remove / uninstall a formula" \
+            autoremove "Remove unused dependencies  (brew autoremove)" \
+            leaves     "Show leaf formulae  (nothing depends on them)" \
+            pin        "Pin a formula to its current version" \
+            unpin      "Unpin a pinned formula" \
+            back       "Back") || return 0
+
+        local q
+        case "$c" in
+            install)
+                q=$(tui_input "Install formula/cask" "Formula or cask name:" "") || continue
+                [ -z "$q" ] && continue
+                brew_run_as "brew install $q" install "$q"
+                ;;
+            reinstall)
+                q=$(tui_input "Reinstall formula" "Formula name to reinstall:" "") || continue
+                [ -z "$q" ] && continue
+                brew_run_as "brew reinstall $q" reinstall "$q"
+                ;;
+            remove)
+                q=$(tui_input "Remove formula" "Formula name to uninstall:" "") || continue
+                [ -z "$q" ] && continue
+                tui_yesno "Remove formula" "Uninstall '$q' and its dependencies that are no longer needed?" || continue
+                brew_run_as "brew uninstall $q" uninstall "$q"
+                ;;
+            autoremove)
+                brew_run_as "brew autoremove" autoremove
+                ;;
+            leaves)
+                local tmpf="${SYSTUI_TMP}/brew_leaves_$$.txt"
+                { brew_run_as "brew leaves" leaves 2>/dev/null || true; } > "$tmpf"
+                tui_text "Homebrew leaf formulae" "$tmpf"
+                rm -f "$tmpf"
+                ;;
+            pin)
+                q=$(tui_input "Pin formula" "Formula name to pin at current version:" "") || continue
+                [ -z "$q" ] && continue
+                brew_run_as "brew pin $q" pin "$q"
+                ;;
+            unpin)
+                q=$(tui_input "Unpin formula" "Formula name to unpin:" "") || continue
+                [ -z "$q" ] && continue
+                brew_run_as "brew unpin $q" unpin "$q"
                 ;;
             back|"") return 0 ;;
         esac
