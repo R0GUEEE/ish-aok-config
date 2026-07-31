@@ -51,14 +51,9 @@ systui/
 │   │   ├── tui-widgets.sh    # TUI widget functions
 │   │   └── common.sh         # Common utilities & package mapping
 │   │
-│   ├── provision/            # Provisioning functions (one per distro)
+│   ├── provision/            # Multi-distro quick-setup provisioning
 │   │   ├── runtime.sh        # Shared distro adapters, sshd + config helpers
-│   │   ├── provision-ultimate.sh # Portable multi-distribution quick setup
-│   │   ├── alpine.sh         # Alpine 3.23+ (OpenRC)
-│   │   ├── arch.sh           # Arch Linux (systemd)
-│   │   ├── debian.sh         # Debian 12+ (systemd)
-│   │   ├── devuan.sh         # Devuan 6+ (sysvinit)
-│   │   └── *-enhanced.sh     # Extended variant of each of the above
+│   │   └── provision-ultimate.sh # Portable multi-distribution quick setup
 │   │
 │   └── features/             # Feature modules
 │       ├── health.sh         # System health scanner
@@ -68,10 +63,8 @@ systui/
 │       └── ultimate-provision.sh # Quick-setup lifecycle menu
 │
 ├── share/                    # Non-code resources
-│   ├── homebrew/             # Root-compatible Homebrew compatibility layer
-│   │   └── install-homebrew-root.sh
-│   └── config/               # Configuration templates
-│       └── provision-example.conf # Example provisioning config
+│   └── homebrew/             # Root-compatible Homebrew compatibility layer
+│       └── install-homebrew-root.sh
 │
 └── tests/                    # Test suite
     └── test-*.sh             # Test files
@@ -141,43 +134,21 @@ cmd_exists <command>            # Check if command exists
 
 ### Provisioning Modules
 
-Each distro has its own provisioning module:
+#### `src/provision/provision-ultimate.sh`
+Portable, single quick-setup path for Alpine, Arch, Debian, Devuan, and other
+package-manager families (apt/apk/pacman/dnf/yum/zypper/xbps/portage), driven
+by the package-manager family detected at runtime rather than a dedicated
+script per distro. Installs the shared package set, sets timezone and locale,
+creates the user account, configures sudo access, enables services, and
+writes the MOTD/shell environment — with a skip-and-continue installer so one
+unavailable package doesn't abort the whole run.
 
-#### `src/provision/alpine.sh`
-- Alpine 3.23+ with OpenRC
-- Installs 60+ packages
-- Configures services (sshd, syslog-ng, cronie, chronyd)
-
-#### `src/provision/arch.sh`
-- Arch Linux with systemd
-- Special handling: uid-501 repair, /dev/fd symlinks
-- Handles alarm user rename
-
-#### `src/provision/debian.sh`
-- Debian 12+ (bookworm, trixie, sid)
-- APT-based provisioning
-- Services: ssh, rsyslog, cron, chrony
-
-#### `src/provision/devuan.sh`
-- Devuan 6+ (Excalibur)
-- Legacy sysvinit support
-- Services: sshd, rsyslog, cron, chrony
-
-**Provisioning Function Signature:**
-```bash
-provision_alpine <timezone> <username> <hostname> <nopass_flag>
-provision_arch <timezone> <username> <hostname> <nopass_flag>
-provision_debian <timezone> <username> <hostname> <nopass_flag>
-provision_devuan <timezone> <username> <hostname> <nopass_flag>
-```
-
-Each function:
-1. Installs 60+ packages
-2. Sets timezone and locale
-3. Creates user account
-4. Configures sudo access
-5. Enables services
-6. Creates MOTD and shell environment
+#### `src/provision/runtime.sh`
+Shared, distro-agnostic helpers used by the provisioning path above: sshd
+configuration with `sshd -t` validation, and a config-file loader
+(`provision_load_config`) that snapshots and restores internal variables
+(`LOGFILE`, `PM`, `DISTRO`, `PATH`, ...) so a sourced config file can never
+override them.
 
 ## Installation Details
 
@@ -311,10 +282,17 @@ myfeature) menu_myfeature ;;
 
 ### Adding a New Distro
 
-1. Create: `src/provision/newdistro.sh`
-2. Define: `provision_newdistro()`
-3. Update `detect_distro()` in `src/core/config.sh`
-4. Source in `bin/systui`
+`provision-ultimate.sh` provisions by detected package-manager family, not by
+a per-distro script, so a new distro usually needs no new provisioning code —
+only:
+
+1. Update `detect_distro()` / `detect_pm()` in `src/core/config.sh` if the
+   distro isn't already recognized.
+2. Extend the package-name map in `src/core/common.sh` if it needs
+   distro-specific package names.
+3. Add any distro-specific package-manager branch to
+   `src/provision/provision-ultimate.sh` if its family isn't already handled
+   (apt/apk/pacman/dnf/yum/zypper/xbps/portage).
 
 ## Troubleshooting
 
@@ -601,7 +579,7 @@ trap turned every stray Escape keypress into a fatal error. Routines that want
 fail-fast semantics opt in:
 
 ```bash
-run_strict "provision_debian" provision_debian_impl "$@"
+run_strict "rootfs_builder" rootfs_builder_impl "$@"
 ```
 
 `run_strict` runs the routine in a subshell with `set -eE` and an `ERR` trap, so
@@ -633,7 +611,7 @@ two different files.
 
 ### Provisioning config files
 
-Config files passed to the `*-enhanced` provisioners are shell scripts and are
-executed with root privileges. Values that systui depends on internally
+`provision_load_config` in `src/provision/runtime.sh` sources a config file as
+a shell script with root privileges. Values that systui depends on internally
 (`LOGFILE`, `PM`, `DISTRO`, `PATH`, ...) are snapshotted and restored around the
 `source`, and any attempt to change them is logged and reverted.

@@ -216,8 +216,8 @@ unset -f curl
 check "menu_rootfs_bootstrap_tools function exists" function_exists menu_rootfs_bootstrap_tools
 check "bootstrap tools menu wired into menu_rootfs" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "bootstrap)  menu_rootfs_bootstrap_tools"
-check "bootstrap tools menu uses tui_check checklist" contains \
-    "$PROJECT_DIR/src/features/rootfs.sh" "tui_check \"Rootfs Bootstrap Tools\""
+check "bootstrap tools menu uses tui_menu with per-tool submenu" contains \
+    "$PROJECT_DIR/src/features/rootfs.sh" "tui_menu \"Rootfs Bootstrap Tools\""
 check "bootstrap tools menu includes debootstrap" contains \
     "$PROJECT_DIR/src/features/rootfs.sh" "debootstrap"
 check "bootstrap tools menu includes mmdebstrap" contains \

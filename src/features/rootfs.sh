@@ -1663,7 +1663,8 @@ _rootfs_bs_install_deb_url() { # <name> <label> <url>
     local name="$1" label="$2" url="$3"
     local workdir="${SYSTUI_TMP:-/tmp}/idxdl_${name}.$$"
     mkdir -p "$workdir" || return 1
-    local debfile="$workdir/$(basename "$url")"
+    local debfile
+    debfile="$workdir/$(basename "$url")"
 
     run_cmd "Download $name.deb from $label" bash -c \
         "curl -fsSL -4 -o '$debfile' '$url' 2>/dev/null || wget -q -4 -O '$debfile' '$url'" \
@@ -1846,7 +1847,8 @@ _rootfs_bs_install_debian_deb() {
 
     local workdir="${SYSTUI_TMP:-/tmp}/debdl_${name}.$$"
     mkdir -p "$workdir" || return 1
-    local debfile="$workdir/$(basename "$deb_url")"
+    local debfile
+    debfile="$workdir/$(basename "$deb_url")"
 
     run_cmd "Download $name.deb from Debian ($selected_suite)" bash -c \
         "curl -fsSL -4 -o '$debfile' '$deb_url' 2>/dev/null || wget -q -4 -O '$debfile' '$deb_url'" \
@@ -1957,7 +1959,8 @@ _rootfs_bs_install_launchpad_deb() {
 
     local workdir="${SYSTUI_TMP:-/tmp}/lpdl_${name}.$$"
     mkdir -p "$workdir" || return 1
-    local debfile="$workdir/$(basename "$deb_url")"
+    local debfile
+    debfile="$workdir/$(basename "$deb_url")"
 
     run_cmd "Download $name.deb from Ubuntu ($selected_series)" bash -c \
         "curl -fsSL -4 -o '$debfile' '$deb_url' 2>/dev/null || wget -q -4 -O '$debfile' '$deb_url'" \
@@ -2110,8 +2113,13 @@ _rootfs_bs_known_repos() {
                 return 1
             elif command -v pacman >/dev/null 2>&1; then
                 # Arch
+                # `pacman -Sy` alone is the partial-upgrade pattern that breaks
+                # Arch installs: it refreshes the sync database without
+                # upgrading installed packages, so the following install can
+                # pull in libraries built against newer versions than what's
+                # on disk. Sync+upgrade first, then install with -S (no -y).
                 run_cmd "Install $name (via pacman)" bash -c \
-                    "pacman -Sy --noconfirm '$name'" && return 0
+                    "pacman -Syu --noconfirm && pacman -S --noconfirm --needed '$name'" && return 0
                 return 1
             else
                 tui_msg "No PM found" "Could not find a compatible package manager."
@@ -3741,7 +3749,7 @@ rootfs_ensure_keyrings() { # <target> <pm>
             # master keys.
             if [ -z "$(rootfs_exec_raw "$t" sh -c 'ls -A /etc/pacman.d/gnupg 2>/dev/null')" ]; then
                 rootfs_chroot_exec "$t" "Initializing pacman keyring" \
-                    "pacman-key --init && pacman-key --populate archlinux 2>/dev/null || pacman-key --populate 2>/dev/null; pacman -Sy --noconfirm archlinux-keyring 2>/dev/null || true"
+                    "pacman-key --init && pacman-key --populate archlinux 2>/dev/null || pacman-key --populate 2>/dev/null; pacman -Syu --noconfirm archlinux-keyring 2>/dev/null || true"
             fi
             ;;
         dnf|yum)

@@ -7,6 +7,10 @@ SYSTUI_PROVISION_TOOL="${TMPDIR:-/tmp}/systui-provision-tool-test.$$"
 LIBDIR="$PROJECT_DIR"
 export SYSTUI_PROVISION_CONFIG SYSTUI_PROVISION_TOOL LIBDIR
 trap 'rm -f -- "$SYSTUI_PROVISION_CONFIG" "$SYSTUI_PROVISION_TOOL"' EXIT
+# Under `set -eu` a single failing assertion aborts the script immediately;
+# without this trap it does so with zero output, leaving no clue which line
+# failed. Report the line number so failures are diagnosable.
+trap 'echo "not ok - test-provision-menu.sh failed at line $LINENO" >&2' ERR
 
 . "$PROJECT_DIR/src/features/ultimate-provision.sh"
 
@@ -27,7 +31,7 @@ for manager in apt apk pacman dnf yum zypper xbps portage; do
     grep -Eq "(^|[|[:space:]])${manager}([|)])" \
         "$PROJECT_DIR/src/provision/provision-ultimate.sh"
 done
-grep -q 'skipped: \$p (unavailable or installation failed)' \
+grep -q 'skipped: \$p (unavailable or timed out)' \
     "$PROJECT_DIR/src/provision/provision-ultimate.sh"
 
 # Ultimate Provision is a first-class main-menu option.

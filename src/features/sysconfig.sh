@@ -3337,8 +3337,7 @@ brew_set_root_bypass() { # <1|0>
 # Completely remove Homebrew: installation, configs, cache, root-compat layer.
 _brew_complete_uninstall() {
     local buser; buser=$(brew_target_user)
-    local ubash=bash
-    
+
     # Run official uninstall script as appropriate user
     if [ -n "$buser" ] && [ "$buser" != root ] && [ "$(id -u)" -eq 0 ]; then
         sudo -u "$buser" -H bash -c \
@@ -3355,11 +3354,12 @@ _brew_complete_uninstall() {
     # Remove root-compat layer (shim, wrapper, etc.)
     rm -rf /usr/local/lib/homebrew-root 2>/dev/null || true
     
-    # Remove user-specific cache/config
+    # Remove user-specific cache/config. `~` must expand inside the target
+    # user's shell (via -H), not the caller's -- otherwise this silently
+    # deletes the wrong home directory's cache instead of $buser's.
     if [ -n "$buser" ] && [ "$buser" != root ]; then
-        sudo -u "$buser" -H rm -rf ~/.cache/Homebrew 2>/dev/null || true
-        sudo -u "$buser" -H rm -rf ~/.config/Homebrew 2>/dev/null || true
-        sudo -u "$buser" -H rm -rf ~/.homebrew 2>/dev/null || true
+        sudo -u "$buser" -H bash -c \
+            'rm -rf ~/.cache/Homebrew ~/.config/Homebrew ~/.homebrew' 2>/dev/null || true
     fi
     
     # Remove root user cache/config if running as root
@@ -3411,7 +3411,8 @@ menu_brew_install() {
     while true; do
         buser=$(brew_target_user)
         local shim_st; shim_st=$([ -f /usr/local/lib/homebrew-root/libhomebrew_fakeuid.so ] && echo "shim:OK" || echo "shim:none")
-        local status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled) | $shim_st"
+        local status_line
+        status_line="Root bypass: $(brew_root_bypass_enabled && echo ENABLED || echo disabled) | $shim_st"
         [ -n "$buser" ] && status_line+=" | Target user: $buser" || status_line+=" | No non-root user found"
 
         c=$(tui_menu "Homebrew" "$status_line\n\nInstall / Manage:" \
@@ -3766,8 +3767,6 @@ menu_brew_config() {
         _clr=$(_brew_cfg_get "$envf" HOMEBREW_CELLAR)
         _tok=$(_brew_cfg_get "$envf" HOMEBREW_GITHUB_API_TOKEN)
 
-        local _yn; _yn() { [ "$1" = 1 ] && echo "ON" || echo "off"; }
-
         local c
         c=$(tui_menu "Homebrew Config" "Config file: $envf\n\nAll settings are persisted to the env file and loaded at brew launch." \
             toggles  "Feature toggles  (analytics, auto-update, cleanup…)" \
@@ -3875,6 +3874,30 @@ menu_brew_config() {
     done
 }
 
+# Fetch an installer script to a temp file and run it, instead of piping
+# curl straight into sh. A bare `curl ... | sh` executes whatever bytes
+# arrive as they arrive: a dropped connection can silently truncate the
+# script mid-statement, and there is nothing to inspect if it misbehaves.
+# Downloading first lets us confirm the fetch actually succeeded and gives
+# a file on disk that can be reviewed before (or after) it runs. This does
+# not replace checksum verification -- these upstream installers don't all
+# publish one -- but it removes the streaming-truncation failure mode and
+# enforces HTTPS + TLS 1.2+ so a downgrade or plaintext response can't be
+# fed to the shell.
+_dl_run_installer() { # <description> <url> <shell> [installer-args...]
+    local desc="$1" url="$2" shell="$3"; shift 3
+    local tmp; tmp="$(mktemp "${SYSTUI_TMP:-/tmp}/installer.XXXXXX.sh")" || return 1
+    run_cmd "$desc" bash -c '
+        set -e
+        curl --proto "=https" --tlsv1.2 -fsSL "$1" -o "$2"
+        [ -s "$2" ] || { echo "download was empty" >&2; exit 1; }
+        "$3" "$2" "${@:4}"
+    ' _ "$url" "$tmp" "$shell" "$@"
+    local rc=$?
+    rm -f "$tmp"
+    return $rc
+}
+
 menu_nix_install() {
     local c
     c=$(tui_menu "Install Nix" "Choose installation method:" \
@@ -3884,9 +3907,9 @@ menu_nix_install() {
         pm          "Package manager (${PM} install nix)" \
         back        "Back") || return 0
     case "$c" in
-        official)    run_cmd "Install Nix (multi-user)" sh -c 'curl -L https://nixos.org/nix/install | sh -s -- --daemon' ;;
-        determinate) run_cmd "Install Nix (Determinate)" sh -c 'curl --proto "=https" --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install' ;;
-        single)      run_cmd "Install Nix (single-user)" sh -c 'curl -L https://nixos.org/nix/install | sh -s -- --no-daemon' ;;
+        official)    _dl_run_installer "Install Nix (multi-user)" https://nixos.org/nix/install sh -- --daemon ;;
+        determinate) _dl_run_installer "Install Nix (Determinate)" https://install.determinate.systems/nix sh -- install ;;
+        single)      _dl_run_installer "Install Nix (single-user)" https://nixos.org/nix/install sh -- --no-daemon ;;
         pm)          pm_install nix ;;
         back|"")     return 0 ;;
     esac
@@ -3953,7 +3976,7 @@ menu_cargo_install() {
         snap   "Snap: snap install rustup --classic" \
         back   "Back") || return 0
     case "$c" in
-        rustup) run_cmd "Install Rust via rustup" sh -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' ;;
+        rustup) _dl_run_installer "Install Rust via rustup" https://sh.rustup.rs sh -- -y ;;
         pm)     pm_install cargo rustc ;;
         snap)   command -v snap >/dev/null || { tui_msg "snap" "snapd is not installed."; return 0; }
                 run_cmd "Install rustup via snap" snap install rustup --classic ;;
@@ -3970,12 +3993,12 @@ menu_npm_install() {
         pm         "Package manager (${PM} install nodejs npm)" \
         back       "Back") || return 0
     case "$c" in
-        nvm)  run_cmd "Install nvm" bash -c 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash' ;;
-        fnm)  run_cmd "Install fnm" bash -c 'curl -fsSL https://fnm.vercel.app/install | bash' ;;
+        nvm)  _dl_run_installer "Install nvm" https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh bash ;;
+        fnm)  _dl_run_installer "Install fnm" https://fnm.vercel.app/install bash ;;
         nodesource)
             case "$PM" in
-                apt) run_cmd "Add NodeSource LTS (APT)" bash -c 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -' ;;
-                dnf|yum) run_cmd "Add NodeSource LTS (RPM)" bash -c 'curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -' ;;
+                apt) _dl_run_installer "Add NodeSource LTS (APT)" https://deb.nodesource.com/setup_lts.x bash ;;
+                dnf|yum) _dl_run_installer "Add NodeSource LTS (RPM)" https://rpm.nodesource.com/setup_lts.x bash ;;
                 *) tui_msg "NodeSource" "NodeSource setup scripts support APT and DNF/YUM only." ;;
             esac ;;
         pm) pm_install nodejs npm ;;
@@ -3992,7 +4015,7 @@ menu_pnpm_install() {
         pm     "Package manager (${PM} install pnpm)" \
         back   "Back") || return 0
     case "$c" in
-        script) run_cmd "Install pnpm" sh -c 'curl -fsSL https://get.pnpm.io/install.sh | sh -' ;;
+        script) _dl_run_installer "Install pnpm" https://get.pnpm.io/install.sh sh ;;
         npm)    command -v npm >/dev/null || { tui_msg "pnpm" "npm is required. Install Node.js first."; return 0; }
                 run_cmd "Install pnpm via npm" npm install -g pnpm ;;
         brew)   command -v brew >/dev/null || { tui_msg "pnpm" "Homebrew is not installed."; return 0; }
@@ -4031,8 +4054,8 @@ menu_gem_install() {
         pm    "Package manager (${PM} install ruby)" \
         back  "Back") || return 0
     case "$c" in
-        rbenv) run_cmd "Install rbenv + ruby-build" bash -c 'curl -fsSL https://rbenv.org/install.sh | bash' ;;
-        rvm)   run_cmd "Install RVM" bash -c '\curl -sSL https://get.rvm.io | bash -s stable --ruby' ;;
+        rbenv) _dl_run_installer "Install rbenv + ruby-build" https://rbenv.org/install.sh bash ;;
+        rvm)   _dl_run_installer "Install RVM" https://get.rvm.io bash -- stable --ruby ;;
         asdf)  command -v asdf >/dev/null || { tui_msg "asdf" "asdf is not installed."; return 0; }
                run_cmd "Install Ruby via asdf" bash -c 'asdf plugin add ruby && asdf install ruby latest && asdf global ruby latest' ;;
         pm)    pm_install ruby ;;
